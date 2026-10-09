@@ -1,0 +1,226 @@
+<script lang="ts">
+  import Panel from "../components/Panel.svelte";
+  import { api, type BitDepth, type Format } from "../lib/api";
+  import { session } from "../lib/session.svelte";
+
+  const s = $derived(session.settings);
+  const formats: { value: Format; label: string; note: string }[] = [
+    { value: "flac", label: "FLAC", note: "lossless, compressed, tagged" },
+    { value: "wav", label: "WAV", note: "lossless, uncompressed, no tags" },
+    { value: "mp3", label: "MP3", note: "320 kbit/s, tagged – lossy, encoded from the verified recording" },
+  ];
+  const depths: { value: BitDepth; label: string; note: string }[] = [
+    { value: "auto", label: "Auto", note: "16-bit when the master is 16-bit, else 24-bit – always lossless" },
+    { value: "b24", label: "24-bit", note: "always 24-bit" },
+    { value: "b16", label: "16-bit", note: "rounds 24-bit sources – not lossless for them" },
+  ];
+
+  const sample = { artist: "Daft Punk", title: "Digital Love", album: "Discovery" };
+  const preview = $derived.by(() => {
+    if (!s) return "";
+    const filled = s.template.split("/").map((part) => part.replaceAll("{artist}", sample.artist).replaceAll("{title}", sample.title).replaceAll("{album}", sample.album));
+    return `${filled.join(" / ")}.${s.format}`;
+  });
+
+  function set<K extends keyof NonNullable<typeof s>>(key: K, value: NonNullable<typeof s>[K]) {
+    if (!session.settings) return;
+    session.settings[key] = value;
+    session.save();
+  }
+</script>
+
+{#if s}
+  <div class="grid">
+    <Panel label="Output" index="01">
+      <label class="field">
+        <span class="name mono">Folder</span>
+        <div class="row">
+          <input value={s.out_dir} onchange={(e) => set("out_dir", e.currentTarget.value)} spellcheck="false" />
+          <button class="btn" onclick={() => api.open(s.out_dir)}>Open</button>
+        </div>
+      </label>
+
+      <div class="field">
+        <span class="name mono">Format</span>
+        <div class="seg">
+          {#each formats as f}
+            <button class:on={s.format === f.value} onclick={() => set("format", f.value)}>{f.label}</button>
+          {/each}
+        </div>
+        <span class="note muted">{formats.find((f) => f.value === s.format)?.note}</span>
+      </div>
+
+      <div class="field" class:off={s.format === "mp3"}>
+        <span class="name mono">Bit depth</span>
+        <div class="seg">
+          {#each depths as d}
+            <button class:on={s.bit_depth === d.value} onclick={() => set("bit_depth", d.value)}>{d.label}</button>
+          {/each}
+        </div>
+        <span class="note muted">{depths.find((d) => d.value === s.bit_depth)?.note}</span>
+      </div>
+
+      <label class="field">
+        <span class="name mono">File name</span>
+        <input value={s.template} onchange={(e) => set("template", e.currentTarget.value)} spellcheck="false" />
+        <span class="note muted"><code>{"{artist}"}</code> <code>{"{title}"}</code> <code>{"{album}"}</code> · <code>/</code> makes folders</span>
+        <span class="note mono preview">→ {preview}</span>
+      </label>
+
+      <p class="muted rate">Sample rate: original (no resampling – required for bit-exact files).</p>
+    </Panel>
+
+    <Panel label="Behaviour" index="02">
+      <label class="toggle">
+        <input type="checkbox" checked={s.monitor} onchange={(e) => set("monitor", e.currentTarget.checked)} />
+        <span>
+          <span class="title">Monitor</span>
+          <span class="note muted">Play what is recorded on your default output. Replaces Windows' "Listen to this device" (muted while listening).</span>
+        </span>
+      </label>
+      <label class="toggle">
+        <input type="checkbox" checked={s.skip_existing} onchange={(e) => set("skip_existing", e.currentTarget.checked)} />
+        <span>
+          <span class="title">Skip tracks you already have</span>
+          <span class="note muted">Don't save a track again when a file with its name exists in the output folder (any format).</span>
+        </span>
+      </label>
+      <label class="toggle">
+        <input type="checkbox" checked={s.keep_flagged} onchange={(e) => set("keep_flagged", e.currentTarget.checked)} />
+        <span>
+          <span class="title">Keep flagged files</span>
+          <span class="note muted">Keep recordings the check marks as altered or corrupt (they are listed either way).</span>
+        </span>
+      </label>
+      <p class="muted rate">Changes apply the next time you start listening; the monitor volume applies immediately.</p>
+    </Panel>
+  </div>
+{/if}
+
+<style>
+  .grid {
+    display: grid;
+    grid-template-columns: 1.4fr 1fr;
+    gap: 16px;
+    align-items: start;
+  }
+
+  .field {
+    display: grid;
+    gap: 6px;
+    margin-bottom: 18px;
+  }
+
+  .name {
+    font-size: 11px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+
+  .row {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 8px;
+  }
+
+  input:not([type]) {
+    width: 100%;
+    padding: 7px 10px;
+    border: 1px solid var(--faint);
+    background: var(--panel-2);
+    outline: none;
+    font-family: var(--mono);
+    font-size: 12px;
+    user-select: text;
+  }
+
+  input:not([type]):focus {
+    border-color: var(--line-strong);
+  }
+
+  .seg {
+    display: flex;
+    border: 1px solid var(--line);
+    width: max-content;
+  }
+
+  .seg button {
+    padding: 6px 16px;
+    border: none;
+    background: transparent;
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: 0.06em;
+    color: var(--muted);
+  }
+
+  .seg button + button {
+    border-left: 1px solid var(--line);
+  }
+
+  .seg button.on {
+    background: var(--edge);
+    color: #05070a;
+    font-weight: 700;
+  }
+
+  .note {
+    font-size: 12px;
+  }
+
+  .off {
+    opacity: 0.35;
+    pointer-events: none;
+  }
+
+  code {
+    font-family: var(--mono);
+    color: var(--cyan);
+  }
+
+  .preview {
+    color: var(--text);
+  }
+
+  .rate {
+    margin: 0;
+    font-size: 12px;
+  }
+
+  .toggle {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 12px;
+    margin-bottom: 16px;
+    cursor: pointer;
+  }
+
+  .toggle input {
+    appearance: none;
+    width: 16px;
+    height: 16px;
+    margin-top: 2px;
+    border: 1px solid var(--line-strong);
+    background: transparent;
+  }
+
+  .toggle input:checked {
+    background: var(--edge);
+    box-shadow: 0 0 8px rgba(34, 211, 238, 0.5);
+  }
+
+  .toggle > span {
+    display: grid;
+  }
+
+  .title {
+    font-weight: 600;
+  }
+
+  @media (max-width: 860px) {
+    .grid {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>

@@ -1,0 +1,6 @@
+/target
+/target-alt
+node_modules/
+/app/dist
+*.flac
+*.raw.tmp

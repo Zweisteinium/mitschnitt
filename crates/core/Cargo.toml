@@ -1,0 +1,22 @@
+[package]
+name = "mitschnitt-core"
+description = "Bit-exact per-app audio capture for Windows: capture, verification and forensic checks"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+claxon = "0.4.3"
+flacenc = "0.5.1"
+hound = "3.5.1"
+id3 = "1.17.2"
+metaflac = "0.2.8"
+mp3lame-encoder = "0.2.5"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+
+[target."cfg(windows)".dependencies]
+ureq = "3.4.2"
+windows = { version = "0.62.2", features = ["Win32_Media_Audio", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_UI_Shell_PropertiesSystem", "Win32_Devices_FunctionDiscovery", "Win32_Foundation", "Win32_System_Variant", "Win32_Media_Multimedia", "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp", "Media_Control", "Foundation", "Foundation_Collections", "Win32_Security", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_System_Registry", "Storage_Streams", "Win32_System_Power", "Win32_System_WinRT"] }
+windows-core = "0.62.2"
+zip = "9.0.0"

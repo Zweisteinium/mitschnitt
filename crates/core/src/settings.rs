@@ -1,0 +1,89 @@
+//! User settings, persisted as JSON. Every field has a sensible default, so a missing or older file
+//! simply falls back to defaults field by field.
+
+use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Format {
+    Flac,
+    Wav,
+    /// 320 kbit/s CBR, encoded from the verified recording (lossy - for devices that need it).
+    Mp3,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BitDepth {
+    /// 16-bit when every sample lies on the 16-bit grid (lossless and smaller), otherwise 24-bit.
+    Auto,
+    B16,
+    B24,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Settings {
+    pub out_dir: PathBuf,
+    pub format: Format,
+    pub bit_depth: BitDepth,
+    /// File name without extension; `{artist}`, `{title}`, `{album}`; `/` creates folders.
+    pub template: String,
+    /// Keep files the forensic check marks as altered or corrupt (otherwise they are deleted).
+    pub keep_flagged: bool,
+    /// Don't save a track again when a file with its name already exists (any format).
+    pub skip_existing: bool,
+    /// Play the captured audio on the default output device.
+    pub monitor: bool,
+    /// Monitoring volume, 0..1.
+    pub monitor_volume: f32,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        let music = std::env::var_os("USERPROFILE").map(PathBuf::from).unwrap_or_default().join("Music");
+        Settings {
+            out_dir: music.join("Mitschnitt"),
+            format: Format::Flac,
+            bit_depth: BitDepth::Auto,
+            template: "{artist} - {title}".into(),
+            keep_flagged: true,
+            skip_existing: true,
+            monitor: true,
+            monitor_volume: 0.8,
+        }
+    }
+}
+
+impl Settings {
+    pub fn load(path: &Path) -> Settings {
+        std::fs::read_to_string(path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+    }
+
+    pub fn save(&self, path: &Path) -> std::io::Result<()> {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        std::fs::write(path, serde_json::to_string_pretty(self).expect("settings serialize"))
+    }
+
+    /// Where the settings live: `%APPDATA%\Mitschnitt\settings.json`.
+    pub fn default_path() -> PathBuf {
+        std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir).join("Mitschnitt").join("settings.json")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn partial_json_falls_back_to_defaults() {
+        let s: Settings = serde_json::from_str(r#"{ "format": "wav" }"#).unwrap();
+        assert_eq!(s.format, Format::Wav);
+        assert_eq!(s.bit_depth, BitDepth::Auto);
+        assert_eq!(s.template, "{artist} - {title}");
+    }
+}
