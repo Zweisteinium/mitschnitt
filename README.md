@@ -56,6 +56,10 @@ cd app && npm install && npx tauri build
 `crates/core` holds capture, checks and file writing. `crates/cli` is a command-line front end with the
 commands `check`, `setup` and `listen`. `app` is the desktop app (Tauri 2 + Svelte 5).
 
+## License
+
+[GNU AGPL v3](LICENSE)
+
 ---
 
 <sub>Mitschnitt records audio while it plays on your own computer, in real time. It does not download, decrypt
