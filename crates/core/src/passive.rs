@@ -25,7 +25,15 @@ pub const FLAG_GLITCH: u32 = 0x1;
 /// `AUDCLNT_BUFFERFLAGS_SILENT`: the player delivered no audio for this packet.
 pub const FLAG_SILENT: u32 = 0x2;
 
+/// Spotify leaves exactly 10 ms of digital silence between tracks when the user switches.
 const MIN_SILENCE_MS: u64 = 10;
+/// Rendered zeros that were already there when the capture started prove nothing (the stream warms up with
+/// a few ms of zeros even mid-track); they only count as a start when they lasted this long. A stream that
+/// wasn't rendering at all ("silent" packets) is real silence.
+const MIN_INITIAL_SILENCE_MS: u64 = 1_000;
+/// A recording dropped this early because the title changed was most likely started under stale metadata:
+/// its clean start is handed back so the actual track can claim it.
+const RELEASE_START_MS: u64 = 3_000;
 /// Leading digital silence of a master that is kept when the player's stream starts right before it.
 const MAX_LEAD_MS: u64 = 3_000;
 const LOOKBACK_MS: u64 = 6_000;
@@ -86,8 +94,9 @@ impl Reason {
 pub enum Event {
     Started(Track),
     /// Exactly `duration_ms` worth of frames, restored to the original level (24-bit integers).
-    /// `off_grid`: frames that were not exact 24-bit values before rounding (0 = untouched lossless source).
-    Completed { track: Track, samples: Vec<i32>, off_grid: usize },
+    /// `off_grid`: frames that were not exact 24-bit values before rounding (0 = untouched lossless source);
+    /// `off_span`: first and last such frame, relative to the track start.
+    Completed { track: Track, samples: Vec<i32>, off_grid: usize, off_span: Option<(usize, usize)> },
     Dropped { track: Track, reason: Reason },
 }
 
@@ -106,6 +115,8 @@ pub struct Status {
     pub recorded_ms: u64,
     /// Peak per channel since the last status (fraction of full scale, original level).
     pub level: [f32; 2],
+    /// RMS per channel since the last status (fraction of full scale).
+    pub rms: [f32; 2],
     /// Grid check of the audio since the last status; `None` when only silence arrived.
     pub grid: Option<Grid>,
 }
@@ -134,7 +145,7 @@ impl GridCount {
 enum State {
     Idle,
     Waiting { track: Track, until: u64 },
-    Recording { track: Track, expected: usize, samples: Vec<i32>, off_grid: usize },
+    Recording { track: Track, expected: usize, samples: Vec<i32>, off_grid: usize, off_span: Option<(usize, usize)>, start: u64 },
 }
 
 pub struct Passive {
@@ -150,6 +161,9 @@ pub struct Passive {
     ring_off: VecDeque<bool>,
     ring_first: u64,
     zero_run: u64,
+    /// First frame of the current zero run, and whether it contains "silent" packets (stream not rendering).
+    zero_from: u64,
+    zero_silent: bool,
     /// Frames of consecutive "no data" packets, and where the player's stream last (re)started rendering.
     silent_run: u64,
     render_start: Option<u64>,
@@ -159,6 +173,8 @@ pub struct Passive {
     done: Option<Track>,
     last_position_ms: i64,
     level: [f32; 2],
+    /// Sum of squares per channel and the frames it covers, since the last status.
+    energy: ([f64; 2], u64),
     grid: GridCount,
     scratch: Vec<i32>,
 }
@@ -177,12 +193,15 @@ impl Passive {
             ring_off: VecDeque::with_capacity(ring_frames),
             ring_first: 0,
             zero_run: 0,
+            zero_from: 0,
+            zero_silent: false,
             silent_run: 0,
             render_start: None,
             starts: VecDeque::new(),
             done: None,
             last_position_ms: 0,
             level: [0.0; 2],
+            energy: ([0.0; 2], 0),
             grid: GridCount::default(),
             scratch: vec![0; channels],
         }
@@ -221,19 +240,27 @@ impl Passive {
                 off24 |= !exact;
                 off16 |= !exact || v % 256 != 0;
                 if c < 2 {
-                    self.level[c] = self.level[c].max((v as f32 / 8_388_608.0).abs());
+                    let x = v as f32 / 8_388_608.0;
+                    self.level[c] = self.level[c].max(x.abs());
+                    self.energy.0[c] += (x * x) as f64;
                 }
             }
 
+            self.energy.1 += 1;
             if !zero {
                 self.grid.frames += 1;
                 self.grid.off24 += off24 as u64;
                 self.grid.off16 += off16 as u64;
             }
             if zero {
+                if self.zero_run == 0 {
+                    (self.zero_from, self.zero_silent) = (self.frame, false);
+                }
+                self.zero_silent |= silent;
                 self.zero_run += 1;
             } else {
-                if self.zero_run >= min_silence {
+                let initial = self.zero_from == 0 && !self.zero_silent && self.zero_run < ms_to_frames(MIN_INITIAL_SILENCE_MS, self.rate) as u64;
+                if self.zero_run >= min_silence && !initial {
                     // The stream started rendering shortly before: its leading zeros belong to the track.
                     let start = self.render_start.take().filter(|r| self.frame - r <= max_lead).unwrap_or(self.frame);
                     self.starts.push_back(start);
@@ -256,9 +283,13 @@ impl Passive {
                 }
             }
 
-            if let State::Recording { expected, samples, off_grid, .. } = &mut self.state {
+            if let State::Recording { expected, samples, off_grid, off_span, .. } = &mut self.state {
                 samples.extend_from_slice(&self.scratch);
-                *off_grid += off24 as usize;
+                if off24 {
+                    let i = samples.len() / ch - 1;
+                    *off_grid += 1;
+                    *off_span = Some(off_span.map_or((i, i), |(a, _)| (a, i)));
+                }
                 if samples.len() >= *expected * ch {
                     self.complete(&mut events);
                 }
@@ -338,7 +369,9 @@ impl Passive {
             State::Recording { track, samples, .. } => (Phase::Recording, Some(track.clone()), samples.len() / self.channels),
         };
         let level = std::mem::take(&mut self.level);
-        Status { phase, track, recorded_ms: frames_to_ms(recorded, self.rate), level, grid: self.grid.take() }
+        let (sums, frames) = std::mem::take(&mut self.energy);
+        let rms = sums.map(|s| if frames > 0 { (s / frames as f64).sqrt() as f32 } else { 0.0 });
+        Status { phase, track, recorded_ms: frames_to_ms(recorded, self.rate), level, rms, grid: self.grid.take() }
     }
 
     fn consider_start(&mut self, track: Track, position_ms: i64, events: &mut Vec<Event>) {
@@ -366,11 +399,12 @@ impl Passive {
         let mut samples = Vec::with_capacity(expected * self.channels);
         let first = (start - self.ring_first) as usize;
         samples.extend(self.ring.range(first * self.channels..));
-        let off_grid = self.ring_off.range(first..).filter(|o| **o).count();
+        let off: Vec<usize> = self.ring_off.range(first..).enumerate().filter(|(_, o)| **o).map(|(i, _)| i).collect();
+        let (off_grid, off_span) = (off.len(), off.first().map(|a| (*a, *off.last().unwrap_or(a))));
         // A start belongs to exactly one track: never let a later track claim it (or an earlier one).
         self.starts.retain(|s| *s > start);
         events.push(Event::Started(track.clone()));
-        self.state = State::Recording { track, expected, samples, off_grid };
+        self.state = State::Recording { track, expected, samples, off_grid, off_span, start };
         if let State::Recording { expected, samples, .. } = &self.state {
             if samples.len() >= expected * self.channels {
                 self.complete(events);
@@ -379,16 +413,21 @@ impl Passive {
     }
 
     fn complete(&mut self, events: &mut Vec<Event>) {
-        if let State::Recording { track, expected, mut samples, off_grid } = std::mem::replace(&mut self.state, State::Idle) {
+        if let State::Recording { track, expected, mut samples, off_grid, off_span, .. } = std::mem::replace(&mut self.state, State::Idle) {
             samples.truncate(expected * self.channels);
             self.done = Some(track.clone());
-            events.push(Event::Completed { track, samples, off_grid });
+            events.push(Event::Completed { track, samples, off_grid, off_span });
         }
     }
 
     fn drop_recording(&mut self, reason: Reason, events: &mut Vec<Event>) {
         if matches!(self.state, State::Recording { .. }) {
-            if let State::Recording { track, .. } = std::mem::replace(&mut self.state, State::Idle) {
+            if let State::Recording { track, samples, start, .. } = std::mem::replace(&mut self.state, State::Idle) {
+                let early = frames_to_ms(samples.len() / self.channels, self.rate) < RELEASE_START_MS;
+                if reason == Reason::TrackChanged && early && start >= self.ring_first {
+                    let at = self.starts.partition_point(|s| *s < start);
+                    self.starts.insert(at, start);
+                }
                 self.done = Some(track.clone());
                 events.push(Event::Dropped { track, reason });
             }
@@ -503,6 +542,100 @@ mod tests {
         let done = ev.iter().find_map(|e| match e { Event::Completed { samples, .. } => Some(samples), _ => None }).expect("completed");
         assert!(done[..lead * 2].iter().all(|s| *s == 0), "leading silence kept");
         assert_eq!(done[lead * 2..], body[..], "then the master, exactly");
+    }
+
+    #[test]
+    fn stale_title_hands_the_start_to_the_actual_track() {
+        // The player reports the new length before the new title: the recording starts under the old name.
+        let stale = Track { title: "Previous".into(), ..track(5_000) };
+        let actual = track(5_000);
+        let (orig, raw) = master(ms_to_frames(5_000, RATE), 9);
+        let mut p = Passive::new(RATE, 2, GAIN);
+        let mut ev = Vec::new();
+        silence(&mut p, 2_000, &mut ev);
+        ev.extend(p.media(playing(&stale, 0)));
+        feed(&mut p, &raw[..800], &mut ev);
+        ev.extend(p.media(playing(&actual, 50))); // the title catches up
+        feed(&mut p, &raw[800..], &mut ev);
+        assert!(ev.iter().any(|e| matches!(e, Event::Dropped { track, reason: Reason::TrackChanged } if track.title == "Previous")));
+        let done = ev.iter().find_map(|e| match e { Event::Completed { track, samples, .. } if track.title == "Song" => Some(samples), _ => None });
+        assert_eq!(done.expect("actual track recorded")[..], orig[..]);
+    }
+
+    #[test]
+    fn short_silence_at_capture_start_is_not_a_track_start() {
+        // Listening starts 2 s into a song: the stream warms up with a few ms of zeros, then the song goes on.
+        let t = track(10_000);
+        let (_, raw) = master(ms_to_frames(3_000, RATE), 10);
+        let mut p = Passive::new(RATE, 2, GAIN);
+        let mut ev = p.push(&vec![0.0; 2 * ms_to_frames(30, RATE)], ms_to_frames(30, RATE), 0);
+        feed(&mut p, &raw[..1_600], &mut ev);
+        ev.extend(p.media(playing(&t, 2_000)));
+        feed(&mut p, &raw[1_600..], &mut ev);
+        assert!(!ev.iter().any(|e| matches!(e, Event::Started(_))), "{ev:?}");
+    }
+
+    #[test]
+    fn a_fade_in_is_located() {
+        let t = track(1_000);
+        let (_, mut raw) = master(ms_to_frames(1_000, RATE), 11);
+        for (i, x) in raw[..160].iter_mut().enumerate() {
+            *x *= (i / 2) as f32 / 80.0 + 0.003; // 10 ms ramp at 8 kHz
+        }
+        let mut p = Passive::new(RATE, 2, GAIN);
+        let mut ev = p.media(playing(&t, 0));
+        silence(&mut p, 100, &mut ev);
+        feed(&mut p, &raw, &mut ev);
+        let span = ev.iter().find_map(|e| match e { Event::Completed { off_span, .. } => Some(*off_span), _ => None }).expect("completed");
+        assert!(matches!(span, Some((0, last)) if last < 80), "{span:?}");
+    }
+
+    /// Replays a real `listen --trace` folder (raw capture + player timeline) through the state machine:
+    /// `MITSCHNITT_TRACE=<dir> cargo test -p mitschnitt-core replay_trace -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn replay_trace() {
+        let dir = std::path::PathBuf::from(std::env::var("MITSCHNITT_TRACE").expect("MITSCHNITT_TRACE"));
+        let bytes = std::fs::read(dir.join("raw.f32")).unwrap();
+        let raw: Vec<f32> = bytes.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect();
+        // media lines: frame, "media", playing, "artist - title", duration_ms, position_ms
+        let mut media: Vec<(u64, Media)> = Vec::new();
+        for line in std::fs::read_to_string(dir.join("events.tsv")).unwrap().lines() {
+            let f: Vec<&str> = line.split('\t').collect();
+            if f.get(1) == Some(&"media") {
+                let duration_ms: u64 = f[4].parse().unwrap();
+                let track = (f[3] != "-").then(|| Track { title: f[3].into(), artist: String::new(), album: String::new(), duration_ms });
+                media.push((f[0].parse().unwrap(), Media { playing: f[2] == "true", track, position_ms: f[5].parse().unwrap() }));
+            }
+        }
+        let rate = 44_100;
+        let mut p = Passive::new(rate, 2, 0.5);
+        let (mut frame, mut next) = (0u64, 0usize);
+        for chunk in raw.chunks(441 * 2) {
+            for e in p.push(chunk, chunk.len() / 2, 0) {
+                report(frame, e);
+            }
+            frame += (chunk.len() / 2) as u64;
+            while next + 1 < media.len() && media[next + 1].0 <= frame {
+                next += 1;
+            }
+            if let Some((at, m)) = media.get(next).filter(|(at, _)| *at <= frame) {
+                let mut m = m.clone();
+                if m.playing {
+                    m.position_ms += ((frame - at) * 1000 / rate as u64) as i64;
+                }
+                for e in p.media(m) {
+                    report(frame, e);
+                }
+            }
+        }
+        fn report(frame: u64, e: Event) {
+            match e {
+                Event::Started(t) => println!("{frame:>9} started   {}", t.title),
+                Event::Dropped { track, reason } => println!("{frame:>9} dropped   {} ({reason:?})", track.title),
+                Event::Completed { track, off_grid, off_span, .. } => println!("{frame:>9} completed {} off_grid={off_grid} {off_span:?}", track.title),
+            }
+        }
     }
 
     #[test]

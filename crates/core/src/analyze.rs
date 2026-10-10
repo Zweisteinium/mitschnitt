@@ -47,6 +47,9 @@ pub enum Master {
 
 const LIMITER_LO: f64 = 0.977_237_220_955_810_7; // -0.20 dBFS
 const LIMITER_HI: f64 = 0.990_831_944_892_768_9; // -0.08 dBFS
+/// Windows' limiter output never exceeds ~-0.12 dBFS (measured); anything above -0.115 dBFS can't have come
+/// through it. Masters limited to -0.10 dBFS - a common mastering ceiling - sit above it.
+const WINDOWS_CEILING: f64 = 0.986_848_891_640_427_5; // -0.115 dBFS
 
 pub fn analyze(a: &Audio) -> Report {
     analyze_with(a, false)
@@ -118,10 +121,13 @@ pub fn analyze_with(a: &Audio, exact_source: bool) -> Report {
         }
     }
 
-    // Windows limiter signature: peak in the ceiling region and samples piling up just below it.
+    // Windows limiter signature: samples piling up just below its ceiling, none above it. A bit-exact 16-bit
+    // file or a proven-untouched capture can't have been limited (it would have left the grid).
     let peak = a.peak();
     let near: Vec<usize> = (0..n).filter(|&i| a.frame_peak(i) >= LIMITER_LO).collect();
-    if (LIMITER_LO..=LIMITER_HI).contains(&peak) && near.len() >= 20 {
+    let above_ceiling = near.iter().any(|&i| a.frame_peak(i) > WINDOWS_CEILING);
+    let possible = master != Master::Bit16Exact && !exact_source && !above_ceiling;
+    if possible && (LIMITER_LO..=LIMITER_HI).contains(&peak) && near.len() >= 20 {
         let passages = group(&near, a.rate as usize / 2);
         // With a 16-bit master that leaves the grid in exactly these passages it's proven; otherwise a hint.
         let proven = master == Master::Bit16Partly;
@@ -129,7 +135,7 @@ pub fn analyze_with(a: &Audio, exact_source: bool) -> Report {
             if proven { Severity::Altered } else { Severity::Info },
             format!(
                 "{}Windows peak limiter: {} samples under {:.2} dBFS in {} passage(s): {}",
-                if proven { "" } else { "possible " },
+                if proven { "" } else { "possible (or a master limited to that level) " },
                 near.len(),
                 db(peak),
                 passages.len(),
@@ -328,6 +334,30 @@ mod tests {
         assert_eq!(r.master, Master::Bit16Exact);
         assert_eq!(r.verdict, Severity::Info, "{:?}", r.issues);
         assert!(r.issues.iter().any(|i| i.text.starts_with("clipped in the master")), "{:?}", r.issues);
+    }
+
+    /// 24-bit "music" (off the 16-bit grid) with every sample above `ceiling` clipped to it.
+    fn limited(ceiling_db: f64) -> Audio {
+        let mut a = music(2.0, 1.2);
+        let top = ((1i64 << 23) as f64 * 10f64.powf(ceiling_db / 20.0)) as i32;
+        for v in &mut a.samples {
+            *v = (*v + 1).clamp(-top, top);
+        }
+        a
+    }
+
+    #[test]
+    fn master_limited_to_minus_0_1_db_is_not_windows() {
+        let r = analyze(&limited(-0.10));
+        assert_eq!(r.master, Master::Bit24);
+        assert!(!r.issues.iter().any(|i| i.text.contains("limiter")), "{:?}", r.issues);
+    }
+
+    #[test]
+    fn pile_up_at_the_windows_ceiling_is_hinted() {
+        let r = analyze(&limited(-0.125));
+        assert!(r.issues.iter().any(|i| i.text.contains("Windows peak limiter")), "{:?}", r.issues);
+        assert!(!analyze_with(&limited(-0.125), true).issues.iter().any(|i| i.text.contains("limiter")), "exact source rules it out");
     }
 
     #[test]

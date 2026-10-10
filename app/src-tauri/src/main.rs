@@ -37,7 +37,7 @@ async fn start(app: String, handle: AppHandle, state: State<'_, App>) -> Result<
         return Err("Already listening.".into());
     }
     let settings = lock(&state.settings)?.clone();
-    let (engine, info) = Engine::start(Config { profile, settings }, move |update| {
+    let (engine, info) = Engine::start(Config { profile, settings, trace: None }, move |update| {
         let _ = handle.emit("update", &update);
     })?;
     *slot = Some(engine);
@@ -60,6 +60,15 @@ fn stop_after_track(state: State<'_, App>) -> Result<(), String> {
     Ok(())
 }
 
+/// Unmute a monitor that muted itself because the output device changed.
+#[tauri::command]
+fn unmute_monitor(state: State<'_, App>) -> Result<(), String> {
+    if let Some(engine) = lock(&state.engine)?.as_ref() {
+        engine.unmute_monitor();
+    }
+    Ok(())
+}
+
 /// Forget an engine that stopped by itself (app closed, stop after track).
 #[tauri::command]
 fn release(state: State<'_, App>) -> Result<(), String> {
@@ -72,12 +81,18 @@ fn get_settings(state: State<'_, App>) -> Result<Settings, String> {
     Ok(lock(&state.settings)?.clone())
 }
 
-/// Save settings (applied to the next start; the monitor volume applies immediately).
+/// Monitor volume = the app's Windows mixer entry (applies immediately, remembered by Windows).
+#[tauri::command]
+fn set_monitor_volume(volume: f32, state: State<'_, App>) -> Result<(), String> {
+    if let Some(engine) = lock(&state.engine)?.as_ref() {
+        engine.set_monitor_volume(volume);
+    }
+    Ok(())
+}
+
+/// Save settings (applied to the next start).
 #[tauri::command]
 fn save_settings(settings: Settings, state: State<'_, App>) -> Result<(), String> {
-    if let Some(engine) = lock(&state.engine)?.as_ref() {
-        engine.set_monitor_volume(settings.monitor_volume);
-    }
     settings.save(&Settings::default_path()).map_err(|e| e.to_string())?;
     *lock(&state.settings)? = settings;
     Ok(())
@@ -106,7 +121,7 @@ fn main() {
     let settings = Settings::load(&Settings::default_path());
     tauri::Builder::default()
         .manage(App { engine: Mutex::new(None), settings: Mutex::new(settings) })
-        .invoke_handler(tauri::generate_handler![sources, start, stop, stop_after_track, release, get_settings, save_settings, health, fix, open])
+        .invoke_handler(tauri::generate_handler![sources, start, stop, stop_after_track, release, unmute_monitor, set_monitor_volume, get_settings, save_settings, health, fix, open])
         .build(tauri::generate_context!())
         .expect("error while building Mitschnitt")
         .run(|app, event| {

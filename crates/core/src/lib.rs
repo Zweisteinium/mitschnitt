@@ -25,6 +25,8 @@ pub mod devices;
 #[cfg(windows)]
 pub mod engine;
 #[cfg(windows)]
+pub mod keys;
+#[cfg(windows)]
 pub mod media;
 #[cfg(windows)]
 pub mod monitor;

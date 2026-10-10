@@ -5,7 +5,7 @@ export type Track = { title: string; artist: string; album: string; duration_ms:
 export type Phase = "idle" | "waiting" | "recording";
 /** Share of the audio arriving as exact 24-bit / 16-bit values (1 = untouched lossless source). */
 export type Grid = { bit24: number; bit16: number };
-export type Status = { phase: Phase; track: Track | null; recorded_ms: number; level: [number, number]; grid: Grid | null };
+export type Status = { phase: Phase; track: Track | null; recorded_ms: number; level: [number, number]; rms: [number, number]; grid: Grid | null };
 export type Severity = "info" | "altered" | "corrupt";
 export type Master = "bit16_exact" | "bit16_partly" | "bit24";
 
@@ -16,6 +16,9 @@ export type Update =
   | { kind: "exists"; track: Track; file: string }
   | { kind: "saved"; track: Track; file: string | null; verdict: Severity; master: Master; exact: boolean; issues: string[] }
   | { kind: "failed"; track: Track; error: string }
+  | { kind: "key_blocked"; count: number }
+  | { kind: "monitor_muted"; muted: boolean }
+  | { kind: "monitor_volume"; volume: number }
   | { kind: "stopped"; error: string | null };
 
 export type Source = { id: string; name: string; running: boolean; playing: boolean; title: string; artist: string };
@@ -30,8 +33,8 @@ export type Settings = {
   template: string;
   keep_flagged: boolean;
   skip_existing: boolean;
+  protect_media_keys: boolean;
   monitor: boolean;
-  monitor_volume: number;
 };
 
 export type CheckState = "ok" | "warn" | "bad" | "check";
@@ -43,6 +46,8 @@ export const api = {
   stop: () => invoke<void>("stop"),
   stopAfterTrack: () => invoke<void>("stop_after_track"),
   release: () => invoke<void>("release"),
+  unmuteMonitor: () => invoke<void>("unmute_monitor"),
+  setMonitorVolume: (volume: number) => invoke<void>("set_monitor_volume", { volume }),
   getSettings: () => invoke<Settings>("get_settings"),
   saveSettings: (settings: Settings) => invoke<void>("save_settings", { settings }),
   health: (app: string) => invoke<Check[]>("health", { app }),

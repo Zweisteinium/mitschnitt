@@ -72,17 +72,24 @@ pub fn find(profile: &Profile) -> Result<Option<Session>> {
 
 /// Polls one session cheaply: playback state and timeline every call, titles only when the track
 /// length changes or every [`TITLE_REFRESH`].
+///
+/// Spotify publishes the new length ~0.3-0.4 s before the new title. Until the title catches up (or
+/// [`SETTLE`] passes - the next track may share its title), no track is reported, so a recording never
+/// starts under the previous track's name.
 pub struct Watcher {
     session: Session,
     track: Option<Track>,
     titles_at: Instant,
+    /// The length changed but the title didn't (yet): since when, and the title it still shows.
+    unsettled: Option<(Instant, String, String)>,
 }
 
 const TITLE_REFRESH: Duration = Duration::from_millis(400);
+const SETTLE: Duration = Duration::from_millis(1_500);
 
 impl Watcher {
     pub fn new(session: Session) -> Watcher {
-        Watcher { session, track: None, titles_at: Instant::now() - TITLE_REFRESH }
+        Watcher { session, track: None, titles_at: Instant::now() - TITLE_REFRESH, unsettled: None }
     }
 
     pub fn snapshot(&mut self) -> Result<Media> {
@@ -94,18 +101,26 @@ impl Watcher {
             // The timeline is a snapshot from `LastUpdatedTime`; extrapolate to now.
             position_ms += ((filetime_now() - timeline.LastUpdatedTime()?.UniversalTime) / 10_000).max(0);
         }
-        let stale = self.track.as_ref().is_none_or(|t| t.duration_ms != duration_ms) || self.titles_at.elapsed() >= TITLE_REFRESH;
+        let length_changed = self.track.as_ref().is_some_and(|t| t.duration_ms != duration_ms);
+        let stale = self.track.is_none() || length_changed || self.unsettled.is_some() || self.titles_at.elapsed() >= TITLE_REFRESH;
         if stale {
             let props = self.session.TryGetMediaPropertiesAsync()?.join()?;
-            self.track = Some(Track {
-                title: props.Title()?.to_string(),
-                artist: props.Artist()?.to_string(),
-                album: props.AlbumTitle()?.to_string(),
-                duration_ms,
-            });
+            let track = Track { title: props.Title()?.to_string(), artist: props.Artist()?.to_string(), album: props.AlbumTitle()?.to_string(), duration_ms };
+            if length_changed {
+                let old = self.track.as_ref().map(|t| (t.title.clone(), t.artist.clone())).unwrap_or_default();
+                if (track.title.clone(), track.artist.clone()) == old {
+                    self.unsettled.get_or_insert((Instant::now(), old.0, old.1));
+                }
+            }
+            if let Some((since, title, artist)) = &self.unsettled {
+                if track.title != *title || track.artist != *artist || since.elapsed() >= SETTLE {
+                    self.unsettled = None;
+                }
+            }
+            self.track = Some(track);
             self.titles_at = Instant::now();
         }
-        let track = self.track.clone().filter(|t| !t.title.is_empty() && t.duration_ms > 0);
+        let track = self.track.clone().filter(|t| self.unsettled.is_none() && !t.title.is_empty() && t.duration_ms > 0);
         Ok(Media { playing, track, position_ms })
     }
 }

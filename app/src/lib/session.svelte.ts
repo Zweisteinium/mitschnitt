@@ -26,6 +26,12 @@ class Session {
   busy = $state(false);
   /** "Stop after this track" was requested. */
   stopping = $state(false);
+  /** When a media key was last swallowed to protect the recording (shown briefly). */
+  keyBlockedAt = $state<number | null>(null);
+  /** The monitor muted itself because the output device changed. */
+  monitorMuted = $state(false);
+  /** Monitor volume = Mitschnitt's Windows mixer entry; null until the monitor reports it. */
+  monitorVolume = $state<number | null>(null);
   #nextId = 0;
 
   get listening(): boolean {
@@ -85,6 +91,15 @@ class Session {
     this.busy = false;
   }
 
+  setMonitorVolume(volume: number) {
+    this.monitorVolume = volume;
+    void this.#try(() => api.setMonitorVolume(volume));
+  }
+
+  async unmuteMonitor() {
+    await this.#try(() => api.unmuteMonitor());
+  }
+
   async stopAfterTrack() {
     this.stopping = true;
     await this.#try(() => api.stopAfterTrack());
@@ -112,6 +127,20 @@ class Session {
       case "saved":
         this.#log(u.track, { outcome: "saved", file: u.file, verdict: u.verdict, master: u.master, exact: u.exact, issues: u.issues });
         break;
+      case "key_blocked": {
+        const at = Date.now();
+        this.keyBlockedAt = at;
+        setTimeout(() => {
+          if (this.keyBlockedAt === at) this.keyBlockedAt = null;
+        }, 5000);
+        break;
+      }
+      case "monitor_muted":
+        this.monitorMuted = u.muted;
+        break;
+      case "monitor_volume":
+        this.monitorVolume = u.volume;
+        break;
       case "exists":
         this.#log(u.track, { outcome: "exists", file: u.file });
         break;
@@ -125,6 +154,8 @@ class Session {
         this.source = null;
         this.status = null;
         this.stopping = false;
+        this.monitorMuted = false;
+        this.monitorVolume = null;
         if (u.error) this.error = u.error;
         void api.release(); // the engine may have stopped by itself
         break;

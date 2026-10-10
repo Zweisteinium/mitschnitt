@@ -23,6 +23,12 @@
   box-sizing: border-box;
 }
 
+/* Reserve the scrollbar's room on every tab, so the layout doesn't shift when a tab gets taller. */
+html {
+  scrollbar-gutter: stable;
+  background: var(--bg);
+}
+
 body {
   margin: 0;
   min-height: 100vh;
@@ -30,12 +36,13 @@ body {
   font: 14px/1.5 var(--font);
   -webkit-font-smoothing: antialiased;
   user-select: none;
+  /* Glows over a faint pointy-top hexagon grid (one 34.64 x 60 tile: a hexagon plus its link to the next row). */
   background:
     radial-gradient(1200px 500px at 0% -10%, rgba(34, 211, 238, 0.07), transparent 60%),
     radial-gradient(900px 500px at 110% 0%, rgba(167, 139, 250, 0.06), transparent 60%),
-    linear-gradient(rgba(255, 255, 255, 0.018) 1px, transparent 1px) 0 0 / 100% 32px,
-    linear-gradient(90deg, rgba(255, 255, 255, 0.018) 1px, transparent 1px) 0 0 / 32px 100%,
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='34.64' height='60'%3E%3Cpath d='M17.32 0L34.64 10V30L17.32 40L0 30V10ZM17.32 40V60' fill='none' stroke='%23ffffff' stroke-opacity='0.07'/%3E%3C/svg%3E") 0 0 / 34.64px 60px,
     var(--bg);
+  background-attachment: fixed;
 }
 
 button,

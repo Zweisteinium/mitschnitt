@@ -15,15 +15,19 @@
     recording: "Recording",
   };
 
-  // -60 dBFS .. 0 dBFS
-  const meter = (x: number) => Math.max(0, Math.min(1, (20 * Math.log10(Math.max(x, 1e-6)) + 60) / 60));
-
-  let volume = $derived(session.settings?.monitor_volume ?? 0.8);
-  function setVolume(v: number) {
-    if (!session.settings) return;
-    session.settings.monitor_volume = v;
-    session.save();
+  /** Meter deflection 0..1 for a linear level, IEC 60268-18 style: -20 dB sits at half, the top 10 dB get room. */
+  function meter(x: number): number {
+    const db = 20 * Math.log10(Math.max(x, 1e-6));
+    const curve: [number, number][] = [[-70, 0], [-60, 0.025], [-50, 0.075], [-40, 0.15], [-30, 0.3], [-20, 0.5], [0, 1]];
+    if (db <= -70) return 0;
+    if (db >= 0) return 1;
+    const i = curve.findIndex(([d]) => d >= db);
+    const [[d0, m0], [d1, m1]] = [curve[i - 1], curve[i]];
+    return m0 + ((db - d0) / (d1 - d0)) * (m1 - m0);
   }
+
+  // Mitschnitt's Windows mixer entry: moving this moves the mixer, and the other way round.
+  const volume = $derived(session.monitorVolume ?? 1);
 </script>
 
 <Panel label="Now" index="02">
@@ -51,6 +55,15 @@
   {/if}
 
   {#if session.listening}
+    {#if session.keyBlockedAt}
+      <div class="notice mono">Media key blocked – the recording continues. To pause, use Spotify's own pause button.</div>
+    {/if}
+    {#if session.monitorMuted}
+      <div class="notice warn mono">
+        <span>Monitor muted – the output device changed.</span>
+        <button class="link mono" onclick={() => session.unmuteMonitor()}>Unmute here</button>
+      </div>
+    {/if}
     {#if status?.grid}
       {@const exact = status.grid.bit24 === 1}
       <div class="proof mono" class:ok={exact} class:warn={!exact} title="Share of the audio that arrives as exact 24-bit values">
@@ -59,14 +72,17 @@
       </div>
     {/if}
     <div class="meters">
-      {#each status?.level ?? [0, 0] as l, i (i)}
-        <div class="meter"><div class="level" style:clip-path="inset(0 {100 - meter(l) * 100}% 0 0)"></div></div>
+      {#each [0, 1] as i (i)}
+        <div class="meter">
+          <div class="level" style:clip-path="inset(0 {100 - meter(status?.rms[i] ?? 0) * 100}% 0 0)"></div>
+          <div class="peak" style:left="{meter(status?.level[i] ?? 0) * 100}%"></div>
+        </div>
       {/each}
     </div>
-    {#if session.settings?.monitor}
-      <label class="volume">
+    {#if session.settings?.monitor && session.monitorVolume !== null}
+      <label class="volume" title="Same as Mitschnitt in the Windows volume mixer">
         <span class="mono muted">Monitor</span>
-        <input type="range" min="0" max="1" step="0.01" value={volume} oninput={(e) => setVolume(+e.currentTarget.value)} />
+        <input type="range" min="0" max="1" step="0.01" value={volume} oninput={(e) => session.setMonitorVolume(+e.currentTarget.value)} />
         <span class="mono">{Math.round(volume * 100)}</span>
       </label>
     {/if}
@@ -151,6 +167,35 @@
     margin: 0;
   }
 
+  .notice {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    margin-top: 14px;
+    padding: 7px 10px;
+    font-size: 11px;
+    letter-spacing: 0.04em;
+    border: 1px solid var(--line);
+    background: rgba(34, 211, 238, 0.06);
+    color: var(--cyan);
+  }
+
+  .notice.warn {
+    border-color: rgba(251, 191, 36, 0.45);
+    background: rgba(251, 191, 36, 0.06);
+    color: var(--warn);
+  }
+
+  .link {
+    border: none;
+    background: none;
+    padding: 0;
+    color: inherit;
+    text-decoration: underline;
+    text-transform: uppercase;
+    font-size: 11px;
+  }
+
   .proof {
     display: flex;
     align-items: center;
@@ -176,6 +221,7 @@
 
   /* Segmented LED-style meter. */
   .meter {
+    position: relative;
     height: 6px;
     background: repeating-linear-gradient(90deg, var(--faint) 0 6px, transparent 6px 8px);
   }
@@ -184,8 +230,19 @@
     height: 100%;
     background:
       repeating-linear-gradient(90deg, transparent 0 6px, var(--panel) 6px 8px),
-      linear-gradient(90deg, var(--cyan) 0 70%, var(--violet) 85%, var(--rec));
+      linear-gradient(90deg, #0e5f73 0%, #22d3ee 38%, #a78bfa 64%, #f43f5e 80%, #b91c1c 100%);
     transition: clip-path 80ms linear;
+  }
+
+  /* Peak hold line; red from about -6 dBFS on. */
+  .peak {
+    position: absolute;
+    top: -1px;
+    bottom: -1px;
+    width: 2px;
+    margin-left: -2px;
+    background: #e6f6fb;
+    transition: left 80ms linear;
   }
 
   .volume {

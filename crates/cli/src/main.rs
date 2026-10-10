@@ -25,6 +25,11 @@ enum Command {
         #[arg(default_value = "spotify")]
         app: String,
     },
+    /// Diagnostics: show which media keys reach Windows (keyboard, headset, earbuds), without blocking any
+    Keys {
+        #[arg(long, default_value_t = 60)]
+        secs: u64,
+    },
     /// Passive recording in the terminal, with a live check of how exact the audio arrives (Ctrl+C stops)
     Listen {
         #[arg(default_value = "spotify")]
@@ -32,6 +37,9 @@ enum Command {
         /// Don't write files - only show the live check
         #[arg(long)]
         dry: bool,
+        /// Diagnostics: write the raw capture and an event timeline into this folder
+        #[arg(long)]
+        trace: Option<PathBuf>,
     },
 }
 
@@ -40,12 +48,41 @@ fn main() -> ExitCode {
         Command::Devices => devices(),
         Command::Check { paths } => check(&paths),
         Command::Setup { app } => setup(&app),
-        Command::Listen { app, dry } => listen(app, dry),
+        Command::Listen { app, dry, trace } => listen(app, dry, trace),
+        Command::Keys { secs } => keys(secs),
     }
 }
 
 #[cfg(windows)]
-fn listen(app: String, dry: bool) -> ExitCode {
+fn keys(secs: u64) -> ExitCode {
+    use mitschnitt_core::keys::{KeyGuard, key_name};
+    let guard = match KeyGuard::start() {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    guard.log(true);
+    println!("Watching media keys for {secs} s (nothing is blocked). Press keys, use headset buttons, take earbuds out...");
+    let start = std::time::Instant::now();
+    while start.elapsed().as_secs() < secs {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        for vk in guard.take_log() {
+            println!("{:>7.2} s  {vk:#04x}  {}", start.elapsed().as_secs_f64(), key_name(vk));
+        }
+    }
+    ExitCode::SUCCESS
+}
+
+#[cfg(not(windows))]
+fn keys(_secs: u64) -> ExitCode {
+    eprintln!("the media key guard is only available on Windows");
+    ExitCode::FAILURE
+}
+
+#[cfg(windows)]
+fn listen(app: String, dry: bool, trace: Option<PathBuf>) -> ExitCode {
     use mitschnitt_core::engine::{Config, Engine, Update};
     use mitschnitt_core::passive::Phase;
     use mitschnitt_core::profile::{self, Profile};
@@ -67,7 +104,7 @@ fn listen(app: String, dry: bool) -> ExitCode {
     }
     // Unsupported apps work too, for experiments: the exact24 line shows whether an app is worth a profile.
     let profile = profile::get(&app).cloned().unwrap_or_else(|| Profile::adhoc(&app));
-    let (engine, info) = match Engine::start(Config { profile, settings: settings.clone() }, move |u| {
+    let (engine, info) = match Engine::start(Config { profile, settings: settings.clone(), trace }, move |u| {
         let _ = tx.send(Some(u));
     }) {
         Ok(started) => started,
@@ -110,6 +147,9 @@ fn listen(app: String, dry: bool) -> ExitCode {
             }
             Update::Exists { track, file } => println!("--- {} - {}: already recorded ({file})", track.artist, track.title),
             Update::Failed { track, error } => println!("!!! {} - {}: {error}", track.artist, track.title),
+            Update::KeyBlocked { count } => println!("--- media key blocked to protect the recording ({count} so far)"),
+            Update::MonitorVolume { .. } => {}
+            Update::MonitorMuted { muted } => println!("--- monitor {}", if muted { "muted: output device changed" } else { "unmuted" }),
             Update::Stopped { error: e } => {
                 error = e;
                 break;
@@ -130,7 +170,7 @@ fn listen(app: String, dry: bool) -> ExitCode {
 }
 
 #[cfg(not(windows))]
-fn listen(_app: String, _dry: bool) -> ExitCode {
+fn listen(_app: String, _dry: bool, _trace: Option<PathBuf>) -> ExitCode {
     eprintln!("listening is only available on Windows");
     ExitCode::FAILURE
 }

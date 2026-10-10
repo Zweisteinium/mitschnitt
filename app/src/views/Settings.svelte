@@ -79,6 +79,13 @@
         </span>
       </label>
       <label class="toggle">
+        <input type="checkbox" checked={s.protect_media_keys} onchange={(e) => set("protect_media_keys", e.currentTarget.checked)} />
+        <span>
+          <span class="title">Protect recordings from media keys</span>
+          <span class="note muted">While a track is recording, play/pause, stop, next and previous from keyboards and headsets are ignored. Only Spotify's own pause button interrupts it.</span>
+        </span>
+      </label>
+      <label class="toggle">
         <input type="checkbox" checked={s.skip_existing} onchange={(e) => set("skip_existing", e.currentTarget.checked)} />
         <span>
           <span class="title">Skip tracks you already have</span>

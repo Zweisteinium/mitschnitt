@@ -35,10 +35,12 @@ pub struct Settings {
     pub keep_flagged: bool,
     /// Don't save a track again when a file with its name already exists (any format).
     pub skip_existing: bool,
-    /// Play the captured audio on the default output device.
+    /// Swallow media keys (keyboard, headset, earbuds) while a track is recording; only the player's own
+    /// pause button can interrupt it.
+    pub protect_media_keys: bool,
+    /// Play the captured audio on the default output device. Its volume is the app's Windows mixer entry
+    /// (remembered by Windows), so it isn't stored here.
     pub monitor: bool,
-    /// Monitoring volume, 0..1.
-    pub monitor_volume: f32,
 }
 
 impl Default for Settings {
@@ -51,8 +53,8 @@ impl Default for Settings {
             template: "{artist} - {title}".into(),
             keep_flagged: true,
             skip_existing: true,
+            protect_media_keys: true,
             monitor: true,
-            monitor_volume: 0.8,
         }
     }
 }
