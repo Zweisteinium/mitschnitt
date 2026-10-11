@@ -297,12 +297,10 @@ impl Passive {
             self.frame += 1;
         }
 
-        if let State::Waiting { until, .. } = self.state {
-            if self.frame >= until {
-                let State::Waiting { track, .. } = std::mem::replace(&mut self.state, State::Idle) else { unreachable!() };
-                self.done = Some(track.clone());
-                events.push(Event::Dropped { track, reason: Reason::NoCleanStart });
-            }
+        if let State::Waiting { until, .. } = self.state && self.frame >= until {
+            let State::Waiting { track, .. } = std::mem::replace(&mut self.state, State::Idle) else { unreachable!() };
+            self.done = Some(track.clone());
+            events.push(Event::Dropped { track, reason: Reason::NoCleanStart });
         }
         events
     }
@@ -405,10 +403,8 @@ impl Passive {
         self.starts.retain(|s| *s > start);
         events.push(Event::Started(track.clone()));
         self.state = State::Recording { track, expected, samples, off_grid, off_span, start };
-        if let State::Recording { expected, samples, .. } = &self.state {
-            if samples.len() >= expected * self.channels {
-                self.complete(events);
-            }
+        if let State::Recording { expected, samples, .. } = &self.state && samples.len() >= expected * self.channels {
+            self.complete(events);
         }
     }
 
@@ -421,16 +417,16 @@ impl Passive {
     }
 
     fn drop_recording(&mut self, reason: Reason, events: &mut Vec<Event>) {
-        if matches!(self.state, State::Recording { .. }) {
-            if let State::Recording { track, samples, start, .. } = std::mem::replace(&mut self.state, State::Idle) {
-                let early = frames_to_ms(samples.len() / self.channels, self.rate) < RELEASE_START_MS;
-                if reason == Reason::TrackChanged && early && start >= self.ring_first {
-                    let at = self.starts.partition_point(|s| *s < start);
-                    self.starts.insert(at, start);
-                }
-                self.done = Some(track.clone());
-                events.push(Event::Dropped { track, reason });
+        if matches!(self.state, State::Recording { .. })
+            && let State::Recording { track, samples, start, .. } = std::mem::replace(&mut self.state, State::Idle)
+        {
+            let early = frames_to_ms(samples.len() / self.channels, self.rate) < RELEASE_START_MS;
+            if reason == Reason::TrackChanged && early && start >= self.ring_first {
+                let at = self.starts.partition_point(|s| *s < start);
+                self.starts.insert(at, start);
             }
+            self.done = Some(track.clone());
+            events.push(Event::Dropped { track, reason });
         }
     }
 

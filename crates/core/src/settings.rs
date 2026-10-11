@@ -5,6 +5,12 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+/// Folder name under the system's config and state directories.
+#[cfg(windows)]
+pub const APP_DIR: &str = "Mitschnitt";
+#[cfg(not(windows))]
+pub const APP_DIR: &str = "mitschnitt";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Format {
@@ -38,14 +44,14 @@ pub struct Settings {
     /// Swallow media keys (keyboard, headset, earbuds) while a track is recording; only the player's own
     /// pause button can interrupt it.
     pub protect_media_keys: bool,
-    /// Play the captured audio on the default output device. Its volume is the app's Windows mixer entry
-    /// (remembered by Windows), so it isn't stored here.
+    /// Play the captured audio on the default output device (Windows only, see [`crate::monitor`]). Its volume
+    /// is the app's Windows mixer entry (remembered by Windows), so it isn't stored here.
     pub monitor: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        let music = std::env::var_os("USERPROFILE").map(PathBuf::from).unwrap_or_default().join("Music");
+        let music = dirs::audio_dir().or_else(|| dirs::home_dir().map(|h| h.join("Music"))).unwrap_or_default();
         Settings {
             out_dir: music.join("Mitschnitt"),
             format: Format::Flac,
@@ -71,9 +77,9 @@ impl Settings {
         std::fs::write(path, serde_json::to_string_pretty(self).expect("settings serialize"))
     }
 
-    /// Where the settings live: `%APPDATA%\Mitschnitt\settings.json`.
+    /// Where the settings live: `%APPDATA%\Mitschnitt\settings.json`, `~/.config/mitschnitt/settings.json`.
     pub fn default_path() -> PathBuf {
-        std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir).join("Mitschnitt").join("settings.json")
+        dirs::config_dir().unwrap_or_else(std::env::temp_dir).join(APP_DIR).join("settings.json")
     }
 }
 

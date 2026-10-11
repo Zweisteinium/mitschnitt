@@ -14,8 +14,8 @@
       <div class="muted">{session.source.device}</div>
       <div class="tags mono">
         <span class:ok={session.source.rate === 44100} class:warn={session.source.rate !== 44100}>{(session.source.rate / 1000).toFixed(1)} kHz</span>
-        <span>gain 50 %</span>
-        <span>{session.settings?.monitor ? "monitoring" : "silent"}</span>
+        {#if session.platform}<span>gain {session.platform.gain * 100} %</span>{/if}
+        {#if session.platform?.monitor}<span>{session.settings?.monitor ? "monitoring" : "silent"}</span>{/if}
       </div>
     </div>
     <div class="stops">

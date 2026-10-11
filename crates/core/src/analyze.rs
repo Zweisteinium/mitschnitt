@@ -94,10 +94,8 @@ pub fn analyze_with(a: &Audio, exact_source: bool) -> Report {
     }
 
     // Lossy origin hint: perceptual codecs cut everything above ~19-20 kHz, lossless masters rarely do.
-    if let Some(ratio) = high_band_ratio(a) {
-        if ratio < 1e-10 {
-            issues.push(issue(Severity::Info, format!("no content above 20 kHz ({:.0} dB) - possibly from a lossy source", 10.0 * ratio.max(1e-30).log10())));
-        }
+    if let Some(ratio) = high_band_ratio(a) && ratio < 1e-10 {
+        issues.push(issue(Severity::Info, format!("no content above 20 kHz ({:.0} dB) - possibly from a lossy source", 10.0 * ratio.max(1e-30).log10())));
     }
 
     // 16-bit grid map: where (if anywhere) is a mostly-16-bit file off the grid?

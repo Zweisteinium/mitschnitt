@@ -37,6 +37,9 @@ export type Settings = {
   monitor: boolean;
 };
 
+/** What this system offers; the UI shows only what works here. */
+export type Platform = { os: string; monitor: boolean; media_keys: boolean; gain: number };
+
 export type CheckState = "ok" | "warn" | "bad" | "check";
 export type Check = { id: string; title: string; state: CheckState; detail: string; fix: string | null };
 
@@ -53,6 +56,7 @@ export const api = {
   health: (app: string) => invoke<Check[]>("health", { app }),
   fix: (action: string, app: string) => invoke<string>("fix", { action, app }),
   open: (target: string) => invoke<void>("open", { target }),
+  platform: () => invoke<Platform>("platform"),
   onUpdate: (handler: (u: Update) => void): Promise<UnlistenFn> => listen<Update>("update", (e) => handler(e.payload)),
 };
 

@@ -1,7 +1,7 @@
 //! Passive recording engine: capture + media + volume wired to the [`Passive`] state machine.
 //!
-//! Threads: the capture thread sends packets over a channel; the engine thread owns every COM/WinRT
-//! object (media session, volume controls), feeds the state machine and the monitor and polls media
+//! Threads: the capture thread sends packets over a channel; the engine thread owns every platform
+//! object (media session, volume controls; COM/WinRT on Windows), feeds the state machine and the monitor and polls media
 //! 10x per second; each finished track is written and checked on its own short-lived worker thread.
 
 use std::path::PathBuf;
@@ -11,28 +11,24 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use serde::Serialize;
-
-use windows::Win32::System::Power::{ES_CONTINUOUS, ES_SYSTEM_REQUIRED, SetThreadExecutionState};
+use serde::{Deserialize, Serialize};
 
 use crate::analyze::{self, Master, Severity};
 use crate::audio::Audio;
 use crate::capture::{Capture, CaptureEvent, Packet};
-use crate::devices::{com_init, default_endpoint};
+use crate::devices::{self, default_endpoint};
 use crate::flac::Tags;
-use crate::keys::KeyGuard;
+use crate::guard::Guard;
 use crate::media::{self, Extra, Watcher};
 use crate::monitor::{Monitor, MonitorState};
-use crate::own_session::OwnSession;
 use crate::output;
 use crate::passive::{Event, Passive, Reason, Status, Track};
+use crate::power::KeepAwake;
 use crate::profile::Profile;
-use crate::sessions;
 use crate::settings::Settings;
+use crate::{init_thread, sessions};
 
-/// App volume while listening: Windows limits streams near 0 dBFS before the loopback tap, so recording
-/// at 100 % would alter loud masters. At exactly 0.5 the player's own multiply is exact and fully undone.
-pub const GAIN: f32 = 0.5;
+pub use crate::platform::os::GAIN;
 const CHANNELS: u16 = 2;
 const MEDIA_POLL: Duration = Duration::from_millis(100);
 const VOLUME_POLL: Duration = Duration::from_millis(500);
@@ -146,7 +142,7 @@ impl Engine {
         let thread = std::thread::Builder::new()
             .name("engine".into())
             .spawn(move || {
-                com_init();
+                init_thread();
                 match Session::open(&config, packets) {
                     Ok(session) => {
                         let monitor = session.monitor.as_ref().map(|m| (m.volume_handle(), m.state()));
@@ -196,36 +192,43 @@ impl Drop for Engine {
 /// What the engine changed and must put back. Persisted while listening, so a crash or a killed process
 /// is repaired on the next start ([`recover`]). Controls are looked up afresh when applied: a restarted
 /// app has new sessions, and stale controls would silently miss them.
+#[derive(Serialize, Deserialize)]
 struct Restore {
     app: String,
-    app_volume: f32,
+    /// The app's own volume, once it has an audio stream.
+    app_volume: Option<f32>,
     /// "Listen to this device" was audible and got muted by us.
     unmute_listen: bool,
+    /// The forced sample rate to go back to.
+    rate: Option<u32>,
 }
 
 impl Restore {
     fn path() -> PathBuf {
-        let base = std::env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
-        base.join("Mitschnitt").join("restore.txt")
+        let base = dirs::state_dir().or_else(dirs::data_local_dir).unwrap_or_else(std::env::temp_dir);
+        base.join(crate::settings::APP_DIR).join("restore.json")
     }
 
     fn save(&self) {
         let path = Self::path();
         let _ = std::fs::create_dir_all(path.parent().unwrap_or(&path));
-        let _ = std::fs::write(&path, format!("{}\n{}\n{}\n", self.app, self.app_volume, self.unmute_listen));
+        let _ = std::fs::write(&path, serde_json::to_string(self).unwrap_or_default());
     }
 
     fn load() -> Option<Restore> {
-        let text = std::fs::read_to_string(Self::path()).ok()?;
-        let mut lines = text.lines();
-        Some(Restore { app: lines.next()?.to_owned(), app_volume: lines.next()?.parse().ok()?, unmute_listen: lines.next()?.parse().ok()? })
+        serde_json::from_str(&std::fs::read_to_string(Self::path()).ok()?).ok()
     }
 
     /// Put everything back and forget the record.
     fn apply(&self) {
-        sessions::set(&sessions::app_volumes_by_name(&self.app), self.app_volume);
+        if let Some(volume) = self.app_volume {
+            sessions::set(&sessions::app_volumes_by_name(&self.app), volume);
+        }
         if self.unmute_listen {
             sessions::set_mute(&sessions::listen_volumes(), false);
+        }
+        if let Some(rate) = self.rate {
+            devices::release_rate(rate);
         }
         let _ = std::fs::remove_file(Self::path());
     }
@@ -234,7 +237,7 @@ impl Restore {
 /// Undo changes left behind by a previous run that didn't end cleanly (crash, killed process).
 pub fn recover() {
     if let Some(restore) = Restore::load() {
-        com_init();
+        init_thread();
         restore.apply();
     }
 }
@@ -248,12 +251,8 @@ struct Session {
     /// Album artist, track number and cover, read when the current recording started.
     extra: Option<(Track, Extra)>,
     trace: Option<Trace>,
-    keys: Option<KeyGuard>,
-    /// While recording (with key protection on): our own media session, so Bluetooth/headset commands
-    /// (which bypass the key hook) reach us instead of the player.
-    own: Option<OwnSession>,
-    /// Commands caught by `own` so far.
-    caught: u32,
+    /// Protects recordings from media keys and headset commands.
+    guard: Option<Guard>,
     restore: Restore,
     passive: Passive,
     monitor: Option<Monitor>,
@@ -270,17 +269,28 @@ impl Session {
         let procs = sessions::processes();
         let root = sessions::find_app(profile.exe, &procs).ok_or_else(|| format!("{} is not running.", profile.name))?;
         let tree = sessions::tree(root.pid, &procs);
-        let endpoint = sessions::app_endpoint(&tree).map_or_else(|| default_endpoint().map_err(|e| e.to_string()), Ok)?;
-
-        let app_controls = sessions::app_volumes(&tree);
-        let Some(before) = sessions::get(&app_controls).into_iter().reduce(f32::max) else {
-            return Err(format!("{} has no audio stream yet - play something once, then start.", root.name));
-        };
-        let monitoring = config.settings.monitor;
+        let monitoring = config.settings.monitor && crate::monitor::SUPPORTED;
         let listen = sessions::listen_volumes();
         let unmute_listen = monitoring && sessions::muted(&listen).iter().any(|m| !m);
-        let restore = Restore { app: profile.exe.to_owned(), app_volume: before, unmute_listen };
+        // Without an audio stream yet (Linux players open one on play), the volume is learnt when it appears.
+        let app_controls = sessions::app_volumes(&tree);
+        let app_volume = sessions::get(&app_controls).into_iter().reduce(f32::max);
+        let mut restore = Restore { app: profile.exe.to_owned(), app_volume, unmute_listen, rate: None };
         restore.save();
+        let mut endpoint = sessions::app_endpoint(&tree).map_or_else(|| default_endpoint().map_err(|e| e.to_string()), Ok)?;
+        if profile.rate > 0 {
+            match devices::hold_rate(profile.rate) {
+                Ok(previous) => restore.rate = previous,
+                Err(e) => {
+                    restore.apply();
+                    return Err(e);
+                }
+            }
+        }
+        if restore.rate.is_some() {
+            endpoint.sample_rate = profile.rate;
+            restore.save();
+        }
         sessions::set(&app_controls, GAIN);
         if unmute_listen {
             sessions::set_mute(&listen, true); // our monitor replaces it; avoid hearing everything twice
@@ -299,7 +309,7 @@ impl Session {
                 return Err(e);
             }
         };
-        let monitor = monitoring.then(|| Monitor::start(endpoint.sample_rate, CHANNELS, GAIN));
+        let monitor = monitoring.then(|| Monitor::start(endpoint.sample_rate, CHANNELS, GAIN)).flatten();
         Ok(Session {
             info: SourceInfo { app: profile.name.to_owned(), device: endpoint.name, rate: endpoint.sample_rate },
             profile: profile.clone(),
@@ -307,9 +317,7 @@ impl Session {
             watcher: Watcher::new(session),
             extra: None,
             // Best effort: without the guard, listening still works (media keys just aren't blocked).
-            keys: config.settings.protect_media_keys.then(KeyGuard::start).and_then(Result::ok),
-            own: None,
-            caught: 0,
+            guard: config.settings.protect_media_keys.then(Guard::start).and_then(Result::ok),
             trace: match &config.trace {
                 Some(dir) => Some(Trace::open(dir).map_err(|e| format!("trace: {e}"))?),
                 None => None,
@@ -323,8 +331,7 @@ impl Session {
 
     fn run(mut self, rx: &mpsc::Receiver<Msg>, settings: &Settings, notify: &Notify) {
         // Keep the PC awake while listening (the display may still turn off); released on this thread below.
-        // SAFETY: plain flag call, affects only this thread's request.
-        unsafe { SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED) };
+        let awake = KeepAwake::start();
         let (mut next_media, mut next_volume) = (Instant::now(), Instant::now() + VOLUME_POLL);
         let (mut error, mut stop_after) = (None, false);
         let (mut blocked, mut muted, mut volume) = (0, false, f32::NAN);
@@ -332,10 +339,8 @@ impl Session {
             if stop_after && !self.passive.recording() {
                 break;
             }
-            if let Some(k) = &self.keys {
-                let recording = self.passive.recording();
-                k.arm(recording);
-                self.guard_session(recording);
+            if let Some(guard) = &mut self.guard {
+                guard.update(self.passive.recording(), self.extra.as_ref());
             }
             let timeout = next_media.saturating_duration_since(Instant::now());
             let events = match rx.recv_timeout(timeout) {
@@ -386,7 +391,12 @@ impl Session {
                         break;
                     }
                     let controls = sessions::app_volumes_by_name(self.profile.exe);
-                    if sessions::get(&controls).iter().any(|v| (v - GAIN).abs() > 1e-4) {
+                    let volumes = sessions::get(&controls);
+                    if volumes.iter().any(|v| (v - GAIN).abs() > 1e-4) {
+                        if self.restore.app_volume.is_none() {
+                            self.restore.app_volume = volumes.into_iter().reduce(f32::max);
+                            self.restore.save();
+                        }
                         // Someone moved the app's volume (or a new stream appeared): that recording is unusable.
                         // Put it back so the following tracks are exact again (use the monitor volume instead).
                         let events = self.passive.volume_changed();
@@ -395,7 +405,7 @@ impl Session {
                     }
                 }
                 notify(Update::Status { status: self.passive.status() });
-                if let Some(count) = self.keys.as_ref().map(|k| k.blocked() + self.caught).filter(|c| *c != blocked) {
+                if let Some(count) = self.guard.as_ref().map(Guard::blocked).filter(|c| *c != blocked) {
                     blocked = count;
                     notify(Update::KeyBlocked { count });
                 }
@@ -411,33 +421,11 @@ impl Session {
         }
         let events = self.passive.stop();
         self.dispatch(events, settings, notify);
-        self.own = None;
-        self.keys = None;
+        self.guard = None;
         self.monitor = None;
         self.restore.apply();
-        // SAFETY: as above; clears this thread's request.
-        unsafe { SetThreadExecutionState(ES_CONTINUOUS) };
+        drop(awake);
         notify(Update::Stopped { error });
-    }
-
-    /// Present our own "playing" media session exactly while recording; it disappears afterwards, so the
-    /// player gets its controls back. Commands it receives are swallowed (counted as blocked keys).
-    fn guard_session(&mut self, recording: bool) {
-        match (&self.own, recording) {
-            (None, true) => {
-                let (title, artist, cover) = match &self.extra {
-                    Some((t, e)) => (format!("rec. {}", t.title), t.artist.clone(), e.cover.as_ref().map(|c| c.data.as_slice())),
-                    None => ("rec.".to_owned(), String::new(), None),
-                };
-                self.own = OwnSession::start(&title, &artist, cover).ok();
-            }
-            (Some(_), false) => self.own = None,
-            _ => {}
-        }
-        if let Some(own) = &self.own {
-            own.pump();
-            self.caught += own.take_pressed().len() as u32;
-        }
     }
 
     fn dispatch(&mut self, events: Vec<Event>, settings: &Settings, notify: &Notify) {
@@ -476,10 +464,8 @@ impl Session {
 /// Write, verify and check one finished track.
 #[allow(clippy::too_many_arguments)]
 fn finish(track: Track, tags: Tags, samples: Vec<i32>, (off_grid, off_span): (usize, Option<(usize, usize)>), rate: u32, lossless: bool, settings: &Settings, notify: &Notify) {
-    if settings.skip_existing {
-        if let Some(file) = output::existing(&tags, settings) {
-            return notify(Update::Exists { track, file: file.display().to_string() });
-        }
+    if settings.skip_existing && let Some(file) = output::existing(&tags, settings) {
+        return notify(Update::Exists { track, file: file.display().to_string() });
     }
     let audio = Audio { rate, channels: CHANNELS as usize, bits: 24, samples };
     let exact = off_grid == 0;

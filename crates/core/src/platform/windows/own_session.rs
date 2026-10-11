@@ -25,7 +25,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::{HSTRING, Result, w};
 
 /// Artwork when the track has no cover.
-const LOGO: &[u8] = include_bytes!("../../../app/src-tauri/icons/128x128@2x.png");
+const LOGO: &[u8] = include_bytes!("../../../../../app/src-tauri/icons/128x128@2x.png");
 
 /// A registered media session; removed when dropped.
 pub struct OwnSession {

@@ -32,7 +32,10 @@ pub const SPOTIFY: Profile = Profile {
     media_id: "spotify",
     rate: 44_100,
     lossless: true,
+    #[cfg(windows)]
     output_hint: "In Spotify: Settings → Playback → Output device → CABLE Input.",
+    #[cfg(not(windows))]
+    output_hint: "",
     is_ad: spotify_ad,
 };
 

@@ -71,20 +71,24 @@
     </Panel>
 
     <Panel label="Behaviour" index="02">
-      <label class="toggle">
-        <input type="checkbox" checked={s.monitor} onchange={(e) => set("monitor", e.currentTarget.checked)} />
-        <span>
-          <span class="title">Monitor</span>
-          <span class="note muted">Play what is recorded on your default output. Replaces Windows' "Listen to this device" (muted while listening).</span>
-        </span>
-      </label>
-      <label class="toggle">
-        <input type="checkbox" checked={s.protect_media_keys} onchange={(e) => set("protect_media_keys", e.currentTarget.checked)} />
-        <span>
-          <span class="title">Protect recordings from media keys</span>
-          <span class="note muted">While a track is recording, play/pause, stop, next and previous from keyboards, headsets and earbuds (including in-ear detection) are ignored. Only Spotify's own pause button interrupts it.</span>
-        </span>
-      </label>
+      {#if session.platform?.monitor}
+        <label class="toggle">
+          <input type="checkbox" checked={s.monitor} onchange={(e) => set("monitor", e.currentTarget.checked)} />
+          <span>
+            <span class="title">Monitor</span>
+            <span class="note muted">Play what is recorded on your default output. Replaces Windows' "Listen to this device" (muted while listening).</span>
+          </span>
+        </label>
+      {/if}
+      {#if session.platform?.media_keys}
+        <label class="toggle">
+          <input type="checkbox" checked={s.protect_media_keys} onchange={(e) => set("protect_media_keys", e.currentTarget.checked)} />
+          <span>
+            <span class="title">Protect recordings from media keys</span>
+            <span class="note muted">While a track is recording, play/pause, stop, next and previous from keyboards, headsets and earbuds (including in-ear detection) are ignored. Only Spotify's own pause button interrupts it.</span>
+          </span>
+        </label>
+      {/if}
       <label class="toggle">
         <input type="checkbox" checked={s.skip_existing} onchange={(e) => set("skip_existing", e.currentTarget.checked)} />
         <span>
@@ -99,7 +103,7 @@
           <span class="note muted">Keep recordings the check marks as altered or corrupt (they are listed either way).</span>
         </span>
       </label>
-      <p class="muted rate">Changes apply the next time you start listening; the monitor volume applies immediately.</p>
+      <p class="muted rate">Changes apply the next time you start listening{session.platform?.monitor ? "; the monitor volume applies immediately" : ""}.</p>
     </Panel>
   </div>
 {/if}

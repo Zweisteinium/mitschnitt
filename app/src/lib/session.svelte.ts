@@ -1,4 +1,4 @@
-import { api, type Check, type Master, type Settings, type Severity, type Source, type SourceInfo, type Status, type Track, type Update } from "./api";
+import { api, type Check, type Master, type Platform, type Settings, type Severity, type Source, type SourceInfo, type Status, type Track, type Update } from "./api";
 
 export type Outcome =
   | { outcome: "saved"; file: string | null; verdict: Severity; master: Master; exact: boolean; issues: string[] }
@@ -18,6 +18,7 @@ class Session {
   status = $state<Status | null>(null);
   history = $state<Entry[]>([]);
   settings = $state<Settings | null>(null);
+  platform = $state<Platform | null>(null);
   checks = $state<Check[]>([]);
   checking = $state(false);
   fixing = $state<string | null>(null);
@@ -45,6 +46,7 @@ class Session {
 
   async init() {
     await api.onUpdate((u) => this.#apply(u));
+    this.platform = await api.platform();
     this.settings = await api.getSettings();
     await this.refresh();
     await this.check();

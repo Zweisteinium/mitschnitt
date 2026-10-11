@@ -79,7 +79,7 @@
         </div>
       {/each}
     </div>
-    {#if session.settings?.monitor && session.monitorVolume !== null}
+    {#if session.platform?.monitor && session.settings?.monitor && session.monitorVolume !== null}
       <label class="volume" title="Same as Mitschnitt in the Windows volume mixer">
         <span class="mono muted">Monitor</span>
         <input type="range" min="0" max="1" step="0.01" value={volume} oninput={(e) => session.setMonitorVolume(+e.currentTarget.value)} />

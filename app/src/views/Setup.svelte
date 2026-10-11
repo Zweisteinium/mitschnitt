@@ -35,15 +35,22 @@
 
   <Panel label="How it works" index="02">
     <ol>
-      <li><b>Virtual cable.</b> The app plays into VB-Cable – silent, effect-free, at its own sample rate. Mitschnitt plays it back to your headphones itself (monitor).</li>
-      <li><b>Bit-exact capture.</b> Only the app's own audio is taken. Its volume is fixed at exactly 50 % while listening and restored in the file, so Windows' peak limiter never touches it.</li>
+      {#if session.platform?.os === "linux"}
+        <li><b>Straight from the app.</b> Mitschnitt connects to the app's own PipeWire stream, before anything else is mixed in. You keep listening as usual.</li>
+        <li><b>Bit-exact capture.</b> While listening, the app's volume stays at 100 % and PipeWire runs at the app's sample rate. Use your system volume for loudness.</li>
+      {:else}
+        <li><b>Virtual cable.</b> The app plays into VB-Cable – silent, effect-free, at its own sample rate. Mitschnitt plays it back to your headphones itself (monitor).</li>
+        <li><b>Bit-exact capture.</b> Only the app's own audio is taken. Its volume is fixed at exactly 50 % while listening and restored in the file, so Windows' peak limiter never touches it.</li>
+      {/if}
       <li><b>Whole tracks only.</b> A track counts if it starts after silence and plays to its exact end. Pause, skip, seek or a buffering stall discards it.</li>
       <li><b>Proven.</b> Every sample is checked on arrival: a lossless source arrives as exact 24-bit values, anything lossy or processed does not. Files are read back, compared and checked for dropouts, fades and limiting.</li>
     </ol>
-    <p class="muted credit">
-      VB-Cable is donationware by VB-Audio and is downloaded from their site, never bundled.
-      <button class="link mono" onclick={() => api.open("https://vb-audio.com/Cable/")}>vb-audio.com</button>
-    </p>
+    {#if session.platform?.os === "windows"}
+      <p class="muted credit">
+        VB-Cable is donationware by VB-Audio and is downloaded from their site, never bundled.
+        <button class="link mono" onclick={() => api.open("https://vb-audio.com/Cable/")}>vb-audio.com</button>
+      </p>
+    {/if}
   </Panel>
 </div>
 

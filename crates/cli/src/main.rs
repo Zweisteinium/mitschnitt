@@ -5,7 +5,7 @@ use clap::{Parser, Subcommand};
 use mitschnitt_core::analyze::{self, Master, Severity};
 
 #[derive(Parser)]
-#[command(name = "mitschnitt", version, about = "Bit-exact per-app audio capture for Windows")]
+#[command(name = "mitschnitt", version, about = "Bit-exact per-app audio capture")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -15,7 +15,7 @@ struct Cli {
 enum Command {
     /// List output devices with their engine sample rate
     Devices,
-    /// Forensic check of recordings (files or folders): dropouts, Windows limiter, fades, length
+    /// Forensic check of recordings (files or folders): dropouts, limiter, fades, length
     Check {
         #[arg(required = true)]
         paths: Vec<PathBuf>,
@@ -25,12 +25,12 @@ enum Command {
         #[arg(default_value = "spotify")]
         app: String,
     },
-    /// Diagnostics: show which media keys reach Windows (keyboard, headset, earbuds), without blocking any
+    /// Diagnostics (Windows): show which media keys reach Windows (keyboard, headset, earbuds), without blocking any
     Keys {
         #[arg(long, default_value_t = 60)]
         secs: u64,
     },
-    /// Experiment: register Mitschnitt's own media session and show who receives media commands
+    /// Experiment (Windows): register Mitschnitt's own media session and show who receives media commands
     Smtc {
         #[arg(long, default_value_t = 90)]
         secs: u64,
@@ -61,7 +61,7 @@ fn main() -> ExitCode {
 
 #[cfg(windows)]
 fn keys(secs: u64) -> ExitCode {
-    use mitschnitt_core::keys::{KeyGuard, key_name};
+    use mitschnitt_core::platform::windows::keys::{KeyGuard, key_name};
     let guard = match KeyGuard::start() {
         Ok(g) => g,
         Err(e) => {
@@ -83,10 +83,10 @@ fn keys(secs: u64) -> ExitCode {
 
 #[cfg(windows)]
 fn smtc(secs: u64) -> ExitCode {
-    use mitschnitt_core::media;
-    use mitschnitt_core::own_session::OwnSession;
+    use mitschnitt_core::platform::windows::media;
+    use mitschnitt_core::platform::windows::own_session::OwnSession;
     use mitschnitt_core::profile::SPOTIFY;
-    mitschnitt_core::devices::com_init();
+    mitschnitt_core::init_thread();
     let session = match OwnSession::start("rec. (experiment)", "Mitschnitt", None) {
         Ok(s) => s,
         Err(e) => {
@@ -128,18 +128,21 @@ fn smtc(secs: u64) -> ExitCode {
 }
 
 #[cfg(not(windows))]
+fn keys(_secs: u64) -> ExitCode {
+    windows_only()
+}
+
+#[cfg(not(windows))]
 fn smtc(_secs: u64) -> ExitCode {
+    windows_only()
+}
+
+#[cfg(not(windows))]
+fn windows_only() -> ExitCode {
     eprintln!("only available on Windows");
     ExitCode::FAILURE
 }
 
-#[cfg(not(windows))]
-fn keys(_secs: u64) -> ExitCode {
-    eprintln!("the media key guard is only available on Windows");
-    ExitCode::FAILURE
-}
-
-#[cfg(windows)]
 fn listen(app: String, dry: bool, trace: Option<PathBuf>) -> ExitCode {
     use mitschnitt_core::engine::{Config, Engine, Update};
     use mitschnitt_core::passive::Phase;
@@ -171,7 +174,8 @@ fn listen(app: String, dry: bool, trace: Option<PathBuf>) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    println!("Listening to {} on {} ({} Hz), app volume 50 %. Ctrl+C stops.", info.app, info.device, info.rate);
+    let gain = mitschnitt_core::engine::GAIN * 100.0;
+    println!("Listening to {} on {} ({} Hz), app volume {gain} %. Ctrl+C stops.", info.app, info.device, info.rate);
     println!("exact24 = share of audio that arrives as exact 24-bit values (100 % = untouched lossless source)\n");
     let mut error = None;
     while let Ok(Some(update)) = rx.recv() {
@@ -227,13 +231,6 @@ fn listen(app: String, dry: bool, trace: Option<PathBuf>) -> ExitCode {
     }
 }
 
-#[cfg(not(windows))]
-fn listen(_app: String, _dry: bool, _trace: Option<PathBuf>) -> ExitCode {
-    eprintln!("listening is only available on Windows");
-    ExitCode::FAILURE
-}
-
-#[cfg(windows)]
 fn setup(app: &str) -> ExitCode {
     use mitschnitt_core::setup::{State, health};
     let Some(profile) = mitschnitt_core::profile::get(app) else {
@@ -253,13 +250,6 @@ fn setup(app: &str) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-#[cfg(not(windows))]
-fn setup(_app: &str) -> ExitCode {
-    eprintln!("setup checks are only available on Windows");
-    ExitCode::FAILURE
-}
-
-#[cfg(windows)]
 fn devices() -> ExitCode {
     match mitschnitt_core::devices::render_endpoints() {
         Ok(list) => {
@@ -273,12 +263,6 @@ fn devices() -> ExitCode {
             ExitCode::FAILURE
         }
     }
-}
-
-#[cfg(not(windows))]
-fn devices() -> ExitCode {
-    eprintln!("device listing is only available on Windows");
-    ExitCode::FAILURE
 }
 
 fn check(paths: &[PathBuf]) -> ExitCode {

@@ -2,7 +2,6 @@
 
 use std::sync::Mutex;
 
-use mitschnitt_core::devices::com_init;
 use mitschnitt_core::engine::{self, Config, Engine, SourceInfo};
 use mitschnitt_core::media::{self, Source};
 use mitschnitt_core::profile::{self, Profile};
@@ -21,7 +20,7 @@ fn lock<T>(m: &Mutex<T>) -> Result<std::sync::MutexGuard<'_, T>, String> {
 
 #[tauri::command]
 async fn sources() -> Result<Vec<Source>, String> {
-    com_init();
+    mitschnitt_core::init_thread();
     media::sources().map_err(|e| e.to_string())
 }
 
@@ -108,11 +107,25 @@ async fn fix(action: String, app: String) -> Result<String, String> {
     setup::fix(&action, supported(&app)?)
 }
 
-/// Show a file or folder in Explorer, or open a web link.
+/// Show a file in the file manager, or open a folder or web link.
 #[tauri::command]
 fn open(target: String) -> Result<(), String> {
-    let arg = if std::path::Path::new(&target).is_file() { format!("/select,{target}") } else { target };
-    std::process::Command::new("explorer").arg(arg).spawn().map(|_| ()).map_err(|e| e.to_string())
+    mitschnitt_core::desktop::open(&target)
+}
+
+/// What this system offers, so the UI only shows what works here.
+#[derive(serde::Serialize)]
+struct Platform {
+    os: &'static str,
+    monitor: bool,
+    media_keys: bool,
+    /// App volume while listening (0..1).
+    gain: f32,
+}
+
+#[tauri::command]
+fn platform() -> Platform {
+    Platform { os: std::env::consts::OS, monitor: mitschnitt_core::monitor::SUPPORTED, media_keys: mitschnitt_core::guard::SUPPORTED, gain: engine::GAIN }
 }
 
 fn main() {
@@ -121,7 +134,7 @@ fn main() {
     let settings = Settings::load(&Settings::default_path());
     tauri::Builder::default()
         .manage(App { engine: Mutex::new(None), settings: Mutex::new(settings) })
-        .invoke_handler(tauri::generate_handler![sources, start, stop, stop_after_track, release, unmute_monitor, set_monitor_volume, get_settings, save_settings, health, fix, open])
+        .invoke_handler(tauri::generate_handler![sources, start, stop, stop_after_track, release, unmute_monitor, set_monitor_volume, get_settings, save_settings, health, fix, open, platform])
         .build(tauri::generate_context!())
         .expect("error while building Mitschnitt")
         .run(|app, event| {
