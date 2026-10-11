@@ -20,6 +20,11 @@ enum Command {
         #[arg(required = true)]
         paths: Vec<PathBuf>,
     },
+    /// What an app is playing right now, as Mitschnitt sees it (track, position, ad detection)
+    Now {
+        #[arg(default_value = "spotify")]
+        app: String,
+    },
     /// Setup health checks for recording an app (read-only)
     Setup {
         #[arg(default_value = "spotify")]
@@ -52,6 +57,7 @@ fn main() -> ExitCode {
     match Cli::parse().command {
         Command::Devices => devices(),
         Command::Check { paths } => check(&paths),
+        Command::Now { app } => now(&app),
         Command::Setup { app } => setup(&app),
         Command::Listen { app, dry, trace } => listen(app, dry, trace),
         Command::Keys { secs } => keys(secs),
@@ -227,6 +233,35 @@ fn listen(app: String, dry: bool, trace: Option<PathBuf>) -> ExitCode {
         None => {
             println!("Stopped, volume restored.");
             ExitCode::SUCCESS
+        }
+    }
+}
+
+fn now(app: &str) -> ExitCode {
+    use mitschnitt_core::{media, profile};
+    mitschnitt_core::init_thread();
+    let profile = profile::get(app).cloned().unwrap_or_else(|| profile::Profile::adhoc(app));
+    let snapshot = media::find(&profile).map_err(|e| e.to_string()).and_then(|s| s.map(|s| media::Watcher::new(s).snapshot().map_err(|e| e.to_string())).transpose());
+    match snapshot {
+        Ok(Some(m)) => {
+            let state = if m.playing { "playing" } else { "paused" };
+            let clock = |ms: i64| format!("{}:{:02}", ms / 60_000, (ms / 1000) % 60);
+            match m.track {
+                Some(t) => {
+                    let ad = if (profile.is_ad)(&t) { "  [ad, not recorded]" } else { "" };
+                    println!("{} {state}: {} - {} ({})  {} / {}{ad}", profile.name, t.artist, t.title, t.album, clock(m.position_ms), clock(t.duration_ms as i64));
+                }
+                None => println!("{} {state}, no track", profile.name),
+            }
+            ExitCode::SUCCESS
+        }
+        Ok(None) => {
+            eprintln!("{} shows no media session", profile.name);
+            ExitCode::FAILURE
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
         }
     }
 }

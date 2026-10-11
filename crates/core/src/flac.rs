@@ -2,9 +2,10 @@
 
 use std::path::Path;
 
-use flacenc::component::BitRepr;
-use flacenc::error::Verify;
-use flacenc::source::{Fill, Source};
+use flacenc::component::{BitRepr, Stream};
+use flacenc::config::Encoder;
+use flacenc::error::{Verified, Verify};
+use flacenc::source::{Context, Fill, FrameBuf};
 
 use crate::audio::Audio;
 
@@ -38,9 +39,7 @@ pub fn read(path: &Path) -> Result<Audio, claxon::Error> {
 /// Encode `audio` losslessly to `path` (written to `<path>.part` first), tag it, then decode the file
 /// again and compare every sample - a file only gets its final name once it is proven identical.
 pub fn write(path: &Path, audio: &Audio, tags: &Tags) -> Result<(), String> {
-    let config = flacenc::config::Encoder::default().into_verified().map_err(|(_, e)| format!("encoder config: {e:?}"))?;
-    let source = SliceSource { audio, head: 0 };
-    let stream = flacenc::encode_with_fixed_block_size(&config, source, config.block_size).map_err(|e| format!("encode: {e:?}"))?;
+    let stream = encode(audio)?;
     let mut sink = flacenc::bitsink::ByteSink::new();
     stream.write(&mut sink).map_err(|e| format!("serialize: {e:?}"))?;
 
@@ -74,38 +73,43 @@ pub fn write(path: &Path, audio: &Audio, tags: &Tags) -> Result<(), String> {
     result
 }
 
-/// Zero-copy flacenc source over an [`Audio`] buffer.
-struct SliceSource<'a> {
-    audio: &'a Audio,
-    head: usize,
-}
+/// Encode frame by frame. flacenc's Rice cost estimate overflows on loud 24-bit audio, so it can pick a fixed
+/// predictor that costs several times the raw samples: every frame is checked and re-encoded with fewer
+/// tools (no fixed predictor, then verbatim) until it is no larger than the raw samples.
+fn encode(audio: &Audio) -> Result<Stream, String> {
+    let err = |e: &dyn std::fmt::Debug| format!("encode: {e:?}");
+    let configs = [(true, true), (false, true), (false, false)].map(|(fixed, lpc)| {
+        let mut config = Encoder::default();
+        config.subframe_coding.use_fixed = fixed;
+        config.subframe_coding.use_lpc = lpc;
+        config.into_verified().map_err(|(_, e)| format!("encoder config: {e:?}"))
+    });
+    let configs: Vec<Verified<Encoder>> = configs.into_iter().collect::<Result<_, _>>()?;
+    let (channels, bits, block) = (audio.channels, audio.bits as usize, configs[0].block_size);
 
-impl Source for SliceSource<'_> {
-    fn channels(&self) -> usize {
-        self.audio.channels
+    let mut stream = Stream::new(audio.rate as usize, channels, bits).map_err(|e| err(&e))?;
+    let mut buf = (FrameBuf::with_size(channels, block).map_err(|e| err(&e))?, Context::new(bits, channels));
+    for chunk in audio.samples.chunks(block * channels) {
+        buf.fill_interleaved(chunk).map_err(|e| err(&e))?;
+        let number = buf.1.current_frame_number().ok_or("encode: frame number")?;
+        // Raw samples plus room for the side channel's extra bit and the frame and subframe headers.
+        let limit = chunk.len() * (bits + 1) + 256;
+        let mut frame = None;
+        for config in &configs {
+            let candidate = flacenc::encode_fixed_size_frame(config, &buf.0, number, stream.stream_info()).map_err(|e| err(&e))?;
+            let fits = candidate.count_bits() <= limit;
+            frame = Some(candidate);
+            if fits {
+                break;
+            }
+        }
+        stream.add_frame(frame.ok_or("encode: no frame")?);
     }
-
-    fn bits_per_sample(&self) -> usize {
-        self.audio.bits as usize
-    }
-
-    fn sample_rate(&self) -> usize {
-        self.audio.rate as usize
-    }
-
-    fn read_samples<F: Fill>(&mut self, block_size: usize, dest: &mut F) -> Result<usize, flacenc::error::SourceError> {
-        let ch = self.audio.channels;
-        let begin = (self.head * ch).min(self.audio.samples.len());
-        let end = ((self.head + block_size) * ch).min(self.audio.samples.len());
-        dest.fill_interleaved(&self.audio.samples[begin..end])?;
-        let frames = (end - begin) / ch;
-        self.head += frames;
-        Ok(frames)
-    }
-
-    fn len_hint(&self) -> Option<usize> {
-        Some(self.audio.frames())
-    }
+    // A shorter last frame still belongs to a fixed-blocksize stream (min = max, as libFLAC writes it).
+    stream.stream_info_mut().set_block_sizes(block, block).map_err(|e| err(&e))?;
+    stream.stream_info_mut().set_md5_digest(&buf.1.md5_digest());
+    stream.stream_info_mut().set_total_samples(audio.frames());
+    Ok(stream)
 }
 
 #[cfg(test)]
@@ -126,5 +130,33 @@ mod tests {
         assert_eq!(tag.get_vorbis("TRACKNUMBER").unwrap().next(), Some("7"));
         assert_eq!(tag.pictures().count(), 1);
         std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn loud_24bit_audio_stays_compact_and_seekable() {
+        // Loud, slightly lowpassed noise: flacenc alone writes it at 2.6 times the raw size.
+        let mut x: u32 = 1;
+        let mut noise = || {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            (x >> 8) as f64 / (1u32 << 23) as f64 - 1.0
+        };
+        let mut v = 0.0;
+        let samples: Vec<i32> = (0..44_100 * 2)
+            .map(|i| {
+                v = 0.9 * v + 0.8 * noise() + 0.06 * (i as f64 * 0.015).sin();
+                (v.clamp(-1.0, 1.0) * 8_388_607.0) as i32
+            })
+            .collect();
+        let audio = Audio { rate: 44_100, channels: 2, bits: 24, samples };
+        let path = std::env::temp_dir().join(format!("mitschnitt-loud-{}.flac", std::process::id()));
+        write(&path, &audio, &Tags::default()).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        let raw = audio.samples.len() * 3;
+        assert!(bytes.len() <= raw + raw / 50, "{} bytes for {raw} bytes of PCM", bytes.len());
+        // STREAMINFO: equal min and max block size mark a fixed-blocksize stream (frame numbers, seekable).
+        assert_eq!(bytes[8..10], bytes[10..12]);
     }
 }
