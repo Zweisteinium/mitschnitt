@@ -23,6 +23,7 @@ use crate::flac::Tags;
 use crate::keys::KeyGuard;
 use crate::media::{self, Extra, Watcher};
 use crate::monitor::{Monitor, MonitorState};
+use crate::own_session::OwnSession;
 use crate::output;
 use crate::passive::{Event, Passive, Reason, Status, Track};
 use crate::profile::Profile;
@@ -248,6 +249,11 @@ struct Session {
     extra: Option<(Track, Extra)>,
     trace: Option<Trace>,
     keys: Option<KeyGuard>,
+    /// While recording (with key protection on): our own media session, so Bluetooth/headset commands
+    /// (which bypass the key hook) reach us instead of the player.
+    own: Option<OwnSession>,
+    /// Commands caught by `own` so far.
+    caught: u32,
     restore: Restore,
     passive: Passive,
     monitor: Option<Monitor>,
@@ -302,6 +308,8 @@ impl Session {
             extra: None,
             // Best effort: without the guard, listening still works (media keys just aren't blocked).
             keys: config.settings.protect_media_keys.then(KeyGuard::start).and_then(Result::ok),
+            own: None,
+            caught: 0,
             trace: match &config.trace {
                 Some(dir) => Some(Trace::open(dir).map_err(|e| format!("trace: {e}"))?),
                 None => None,
@@ -325,7 +333,9 @@ impl Session {
                 break;
             }
             if let Some(k) = &self.keys {
-                k.arm(self.passive.recording());
+                let recording = self.passive.recording();
+                k.arm(recording);
+                self.guard_session(recording);
             }
             let timeout = next_media.saturating_duration_since(Instant::now());
             let events = match rx.recv_timeout(timeout) {
@@ -385,7 +395,7 @@ impl Session {
                     }
                 }
                 notify(Update::Status { status: self.passive.status() });
-                if let Some(count) = self.keys.as_ref().map(KeyGuard::blocked).filter(|c| *c != blocked) {
+                if let Some(count) = self.keys.as_ref().map(|k| k.blocked() + self.caught).filter(|c| *c != blocked) {
                     blocked = count;
                     notify(Update::KeyBlocked { count });
                 }
@@ -401,12 +411,33 @@ impl Session {
         }
         let events = self.passive.stop();
         self.dispatch(events, settings, notify);
+        self.own = None;
         self.keys = None;
         self.monitor = None;
         self.restore.apply();
         // SAFETY: as above; clears this thread's request.
         unsafe { SetThreadExecutionState(ES_CONTINUOUS) };
         notify(Update::Stopped { error });
+    }
+
+    /// Present our own "playing" media session exactly while recording; it disappears afterwards, so the
+    /// player gets its controls back. Commands it receives are swallowed (counted as blocked keys).
+    fn guard_session(&mut self, recording: bool) {
+        match (&self.own, recording) {
+            (None, true) => {
+                let (title, artist, cover) = match &self.extra {
+                    Some((t, e)) => (format!("rec. {}", t.title), t.artist.clone(), e.cover.as_ref().map(|c| c.data.as_slice())),
+                    None => ("rec.".to_owned(), String::new(), None),
+                };
+                self.own = OwnSession::start(&title, &artist, cover).ok();
+            }
+            (Some(_), false) => self.own = None,
+            _ => {}
+        }
+        if let Some(own) = &self.own {
+            own.pump();
+            self.caught += own.take_pressed().len() as u32;
+        }
     }
 
     fn dispatch(&mut self, events: Vec<Event>, settings: &Settings, notify: &Notify) {

@@ -17,6 +17,9 @@ checks the file and tells you whether it really is the original.
   streams, normalization, an equalizer or resampling don't, and you see that live.
 - **Whole tracks or nothing.** Pausing, skipping, seeking, a buffering stall or a volume change discards the
   track. You never get a file with a hole in it.
+- **Protected while recording.** Media keys, headset buttons and earbuds taking themselves off can't
+  interrupt a track. Only the player's own pause button can. This uses a keyboard hook that only looks at
+  media keys, plus a media session of its own. Nothing else is read or stored.
 - **Forensic check.** Each file is read back and compared, then checked for dropouts, limiting, fades and
   clipping, with timestamps.
 - **Library-ready.** Title, artist, album, track number and cover are filled in. Names follow your own

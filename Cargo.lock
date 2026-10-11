@@ -2197,7 +2197,7 @@ dependencies = [
 
 [[package]]
 name = "mitschnitt-app"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "mitschnitt-core",
  "tauri",
@@ -2206,7 +2206,7 @@ dependencies = [
 
 [[package]]
 name = "mitschnitt-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "claxon",
@@ -2216,7 +2216,7 @@ dependencies = [
 
 [[package]]
 name = "mitschnitt-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "claxon",
  "flacenc",

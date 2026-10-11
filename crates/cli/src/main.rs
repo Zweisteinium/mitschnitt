@@ -30,6 +30,11 @@ enum Command {
         #[arg(long, default_value_t = 60)]
         secs: u64,
     },
+    /// Experiment: register Mitschnitt's own media session and show who receives media commands
+    Smtc {
+        #[arg(long, default_value_t = 90)]
+        secs: u64,
+    },
     /// Passive recording in the terminal, with a live check of how exact the audio arrives (Ctrl+C stops)
     Listen {
         #[arg(default_value = "spotify")]
@@ -50,6 +55,7 @@ fn main() -> ExitCode {
         Command::Setup { app } => setup(&app),
         Command::Listen { app, dry, trace } => listen(app, dry, trace),
         Command::Keys { secs } => keys(secs),
+        Command::Smtc { secs } => smtc(secs),
     }
 }
 
@@ -73,6 +79,58 @@ fn keys(secs: u64) -> ExitCode {
         }
     }
     ExitCode::SUCCESS
+}
+
+#[cfg(windows)]
+fn smtc(secs: u64) -> ExitCode {
+    use mitschnitt_core::media;
+    use mitschnitt_core::own_session::OwnSession;
+    use mitschnitt_core::profile::SPOTIFY;
+    mitschnitt_core::devices::com_init();
+    let session = match OwnSession::start("rec. (experiment)", "Mitschnitt", None) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    println!("Own media session registered as \"playing\" for {secs} s. Take an earbud out, put it back, press its button...");
+    let start = std::time::Instant::now();
+    let (mut current, mut spotify) = (String::new(), String::new());
+    while start.elapsed().as_secs() < secs {
+        session.pump();
+        let t = start.elapsed().as_secs_f64();
+        for b in session.take_pressed() {
+            println!("{t:>7.2} s  MITSCHNITT received: {b}");
+        }
+        let now = media::manager().and_then(|m| m.GetCurrentSession()).and_then(|s| s.SourceAppUserModelId()).map(|s| s.to_string()).unwrap_or_else(|_| "-".into());
+        if now != current {
+            println!("{t:>7.2} s  current session: {now}");
+            current = now;
+        }
+        let state = media::find(&SPOTIFY)
+            .ok()
+            .flatten()
+            .and_then(|s| s.GetPlaybackInfo().and_then(|p| p.PlaybackStatus()).ok())
+            .map(|s| format!("{s:?}"))
+            .unwrap_or_else(|| "-".into());
+        if state != spotify {
+            println!("{t:>7.2} s  Spotify: {state}");
+            spotify = state;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    drop(session);
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let after = media::manager().and_then(|m| m.GetCurrentSession()).and_then(|s| s.SourceAppUserModelId()).map(|s| s.to_string()).unwrap_or_else(|_| "-".into());
+    println!("after closing our session, current session: {after}");
+    ExitCode::SUCCESS
+}
+
+#[cfg(not(windows))]
+fn smtc(_secs: u64) -> ExitCode {
+    eprintln!("only available on Windows");
+    ExitCode::FAILURE
 }
 
 #[cfg(not(windows))]

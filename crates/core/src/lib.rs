@@ -31,6 +31,8 @@ pub mod media;
 #[cfg(windows)]
 pub mod monitor;
 #[cfg(windows)]
+pub mod own_session;
+#[cfg(windows)]
 pub mod sessions;
 #[cfg(windows)]
 pub mod setup;
