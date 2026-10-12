@@ -27,7 +27,9 @@
   }
 
   // Mitschnitt's Windows mixer entry: moving this moves the mixer, and the other way round.
-  const volume = $derived(session.monitorVolume ?? 1);
+  // The mixer level is a linear amplitude; hearing is logarithmic. The slider uses the usual cubic audio taper
+  // (50 % ≈ -18 dB, 10 % ≈ -60 dB), so every part of it changes the loudness noticeably.
+  const position = $derived(Math.cbrt(session.monitorVolume ?? 1));
 </script>
 
 <Panel label="Now" index="02">
@@ -80,10 +82,10 @@
       {/each}
     </div>
     {#if session.platform?.monitor && session.settings?.monitor && session.monitorVolume !== null}
-      <label class="volume" title="Same as Mitschnitt in the Windows volume mixer">
+      <label class="volume" title="Mitschnitt in the Windows volume mixer, on a loudness scale">
         <span class="mono muted">Monitor</span>
-        <input type="range" min="0" max="1" step="0.01" value={volume} oninput={(e) => session.setMonitorVolume(+e.currentTarget.value)} />
-        <span class="mono">{Math.round(volume * 100)}</span>
+        <input type="range" min="0" max="1" step="0.01" value={position} oninput={(e) => session.setMonitorVolume(Math.pow(+e.currentTarget.value, 3))} />
+        <span class="mono">{Math.round(position * 100)}</span>
       </label>
     {/if}
   {/if}

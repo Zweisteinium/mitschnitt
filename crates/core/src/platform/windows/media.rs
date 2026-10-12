@@ -11,7 +11,7 @@ use windows::Storage::Streams::DataReader;
 use windows::core::Result;
 
 use crate::flac::Cover;
-use crate::media::{Extra, Source};
+use crate::media::{Control, Extra, Source};
 use crate::passive::{Media, Track};
 use crate::profile::{PROFILES, Profile};
 use crate::sessions;
@@ -107,6 +107,16 @@ impl Watcher {
 }
 
 impl Watcher {
+    /// Send a command to the player.
+    pub fn control(&self, control: Control) -> std::result::Result<(), String> {
+        let op = match control {
+            Control::Pause => self.session.TryPauseAsync(),
+            Control::Next => self.session.TrySkipNextAsync(),
+            Control::Previous => self.session.TrySkipPreviousAsync(),
+        };
+        op.and_then(|op| op.join()).map(|_| ()).map_err(|e| e.to_string())
+    }
+
     /// Album artist, track number and cover of what is playing now (best effort).
     pub fn extra(&self) -> Extra {
         let Ok(props) = self.session.TryGetMediaPropertiesAsync().and_then(|op| op.join()) else { return Extra::default() };

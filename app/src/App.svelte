@@ -1,9 +1,11 @@
 <script lang="ts">
   import { getVersion } from "@tauri-apps/api/app";
   import { onMount } from "svelte";
+  import Echolot from "./components/Echolot.svelte";
   import History from "./components/History.svelte";
   import Now from "./components/Now.svelte";
   import Source from "./components/Source.svelte";
+  import { echolot } from "./lib/echolot.svelte";
   import { session, type Tab } from "./lib/session.svelte";
   import Settings from "./views/Settings.svelte";
   import Setup from "./views/Setup.svelte";
@@ -18,6 +20,7 @@
 
   onMount(() => {
     session.init();
+    echolot.init();
     getVersion().then((v) => (version = v)).catch(() => {});
   });
 </script>
@@ -51,7 +54,10 @@
   <main>
     {#if session.tab === "listen"}
       <div class="listen">
-        <Source />
+        <div class="col">
+          <Source />
+          <Echolot />
+        </div>
         <div class="col">
           <Now />
           <History />

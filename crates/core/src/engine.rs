@@ -3,41 +3,72 @@
 //! Threads: the capture thread sends packets over a channel; the engine thread owns every platform
 //! object (media session, volume controls; COM/WinRT on Windows), feeds the state machine and the monitor and polls media
 //! 10x per second; each finished track is written and checked on its own short-lived worker thread.
+//!
+//! With a [`Queue`] attached, the engine also drives the player: a [`Runner`] on the engine thread starts each
+//! requested song, and only those songs are written (as FLAC, tagged with their Spotify id and ISRC).
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::mpsc::{self, RecvTimeoutError, Sender};
-use std::sync::Arc;
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
-use crate::analyze::{self, Master, Severity};
+use crate::analyze::{self, Master, Report, Severity};
 use crate::audio::Audio;
 use crate::capture::{Capture, CaptureEvent, Packet};
 use crate::devices::{self, default_endpoint};
 use crate::flac::Tags;
 use crate::guard::Guard;
-use crate::media::{self, Extra, Watcher};
+use crate::media::{self, Control, Extra, Watcher};
 use crate::monitor::{Monitor, MonitorState};
 use crate::output;
 use crate::passive::{Event, Passive, Reason, Status, Track};
 use crate::power::KeepAwake;
 use crate::profile::Profile;
-use crate::settings::Settings;
-use crate::{init_thread, sessions};
+use crate::runner::{Action, Job, Outcome, Runner, Written};
+use crate::settings::{BitDepth, Format, Settings};
+use crate::{desktop, init_thread, sessions};
 
 pub use crate::platform::os::GAIN;
 const CHANNELS: u16 = 2;
 const MEDIA_POLL: Duration = Duration::from_millis(100);
 const VOLUME_POLL: Duration = Duration::from_millis(500);
+/// How often to look for the player's media session while it has none (queue mode: the player may still be starting).
+const FIND_SESSION: Duration = Duration::from_secs(1);
 
 pub struct Config {
     pub profile: Profile,
     pub settings: Settings,
     /// Diagnostics: write the raw capture and a timeline of player events into this folder.
     pub trace: Option<PathBuf>,
+    /// Drive the player through these songs from the start (the player needs no media session yet).
+    pub queue: Option<Queue>,
+}
+
+/// Songs to play and record one after another (see [`crate::runner`]).
+pub struct Queue {
+    /// The next song; taken whenever the runner is ready.
+    pub jobs: Receiver<Job>,
+    /// Every finished song with its outcome.
+    pub done: Sender<(Job, Outcome)>,
+    /// What the runner does right now.
+    pub status: Arc<Mutex<QueueStatus>>,
+    /// Where the recordings go.
+    pub out_dir: PathBuf,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct QueueStatus {
+    /// The song being worked on.
+    pub job: Option<Job>,
+    /// It is being recorded right now.
+    pub recording: bool,
+    pub recorded_ms: u64,
+    /// The player is playing (anything).
+    pub playing: bool,
 }
 
 /// Raw capture (`raw.f32`, interleaved float as captured, silent packets as zeros) and a timeline
@@ -121,6 +152,10 @@ enum Msg {
     Packet(Packet),
     CaptureError(String),
     StopAfterTrack,
+    Attach(Queue),
+    Detach,
+    /// The file of the queue's current song was written (or not).
+    Written(Written),
     Stop,
 }
 
@@ -143,10 +178,15 @@ impl Engine {
             .name("engine".into())
             .spawn(move || {
                 init_thread();
-                match Session::open(&config, packets) {
-                    Ok(session) => {
+                let mut config = config;
+                let queue = config.queue.take();
+                match Session::open(&config, queue.is_some(), packets) {
+                    Ok(mut session) => {
                         let monitor = session.monitor.as_ref().map(|m| (m.volume_handle(), m.state()));
                         let _ = ready_tx.send(Ok((session.info.clone(), monitor)));
+                        if let Some(queue) = queue {
+                            session.attach(queue);
+                        }
                         session.run(&rx, &config.settings, &notify);
                     }
                     Err(e) => {
@@ -163,6 +203,21 @@ impl Engine {
     /// Finish the track being recorded, then stop (immediately when none is).
     pub fn stop_after_track(&self) {
         let _ = self.tx.send(Msg::StopAfterTrack);
+    }
+
+    /// Start driving the player through `queue` (a listening engine keeps running underneath). Gives the queue
+    /// back when this engine has stopped meanwhile (player closed, capture error).
+    pub fn attach(&self, queue: Queue) -> Result<(), Queue> {
+        match self.tx.send(Msg::Attach(queue)) {
+            Ok(()) => Ok(()),
+            Err(mpsc::SendError(Msg::Attach(queue))) => Err(queue),
+            Err(_) => unreachable!("sent an Attach"),
+        }
+    }
+
+    /// Stop driving the player; a song being worked on counts as stalled.
+    pub fn detach(&self) {
+        let _ = self.tx.send(Msg::Detach);
     }
 
     /// Unmute a monitor that muted itself on an output change; the current output becomes its device.
@@ -242,12 +297,33 @@ pub fn recover() {
     }
 }
 
+/// Where an app without an audio stream yet will play (a queue starts the player itself): into the cable, at the
+/// app's rate. Capturing at another rate would resample every song.
+fn expected_endpoint(profile: &Profile) -> Result<devices::Endpoint, String> {
+    let default = default_endpoint().map_err(|e| e.to_string())?;
+    if profile.rate == 0 {
+        return Ok(default);
+    }
+    let cable = devices::render_endpoints().ok().into_iter().flatten().find(|e| e.name.contains("CABLE Input"));
+    Ok(cable.unwrap_or(devices::Endpoint { sample_rate: profile.rate, ..default }))
+}
+
+/// A queue being worked through, with its runner.
+struct QueueRun {
+    queue: Queue,
+    runner: Runner,
+    /// The monitor is silenced for the queue (it plays songs nobody chose to listen to): the level to go back to.
+    quiet: Option<f32>,
+}
+
 /// Everything that lives on the engine thread.
 struct Session {
     info: SourceInfo,
     profile: Profile,
     root_pid: u32,
-    watcher: Watcher,
+    /// The player's media session; in queue mode it may only appear once the first song plays.
+    watcher: Option<Watcher>,
+    find_at: Instant,
     /// Album artist, track number and cover, read when the current recording started.
     extra: Option<(Track, Extra)>,
     trace: Option<Trace>,
@@ -256,16 +332,20 @@ struct Session {
     restore: Restore,
     passive: Passive,
     monitor: Option<Monitor>,
+    queue: Option<QueueRun>,
+    /// For worker threads to report back.
+    tx: Sender<Msg>,
     _capture: Capture,
 }
 
 impl Session {
-    fn open(config: &Config, packets: Sender<Msg>) -> Result<Session, String> {
+    fn open(config: &Config, queued: bool, packets: Sender<Msg>) -> Result<Session, String> {
         recover();
         let profile = &config.profile;
-        let session = media::find(profile)
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| format!("{} shows no playback yet - start playback in the app first.", profile.name))?;
+        let session = media::find(profile).map_err(|e| e.to_string())?;
+        if session.is_none() && !queued {
+            return Err(format!("{} shows no playback yet - start playback in the app first.", profile.name));
+        }
         let procs = sessions::processes();
         let root = sessions::find_app(profile.exe, &procs).ok_or_else(|| format!("{} is not running.", profile.name))?;
         let tree = sessions::tree(root.pid, &procs);
@@ -277,7 +357,10 @@ impl Session {
         let app_volume = sessions::get(&app_controls).into_iter().reduce(f32::max);
         let mut restore = Restore { app: profile.exe.to_owned(), app_volume, unmute_listen, rate: None };
         restore.save();
-        let mut endpoint = sessions::app_endpoint(&tree).map_or_else(|| default_endpoint().map_err(|e| e.to_string()), Ok)?;
+        let mut endpoint = match sessions::app_endpoint(&tree) {
+            Some(endpoint) => endpoint,
+            None => expected_endpoint(profile)?,
+        };
         if profile.rate > 0 {
             match devices::hold_rate(profile.rate) {
                 Ok(previous) => restore.rate = previous,
@@ -296,6 +379,7 @@ impl Session {
             sessions::set_mute(&listen, true); // our monitor replaces it; avoid hearing everything twice
         }
 
+        let tx = packets.clone();
         let capture = Capture::start(root.pid, endpoint.sample_rate, CHANNELS, move |event| {
             let _ = packets.send(match event {
                 CaptureEvent::Packet(p) => Msg::Packet(p),
@@ -314,7 +398,8 @@ impl Session {
             info: SourceInfo { app: profile.name.to_owned(), device: endpoint.name, rate: endpoint.sample_rate },
             profile: profile.clone(),
             root_pid: root.pid,
-            watcher: Watcher::new(session),
+            watcher: session.map(Watcher::new),
+            find_at: Instant::now(),
             extra: None,
             // Best effort: without the guard, listening still works (media keys just aren't blocked).
             guard: config.settings.protect_media_keys.then(Guard::start).and_then(Result::ok),
@@ -325,8 +410,56 @@ impl Session {
             restore,
             passive: Passive::new(endpoint.sample_rate, CHANNELS as usize, GAIN),
             monitor,
+            queue: None,
+            tx,
             _capture: capture,
         })
+    }
+
+    fn attach(&mut self, queue: Queue) {
+        self.detach(Outcome::Stalled { detail: "replaced by another queue".into() });
+        self.queue = Some(QueueRun { queue, runner: Runner::new(Instant::now()), quiet: None });
+    }
+
+    /// Stop driving the player: a song being worked on ends with `outcome`, the monitor gets its level back.
+    fn detach(&mut self, outcome: Outcome) {
+        let Some(mut run) = self.queue.take() else { return };
+        let actions = run.runner.abort(Instant::now(), outcome);
+        self.act(&actions, run.runner.job());
+        for done in run.runner.take_done() {
+            let _ = run.queue.done.send(done);
+        }
+        if let (Some(level), Some(monitor)) = (run.quiet, &self.monitor) {
+            // Moved by the user during the queue (slider or mixer): that level stays.
+            let handle = monitor.volume_handle();
+            if f32::from_bits(handle.load(Ordering::Relaxed)) == 0.0 {
+                handle.store(level.to_bits(), Ordering::Relaxed);
+                std::thread::sleep(Duration::from_millis(50)); // let the monitor apply it before it may stop
+            }
+        }
+        if let Ok(mut status) = run.queue.status.lock() {
+            *status = QueueStatus::default();
+        }
+    }
+
+    /// Carry out the runner's actions on the player.
+    fn act(&self, actions: &[Action], job: Option<&Job>) {
+        for action in actions {
+            let result = match action {
+                Action::Open => job.map_or(Ok(()), |j| desktop::open_link_in_background(&j.play_uri(), self.profile.exe)),
+                Action::Pause | Action::Next | Action::Previous => {
+                    let control = match action {
+                        Action::Pause => Control::Pause,
+                        Action::Next => Control::Next,
+                        _ => Control::Previous,
+                    };
+                    self.watcher.as_ref().map_or(Ok(()), |w| w.control(control))
+                }
+            };
+            if let Err(e) = result {
+                eprintln!("runner: {action:?}: {e}");
+            }
+        }
     }
 
     fn run(mut self, rx: &mpsc::Receiver<Msg>, settings: &Settings, notify: &Notify) {
@@ -336,7 +469,8 @@ impl Session {
         let (mut error, mut stop_after) = (None, false);
         let (mut blocked, mut muted, mut volume) = (0, false, f32::NAN);
         loop {
-            if stop_after && !self.passive.recording() {
+            // A queue's song that is being written still needs the engine for its result.
+            if stop_after && !self.passive.recording() && !self.queue.as_ref().is_some_and(|q| q.runner.writing()) {
                 break;
             }
             if let Some(guard) = &mut self.guard {
@@ -361,6 +495,20 @@ impl Session {
                     stop_after = true;
                     Vec::new()
                 }
+                Ok(Msg::Attach(queue)) => {
+                    self.attach(queue);
+                    Vec::new()
+                }
+                Ok(Msg::Detach) => {
+                    self.detach(Outcome::Stalled { detail: "stopped".into() });
+                    Vec::new()
+                }
+                Ok(Msg::Written(result)) => {
+                    if let Some(run) = &mut self.queue {
+                        run.runner.written(Instant::now(), result);
+                    }
+                    Vec::new()
+                }
                 Ok(Msg::Stop) | Err(RecvTimeoutError::Disconnected) => break,
                 Err(RecvTimeoutError::Timeout) => Vec::new(),
             };
@@ -369,20 +517,27 @@ impl Session {
             let now = Instant::now();
             if now >= next_media {
                 next_media = now + MEDIA_POLL;
-                match self.watcher.snapshot() {
-                    Ok(mut media) => {
+                if self.watcher.is_none() && now >= self.find_at {
+                    self.find_at = now + FIND_SESSION;
+                    self.watcher = media::find(&self.profile).ok().flatten().map(Watcher::new);
+                }
+                let snapshot = self.watcher.as_mut().map(|w| w.snapshot().map_err(|e| e.to_string()));
+                match snapshot {
+                    Some(Ok(mut media)) => {
                         // An ad is not a track: as far as recording goes, nothing is playing.
                         media.track = media.track.filter(|t| !(self.profile.is_ad)(t));
                         if let Some(t) = &mut self.trace {
                             t.media(&media);
                         }
-                        let events = self.passive.media(media);
+                        let events = self.passive.media(media.clone());
                         self.dispatch(events, settings, notify);
+                        self.drive(now, &media);
                     }
-                    Err(e) => {
+                    Some(Err(e)) => {
                         error = Some(format!("media session lost: {e}"));
                         break;
                     }
+                    None => self.drive(now, &crate::passive::Media::default()),
                 }
                 if now >= next_volume {
                     next_volume = now + VOLUME_POLL;
@@ -421,11 +576,49 @@ impl Session {
         }
         let events = self.passive.stop();
         self.dispatch(events, settings, notify);
+        // Stopped by the user (Stop, closing the app): his take-over. A failure: worth another try.
+        self.detach(match &error {
+            Some(e) => Outcome::Stalled { detail: e.clone() },
+            None => Outcome::TookOver { detail: "listening was stopped".into() },
+        });
         self.guard = None;
         self.monitor = None;
         self.restore.apply();
         drop(awake);
         notify(Update::Stopped { error });
+    }
+
+    /// Queue mode, once per media snapshot: let the runner act, hand it the next song, report what finished.
+    fn drive(&mut self, now: Instant, media: &crate::passive::Media) {
+        let Some(run) = &mut self.queue else { return };
+        // Silence the monitor while the queue runs, once its level is known.
+        if run.quiet.is_none()
+            && let Some(monitor) = &self.monitor
+        {
+            let handle = monitor.volume_handle();
+            let level = f32::from_bits(handle.load(Ordering::Relaxed));
+            if !level.is_nan() {
+                run.quiet = Some(level);
+                handle.store(0f32.to_bits(), Ordering::Relaxed);
+            }
+        }
+        let mut actions = run.runner.tick(now, media);
+        if run.runner.ready(now)
+            && let Ok(job) = run.queue.jobs.try_recv()
+        {
+            actions.extend(run.runner.assign(job, now, media.playing));
+        }
+        let job = run.runner.job().cloned();
+        let done = run.runner.take_done();
+        let status = QueueStatus { job: job.clone(), recording: run.runner.recording(), recorded_ms: 0, playing: media.playing };
+        for d in done {
+            let _ = run.queue.done.send(d);
+        }
+        let recorded_ms = self.passive.recorded_ms();
+        if let Ok(mut s) = run.queue.status.lock() {
+            *s = QueueStatus { recorded_ms, ..status };
+        }
+        self.act(&actions, job.as_ref());
     }
 
     fn dispatch(&mut self, events: Vec<Event>, settings: &Settings, notify: &Notify) {
@@ -437,46 +630,99 @@ impl Session {
                     Event::Completed { track, off_grid, off_span, .. } => format!("completed\t{}\toff_grid={off_grid}\toff_span={off_span:?}", track.title),
                 });
             }
+            // Queue mode: the runner sees every event first; only its own songs are reported and written.
+            let mut target = true;
+            if let Some(run) = &mut self.queue {
+                let now = Instant::now();
+                let actions = run.runner.event(now, &event);
+                let job = run.runner.job().cloned();
+                target = match &event {
+                    Event::Completed { track, .. } => run.runner.is_target(track),
+                    Event::Started(track) | Event::Dropped { track, .. } => job.as_ref().is_some_and(|j| crate::runner::matches(j, track).is_ok()),
+                };
+                for d in run.runner.take_done() {
+                    let _ = run.queue.done.send(d);
+                }
+                self.act(&actions, job.as_ref());
+            }
             match event {
                 Event::Started(track) => {
-                    self.extra = Some((track.clone(), self.watcher.extra()));
-                    notify(Update::Started { track });
+                    let extra = self.watcher.as_ref().map(Watcher::extra).unwrap_or_default();
+                    self.extra = Some((track.clone(), extra));
+                    if target {
+                        notify(Update::Started { track });
+                    }
                 }
-                Event::Dropped { track, reason } => notify(Update::Dropped { track, reason, message: reason.message().to_owned() }),
+                Event::Dropped { track, reason } => {
+                    if target {
+                        notify(Update::Dropped { track, reason, message: reason.message().to_owned() })
+                    }
+                }
                 Event::Completed { track, samples, off_grid, off_span } => {
                     let extra = self.extra.take().filter(|(t, _)| *t == track).map(|(_, e)| e).unwrap_or_default();
-                    let tags = Tags {
+                    let mut tags = Tags {
                         title: track.title.clone(),
                         artist: track.artist.clone(),
                         album: track.album.clone(),
                         album_artist: extra.album_artist,
                         track_number: extra.track_number,
                         cover: extra.cover,
+                        extra: Vec::new(),
                     };
-                    let (rate, lossless, settings, notify) = (self.info.rate, self.profile.lossless, settings.clone(), notify.clone());
-                    std::thread::spawn(move || finish(track, tags, samples, (off_grid, off_span), rate, lossless, &settings, &notify));
+                    let (rate, lossless, notify) = (self.info.rate, self.profile.lossless, notify.clone());
+                    match &self.queue {
+                        // Leftovers of the runner's own starts and stops (the album playing on) are not kept.
+                        Some(_) if !target => {}
+                        Some(run) => {
+                            let job = run.runner.job().cloned();
+                            if let Some(job) = &job {
+                                tags.extra = vec![("SPOTIFY_TRACK_ID".into(), job.track_id().into()), ("ISRC".into(), job.isrc.clone())];
+                            }
+                            // Always a FLAC that is kept, whatever the listening settings say.
+                            let settings = Settings { out_dir: run.queue.out_dir.clone(), format: Format::Flac, bit_depth: BitDepth::Auto, keep_flagged: true, skip_existing: false, ..settings.clone() };
+                            let (tx, done) = (self.tx.clone(), run.queue.done.clone());
+                            std::thread::spawn(move || {
+                                let written = finish_job(track, tags, samples, (off_grid, off_span), rate, lossless, &settings, &notify);
+                                // The engine stopped meanwhile: report the result directly.
+                                if let (Err(mpsc::SendError(Msg::Written(written))), Some(job)) = (tx.send(Msg::Written(written)), job) {
+                                    let _ = done.send((job, written.into()));
+                                }
+                            });
+                        }
+                        None => {
+                            let settings = settings.clone();
+                            std::thread::spawn(move || finish(track, tags, samples, (off_grid, off_span), rate, lossless, &settings, &notify));
+                        }
+                    }
                 }
             }
         }
     }
 }
 
-/// Write, verify and check one finished track.
-#[allow(clippy::too_many_arguments)]
-fn finish(track: Track, tags: Tags, samples: Vec<i32>, (off_grid, off_span): (usize, Option<(usize, usize)>), rate: u32, lossless: bool, settings: &Settings, notify: &Notify) {
-    if settings.skip_existing && let Some(file) = output::existing(&tags, settings) {
-        return notify(Update::Exists { track, file: file.display().to_string() });
-    }
+/// A finished recording, checked: the audio at 24 bit, the forensic report and whether the source was exact.
+struct Checked {
+    audio: Audio,
+    report: Report,
+    exact: bool,
+    /// Only the player's fade-in at the start is not original: what to tell about it.
+    faded: Option<String>,
+}
+
+fn check(samples: Vec<i32>, (off_grid, off_span): (usize, Option<(usize, usize)>), rate: u32, lossless: bool) -> Checked {
     let audio = Audio { rate, channels: CHANNELS as usize, bits: 24, samples };
     let exact = off_grid == 0;
     let mut report = analyze::analyze_with(&audio, exact);
+    let mut faded = None;
     if !exact && lossless {
         let ms = |frames: usize| frames as f64 * 1000.0 / rate as f64;
         let text = match off_span {
             // Players fade in when the user starts a track (Spotify: ~10 ms); everything after is untouched.
             Some((first, last)) if ms(last) < 250.0 && ms(first) < 5.0 => {
                 report.issues.retain(|i| !i.text.starts_with("fade-in at the start"));
-                format!("faded in by the player: the first {:.1} ms are not original, everything after is bit-exact", ms(last + 1))
+                let text = format!("faded in by the player: the first {:.1} ms are not original, everything after is bit-exact", ms(last + 1));
+                faded = Some(text.clone());
+                text
             }
             _ => {
                 let share = off_grid as f64 * 100.0 / audio.frames().max(1) as f64;
@@ -486,6 +732,16 @@ fn finish(track: Track, tags: Tags, samples: Vec<i32>, (off_grid, off_span): (us
         report.issues.insert(0, analyze::Issue { severity: Severity::Altered, text });
         report.verdict = report.verdict.max(Severity::Altered);
     }
+    Checked { audio, report, exact, faded }
+}
+
+/// Write, verify and check one finished track.
+#[allow(clippy::too_many_arguments)]
+fn finish(track: Track, tags: Tags, samples: Vec<i32>, grid: (usize, Option<(usize, usize)>), rate: u32, lossless: bool, settings: &Settings, notify: &Notify) {
+    if settings.skip_existing && let Some(file) = output::existing(&tags, settings) {
+        return notify(Update::Exists { track, file: file.display().to_string() });
+    }
+    let Checked { audio, report, exact, .. } = check(samples, grid, rate, lossless);
     match output::write(&audio, &tags, settings) {
         Ok(path) => {
             let flagged = report.verdict > Severity::Info;
@@ -505,5 +761,33 @@ fn finish(track: Track, tags: Tags, samples: Vec<i32>, (off_grid, off_span): (us
             });
         }
         Err(error) => notify(Update::Failed { track, error }),
+    }
+}
+
+/// Write one song of a queue. Only a lossless stream is kept: exact, or exact after the player's fade-in.
+#[allow(clippy::too_many_arguments)]
+fn finish_job(track: Track, tags: Tags, samples: Vec<i32>, grid: (usize, Option<(usize, usize)>), rate: u32, lossless: bool, settings: &Settings, notify: &Notify) -> Written {
+    let Checked { audio, report, exact, faded } = check(samples, grid, rate, lossless);
+    if lossless && !exact && faded.is_none() {
+        let detail = report.issues.first().map(|i| i.text.clone()).unwrap_or_default();
+        notify(Update::Failed { track, error: format!("not lossless, not kept: {detail}") });
+        return Written::Lossy { detail };
+    }
+    match output::write(&audio, &tags, settings) {
+        Ok(path) => {
+            notify(Update::Saved {
+                file: Some(path.display().to_string()),
+                verdict: report.verdict,
+                master: report.master,
+                exact,
+                issues: report.issues.into_iter().map(|i| i.text).collect(),
+                track,
+            });
+            Written::Saved { file: path, note: faded }
+        }
+        Err(error) => {
+            notify(Update::Failed { track, error: error.clone() });
+            Written::Failed { error }
+        }
     }
 }

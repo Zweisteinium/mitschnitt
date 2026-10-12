@@ -103,6 +103,13 @@
           <span class="note muted">Keep recordings the check marks as altered or corrupt (they are listed either way).</span>
         </span>
       </label>
+      <label class="toggle">
+        <input type="checkbox" checked={s.keep_echolot_copies} onchange={(e) => set("keep_echolot_copies", e.currentTarget.checked)} />
+        <span>
+          <span class="title">Keep a copy of Echolot recordings</span>
+          <span class="note muted">After Echolot took a recording, keep it in the output folder too. Off: it is deleted once Echolot has it. Recordings Echolot rejects are kept in "Not taken" either way.</span>
+        </span>
+      </label>
       <p class="muted rate">Changes apply the next time you start listening{session.platform?.monitor ? "; the monitor volume applies immediately" : ""}.</p>
     </Panel>
   </div>

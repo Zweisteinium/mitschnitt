@@ -35,6 +35,8 @@ export type Settings = {
   skip_existing: boolean;
   protect_media_keys: boolean;
   monitor: boolean;
+  keep_echolot_copies: boolean;
+  echolot_url: string;
 };
 
 /** What this system offers; the UI shows only what works here. */
@@ -42,6 +44,40 @@ export type Platform = { os: string; monitor: boolean; media_keys: boolean; gain
 
 export type CheckState = "ok" | "warn" | "bad" | "check";
 export type Check = { id: string; title: string; state: CheckState; detail: string; fix: string | null };
+
+/** A song Echolot (or an exported list) wants recorded. */
+export type Job = { id: number | null; uri: string; artist: string; artists: string[]; title: string; album: string; duration_ms: number; isrc: string };
+export type EcholotSession = {
+  id: number;
+  title: string;
+  state: "running" | "paused" | "done" | "stopped";
+  reason: string;
+  total: number;
+  done: number;
+  filed: number;
+  not_better: number;
+  skipped: number;
+  failed: number;
+  minutes_left: number;
+};
+export type DeviceState = "idle" | "busy" | "recording" | "setup";
+export type RecorderSnapshot = {
+  /** "connected", "offline", "disconnected", "file" (an exported list runs) or "" (nothing). */
+  connection: string;
+  user: string;
+  host: string;
+  device: string;
+  state: DeviceState | null;
+  detail: string;
+  session: EcholotSession | null;
+  current: Job | null;
+  uploads: number;
+  error: string | null;
+  done: number;
+  total: number;
+};
+export type RecorderUpdate = { kind: "snapshot"; snapshot: RecorderSnapshot } | { kind: "song"; job: Job; result: string; detail: string };
+export type CardState = { snapshot: RecorderSnapshot; url: string; pairing: boolean };
 
 export const api = {
   sources: () => invoke<Source[]>("sources"),
@@ -57,6 +93,18 @@ export const api = {
   fix: (action: string, app: string) => invoke<string>("fix", { action, app }),
   open: (target: string) => invoke<void>("open", { target }),
   platform: () => invoke<Platform>("platform"),
+  echolotState: () => invoke<CardState>("echolot_state"),
+  echolotConnect: (url: string) => invoke<void>("echolot_connect", { url }),
+  echolotCode: (code: string) => invoke<void>("echolot_code", { code }),
+  echolotCancel: () => invoke<void>("echolot_cancel"),
+  echolotDisconnect: () => invoke<void>("echolot_disconnect"),
+  echolotSession: (action: "pause" | "resume" | "stop") => invoke<void>("echolot_session", { action }),
+  importQueue: () => invoke<void>("import_queue"),
+  stopQueue: () => invoke<void>("stop_queue"),
+  onEcholot: (handler: (u: RecorderUpdate) => void): Promise<UnlistenFn> => listen<RecorderUpdate>("echolot", (e) => handler(e.payload)),
+  onEcholotConnect: (handler: (url: string) => void): Promise<UnlistenFn> => listen<string>("echolot-connect", (e) => handler(e.payload)),
+  onEcholotError: (handler: (error: string) => void): Promise<UnlistenFn> => listen<string>("echolot-error", (e) => handler(e.payload)),
+  onListening: (handler: (info: SourceInfo) => void): Promise<UnlistenFn> => listen<SourceInfo>("listening", (e) => handler(e.payload)),
   onUpdate: (handler: (u: Update) => void): Promise<UnlistenFn> => listen<Update>("update", (e) => handler(e.payload)),
 };
 

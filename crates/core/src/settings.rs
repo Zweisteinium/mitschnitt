@@ -47,6 +47,11 @@ pub struct Settings {
     /// Play the captured audio on the default output device (Windows only, see [`crate::monitor`]). Its volume
     /// is the app's Windows mixer entry (remembered by Windows), so it isn't stored here.
     pub monitor: bool,
+    /// After Echolot answered for an upload, keep the recording in the output folder (otherwise it is deleted;
+    /// files Echolot rejects are kept in "Not taken" either way).
+    pub keep_echolot_copies: bool,
+    /// The Echolot this PC was last connected to (the token itself is in the credential store).
+    pub echolot_url: String,
 }
 
 impl Default for Settings {
@@ -61,6 +66,8 @@ impl Default for Settings {
             skip_existing: true,
             protect_media_keys: true,
             monitor: true,
+            keep_echolot_copies: true,
+            echolot_url: String::new(),
         }
     }
 }

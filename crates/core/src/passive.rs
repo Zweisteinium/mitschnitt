@@ -359,6 +359,14 @@ impl Passive {
         matches!(self.state, State::Recording { .. })
     }
 
+    /// How much of the current track is recorded so far.
+    pub fn recorded_ms(&self) -> u64 {
+        match &self.state {
+            State::Recording { samples, .. } => frames_to_ms(samples.len() / self.channels, self.rate),
+            _ => 0,
+        }
+    }
+
     /// Current state; resets the level meter.
     pub fn status(&mut self) -> Status {
         let (phase, track, recorded) = match &self.state {

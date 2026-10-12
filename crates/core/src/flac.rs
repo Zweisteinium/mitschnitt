@@ -18,6 +18,8 @@ pub struct Tags {
     /// 0 = unknown.
     pub track_number: u32,
     pub cover: Option<Cover>,
+    /// More Vorbis comments, e.g. `SPOTIFY_TRACK_ID` and `ISRC` for recordings made for Echolot.
+    pub extra: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone)]
@@ -57,6 +59,11 @@ pub fn write(path: &Path, audio: &Audio, tags: &Tags) -> Result<(), String> {
         }
         if let Some(cover) = &tags.cover {
             tag.add_picture(cover.mime, metaflac::block::PictureType::CoverFront, cover.data.clone());
+        }
+        for (key, value) in &tags.extra {
+            if !value.is_empty() {
+                tag.set_vorbis(key.as_str(), vec![value.as_str()]);
+            }
         }
         tag.set_vorbis("ENCODER", vec!["Mitschnitt"]);
         tag.save().map_err(|e| format!("tags: {e}"))?;
@@ -121,13 +128,14 @@ mod tests {
         let samples: Vec<i32> = (0..44_100 * 2).map(|i| ((i * 7919) % 16_000_000) - 8_000_000).collect();
         let audio = Audio { rate: 44_100, channels: 2, bits: 24, samples };
         let path = std::env::temp_dir().join(format!("mitschnitt-test-{}.flac", std::process::id()));
-        let tags = Tags { title: "Title".into(), artist: "Artist".into(), track_number: 7, cover: Some(Cover { mime: "image/jpeg", data: vec![0xFF, 0xD8, 1, 2] }), ..Tags::default() };
+        let tags = Tags { title: "Title".into(), artist: "Artist".into(), track_number: 7, cover: Some(Cover { mime: "image/jpeg", data: vec![0xFF, 0xD8, 1, 2] }), extra: vec![("ISRC".into(), "DEUM72401234".into())], ..Tags::default() };
         write(&path, &audio, &tags).unwrap();
         let back = read(&path).unwrap();
         assert_eq!(back.samples, audio.samples);
         let tag = metaflac::Tag::read_from_path(&path).unwrap();
         assert_eq!(tag.get_vorbis("ARTIST").unwrap().next(), Some("Artist"));
         assert_eq!(tag.get_vorbis("TRACKNUMBER").unwrap().next(), Some("7"));
+        assert_eq!(tag.get_vorbis("ISRC").unwrap().next(), Some("DEUM72401234"));
         assert_eq!(tag.pictures().count(), 1);
         std::fs::remove_file(&path).unwrap();
     }

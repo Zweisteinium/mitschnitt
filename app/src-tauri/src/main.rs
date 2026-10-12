@@ -1,6 +1,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod echolot;
+
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use mitschnitt_core::engine::{self, Config, Engine, SourceInfo};
 use mitschnitt_core::media::{self, Source};
@@ -8,13 +11,16 @@ use mitschnitt_core::profile::{self, Profile};
 use mitschnitt_core::settings::Settings;
 use mitschnitt_core::setup::{self, Check};
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
+use tauri_plugin_deep_link::DeepLinkExt;
 
-struct App {
-    engine: Mutex<Option<Engine>>,
-    settings: Mutex<Settings>,
+pub(crate) struct App {
+    pub(crate) engine: Mutex<Option<Engine>>,
+    pub(crate) settings: Mutex<Settings>,
+    /// The running engine was started for Echolot's queue (and is stopped again when the queue lets it go).
+    pub(crate) for_queue: AtomicBool,
 }
 
-fn lock<T>(m: &Mutex<T>) -> Result<std::sync::MutexGuard<'_, T>, String> {
+pub(crate) fn lock<T>(m: &Mutex<T>) -> Result<std::sync::MutexGuard<'_, T>, String> {
     m.lock().map_err(|e| e.to_string())
 }
 
@@ -36,7 +42,7 @@ async fn start(app: String, handle: AppHandle, state: State<'_, App>) -> Result<
         return Err("Already listening.".into());
     }
     let settings = lock(&state.settings)?.clone();
-    let (engine, info) = Engine::start(Config { profile, settings, trace: None }, move |update| {
+    let (engine, info) = Engine::start(Config { profile, settings, trace: None, queue: None }, move |update| {
         let _ = handle.emit("update", &update);
     })?;
     *slot = Some(engine);
@@ -45,6 +51,7 @@ async fn start(app: String, handle: AppHandle, state: State<'_, App>) -> Result<
 
 #[tauri::command]
 async fn stop(state: State<'_, App>) -> Result<(), String> {
+    state.for_queue.store(false, Ordering::Relaxed);
     let engine = lock(&state.engine)?.take();
     drop(engine); // stops capture, discards an unfinished track, restores volumes
     Ok(())
@@ -71,6 +78,7 @@ fn unmute_monitor(state: State<'_, App>) -> Result<(), String> {
 /// Forget an engine that stopped by itself (app closed, stop after track).
 #[tauri::command]
 fn release(state: State<'_, App>) -> Result<(), String> {
+    state.for_queue.store(false, Ordering::Relaxed);
     lock(&state.engine)?.take();
     Ok(())
 }
@@ -133,8 +141,64 @@ fn main() {
     std::thread::spawn(engine::recover);
     let settings = Settings::load(&Settings::default_path());
     tauri::Builder::default()
-        .manage(App { engine: Mutex::new(None), settings: Mutex::new(settings) })
-        .invoke_handler(tauri::generate_handler![sources, start, stop, stop_after_track, release, unmute_monitor, set_monitor_volume, get_settings, save_settings, health, fix, open, platform])
+        // First: a second start (a `mitschnitt://` link opened while Mitschnitt runs) hands its link to this one.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+        }))
+        .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_dialog::init())
+        .manage(App { engine: Mutex::new(None), settings: Mutex::new(settings), for_queue: AtomicBool::new(false) })
+        .manage(echolot::Echolot::default())
+        .setup(|app| {
+            // Portable exe and dev builds register the scheme themselves (the installer does it too).
+            #[cfg(windows)]
+            let _ = app.deep_link().register_all();
+            let handle = app.handle().clone();
+            app.deep_link().on_open_url(move |event| {
+                for url in event.urls() {
+                    echolot::open_link(&handle, url.as_str());
+                }
+            });
+            if let Ok(Some(urls)) = app.deep_link().get_current() {
+                for url in urls {
+                    echolot::open_link(app.handle(), url.as_str());
+                }
+            }
+            // A connected device asks Echolot for work whenever Mitschnitt is open.
+            let handle = app.handle().clone();
+            std::thread::spawn(move || {
+                if let Err(e) = echolot::resume(&handle) {
+                    let _ = handle.emit("echolot-error", e);
+                }
+            });
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            sources,
+            start,
+            stop,
+            stop_after_track,
+            release,
+            unmute_monitor,
+            set_monitor_volume,
+            get_settings,
+            save_settings,
+            health,
+            fix,
+            open,
+            platform,
+            echolot::echolot_state,
+            echolot::echolot_connect,
+            echolot::echolot_code,
+            echolot::echolot_cancel,
+            echolot::echolot_disconnect,
+            echolot::echolot_session,
+            echolot::import_queue,
+            echolot::stop_queue
+        ])
         .build(tauri::generate_context!())
         .expect("error while building Mitschnitt")
         .run(|app, event| {

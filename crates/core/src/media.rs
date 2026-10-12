@@ -15,6 +15,14 @@ pub struct Source {
     pub artist: String,
 }
 
+/// A command for the player (the queue runner drives it).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Control {
+    Pause,
+    Next,
+    Previous,
+}
+
 /// Tags beyond the track identity, read once when a recording starts.
 #[derive(Debug, Clone, Default)]
 pub struct Extra {

@@ -20,6 +20,16 @@ const APPIMAGE_ENV: &[&str] = &[
     "GTK_IM_MODULE_FILE",
 ];
 
+/// Open a link with its registered app (`spotify:track:…:play` starts that track in Spotify).
+pub fn open_link(link: &str) -> Result<(), String> {
+    xdg_open(link.as_ref())
+}
+
+/// Open a link for an app that runs in the background (focus handling is Windows only for now).
+pub fn open_link_in_background(link: &str, _exe: &str) -> Result<(), String> {
+    open_link(link)
+}
+
 /// Show a file in the file manager, or open a folder or web link.
 pub fn open(target: &str) -> Result<(), String> {
     let path = Path::new(target);

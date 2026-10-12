@@ -8,7 +8,7 @@ use zbus::names::InterfaceName;
 use zbus::zvariant::{OwnedValue, Value};
 
 use crate::flac::Cover;
-use crate::media::{Extra, Source};
+use crate::media::{Control, Extra, Source};
 use crate::passive::{Media, Track};
 use crate::profile::{PROFILES, Profile};
 use crate::sessions;
@@ -91,6 +91,20 @@ impl Watcher {
         self.track = track;
         let track = self.track.clone().filter(|t| self.unsettled.is_none() && !t.title.is_empty() && t.duration_ms > 0);
         Ok(Media { playing: props.playing(), track, position_ms: props.position_ms() })
+    }
+
+    /// Send a command to the player.
+    pub fn control(&self, control: Control) -> Result<(), String> {
+        let method = match control {
+            Control::Pause => "Pause",
+            Control::Next => "Next",
+            Control::Previous => "Previous",
+        };
+        let destination = self.session.0.inner().destination().to_string();
+        super::bus()?
+            .call_method(Some(destination.as_str()), "/org/mpris/MediaPlayer2", Some("org.mpris.MediaPlayer2.Player"), method, &())
+            .map(|_| ())
+            .map_err(|e| e.to_string())
     }
 
     /// Album artist, track number and cover of what is playing now (best effort).

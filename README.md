@@ -26,6 +26,11 @@ Each finished file is read back, compared and checked for dropouts, limiting, fa
 album, track number and cover are filled in, file names follow your own template, and tracks you already have
 are skipped.
 
+Mitschnitt can also work through a list of songs on its own. It starts each one in Spotify, checks that the right
+song plays, records it and pauses Spotify at the end. The list comes from Echolot, a self-hosted music library that
+takes the recordings straight into the right songs, or from a list exported from it. You can keep using your PC
+meanwhile: when Spotify grabs the focus for a new song, Mitschnitt hands it back. This works on Windows for now.
+
 On Windows, a recording can't be interrupted by media keys, headset buttons or earbuds taking themselves off.
 Only the player's own pause button stops it. This uses a keyboard hook that looks at media keys and nothing
 else, plus a media session of its own.

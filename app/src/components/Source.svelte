@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { echolot } from "../lib/echolot.svelte";
   import { session } from "../lib/session.svelte";
   import Panel from "./Panel.svelte";
 </script>
@@ -19,10 +20,17 @@
       </div>
     </div>
     <div class="stops">
-      <button class="btn wide" onclick={() => session.stopAfterTrack()} disabled={session.busy || session.stopping || session.status?.phase !== "recording"}>
+      <button class="btn wide" onclick={async () => {
+          await echolot.pauseForStop();
+          await session.stopAfterTrack();
+        }} disabled={session.busy || session.stopping || session.status?.phase !== "recording"}>
         {session.stopping ? "Stopping after track…" : "Stop after track"}
       </button>
-      <button class="btn danger wide" onclick={() => session.stop()} disabled={session.busy}>Stop</button>
+      <button class="btn danger wide" onclick={async () => {
+          await echolot.pauseForStop();
+          await session.stop();
+        }}
+        disabled={session.busy}>Stop</button>
     </div>
   {:else}
     <div class="list" role="radiogroup">
