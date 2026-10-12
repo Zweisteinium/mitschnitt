@@ -1,27 +1,44 @@
 //! Protects a recording from media commands: a keyboard hook swallows media keys, and while a track records,
 //! Mitschnitt's own media session receives headset and Bluetooth commands instead of the player.
+//!
+//! Windows can hand the current session back to the player behind our back (locking and unlocking the PC does),
+//! so while recording the session is re-registered after an unlock and whenever another app became current.
 
-use super::keys::KeyGuard;
+use std::time::{Duration, Instant};
+
+use super::keys::{self, KeyGuard};
+use super::media;
 use super::own_session::OwnSession;
 use crate::media::Extra;
 use crate::passive::Track;
 
 pub const SUPPORTED: bool = true;
 
+/// How often to check who holds the current media session while recording.
+const CHECK_EVERY: Duration = Duration::from_secs(1);
+
 pub struct Guard {
     session: Option<OwnSession>,
     keys: KeyGuard,
     caught: u32,
+    /// How Windows names our session (the executable's file name).
+    own_id: String,
+    unlocks: u32,
+    checked: Instant,
 }
 
 impl Guard {
     pub fn start() -> Result<Guard, String> {
-        Ok(Guard { session: None, keys: KeyGuard::start()?, caught: 0 })
+        let own_id = std::env::current_exe().ok().and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned())).unwrap_or_default();
+        Ok(Guard { session: None, keys: KeyGuard::start()?, caught: 0, own_id, unlocks: keys::unlocks(), checked: Instant::now() })
     }
 
     /// Arm while `recording`; the session shows `current` (the track being recorded).
     pub fn update(&mut self, recording: bool, current: Option<&(Track, Extra)>) {
         self.keys.arm(recording);
+        if recording && self.session.is_some() && self.lost() {
+            self.session = None; // re-registered below, which makes it current again
+        }
         match (&self.session, recording) {
             (None, true) => {
                 let (title, artist, cover) = match current {
@@ -29,6 +46,8 @@ impl Guard {
                     None => ("rec.".to_owned(), "", None),
                 };
                 self.session = OwnSession::start(&title, artist, cover).ok();
+                self.unlocks = keys::unlocks();
+                self.checked = Instant::now();
             }
             (Some(_), false) => self.session = None,
             _ => {}
@@ -37,6 +56,24 @@ impl Guard {
             session.pump();
             self.caught += session.take_pressed().len() as u32;
         }
+    }
+
+    /// Whether our session stopped receiving media commands: the PC was unlocked, or another app is current.
+    fn lost(&mut self) -> bool {
+        let unlocks = keys::unlocks();
+        if unlocks != self.unlocks {
+            self.unlocks = unlocks;
+            return true;
+        }
+        if self.checked.elapsed() < CHECK_EVERY {
+            return false;
+        }
+        self.checked = Instant::now();
+        // Only another app counts; no current session at all (or an error) is left alone.
+        media::manager()
+            .and_then(|m| m.GetCurrentSession())
+            .and_then(|s| s.SourceAppUserModelId())
+            .is_ok_and(|id| !self.own_id.is_empty() && !id.to_string().eq_ignore_ascii_case(&self.own_id))
     }
 
     /// Commands swallowed so far.

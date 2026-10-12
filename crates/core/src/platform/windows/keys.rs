@@ -5,19 +5,25 @@
 //! only compares the virtual-key code - every other key passes through untouched, nothing is stored. It
 //! runs on its own thread with a message loop (required for LL hooks) and must stay fast: Windows silently
 //! removes hooks that take longer than `LowLevelHooksTimeout`.
+//!
+//! Locking the PC can cost the hook (and the media session, see `guard`): the thread also watches for the
+//! session being unlocked, installs the hook again and counts the unlock.
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc;
 use std::thread::JoinHandle;
 
-use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::System::RemoteDesktop::{NOTIFY_FOR_THIS_SESSION, WTSRegisterSessionNotification, WTSUnRegisterSessionNotification};
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, DispatchMessageW, GetMessageW, HC_ACTION, KBDLLHOOKSTRUCT, MSG, PostThreadMessageW, SetWindowsHookExW,
-    UnhookWindowsHookEx, WH_KEYBOARD_LL, WM_KEYDOWN, WM_QUIT, WM_SYSKEYDOWN,
+    CallNextHookEx, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW, HC_ACTION, HHOOK,
+    KBDLLHOOKSTRUCT, MSG, PostThreadMessageW, RegisterClassW, SetWindowsHookExW, UnhookWindowsHookEx, WH_KEYBOARD_LL,
+    WINDOW_EX_STYLE, WM_KEYDOWN, WM_QUIT, WM_SYSKEYDOWN, WM_WTSSESSION_CHANGE, WNDCLASSW, WS_OVERLAPPED, WTS_SESSION_UNLOCK,
 };
+use windows::core::w;
 
 const VK_MEDIA_NEXT: u32 = 0xB0;
 const VK_MEDIA_PLAY_PAUSE: u32 = 0xB3;
@@ -28,6 +34,8 @@ static ARMED: AtomicBool = AtomicBool::new(false);
 static BLOCKED: AtomicU32 = AtomicU32::new(0);
 /// Diagnostics: media and volume keys seen (vk codes), when logging.
 static LOG: Mutex<Option<Vec<u32>>> = Mutex::new(None);
+/// Times the session was unlocked since the process started.
+static UNLOCKS: AtomicU32 = AtomicU32::new(0);
 
 fn is_media(vk: u32) -> bool {
     (VK_MEDIA_NEXT..=VK_MEDIA_PLAY_PAUSE).contains(&vk)
@@ -61,6 +69,40 @@ unsafe extern "system" fn hook(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRE
     unsafe { CallNextHookEx(None, code, wparam, lparam) }
 }
 
+unsafe extern "system" fn session_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    if msg == WM_WTSSESSION_CHANGE && wparam.0 == WTS_SESSION_UNLOCK as usize {
+        UNLOCKS.fetch_add(1, Ordering::Relaxed);
+    }
+    // SAFETY: default handling for our hidden window.
+    unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+}
+
+fn install() -> windows::core::Result<HHOOK> {
+    // SAFETY: the hook procedure is a plain function living as long as the process.
+    unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook), GetModuleHandleW(None).ok().map(Into::into), 0) }
+}
+
+/// A hidden window that receives session lock/unlock notifications (best effort).
+fn session_window() -> Option<HWND> {
+    // SAFETY: plain Win32 window creation on this thread; class name and procedure live for the whole process.
+    unsafe {
+        let instance = GetModuleHandleW(None).ok()?;
+        let class = WNDCLASSW { lpfnWndProc: Some(session_wndproc), hInstance: instance.into(), lpszClassName: w!("MitschnittKeys"), ..Default::default() };
+        RegisterClassW(&class); // fails harmlessly if already registered
+        let hwnd = CreateWindowExW(WINDOW_EX_STYLE(0), w!("MitschnittKeys"), w!("Mitschnitt"), WS_OVERLAPPED, 0, 0, 0, 0, None, None, Some(instance.into()), None).ok()?;
+        if WTSRegisterSessionNotification(hwnd, NOTIFY_FOR_THIS_SESSION).is_err() {
+            let _ = DestroyWindow(hwnd);
+            return None;
+        }
+        Some(hwnd)
+    }
+}
+
+/// Times the session was unlocked so far (a change means: take the media session back).
+pub fn unlocks() -> u32 {
+    UNLOCKS.load(Ordering::Relaxed)
+}
+
 /// The installed hook; removed when dropped. One per process.
 pub struct KeyGuard {
     thread_id: u32,
@@ -73,18 +115,33 @@ impl KeyGuard {
         let thread = std::thread::Builder::new()
             .name("keys".into())
             .spawn(move || {
-                // SAFETY: the hook procedure is a plain function living as long as the process; the message loop
-                // runs on this thread until WM_QUIT, then the hook is removed on the same thread.
+                let hook = install();
+                // SAFETY: plain thread id query.
+                let _ = tx.send(hook.as_ref().map(|_| unsafe { GetCurrentThreadId() }).map_err(|e| e.to_string()));
+                let Ok(mut hook) = hook else { return };
+                let window = session_window();
+                let mut unlocks = UNLOCKS.load(Ordering::Relaxed);
+                // SAFETY: the message loop runs on this thread until WM_QUIT; hooks and the window are created and
+                // removed on this same thread.
                 unsafe {
-                    let module = GetModuleHandleW(None).ok();
-                    let hook = SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook), module.map(Into::into), 0);
-                    let _ = tx.send(hook.as_ref().map(|_| GetCurrentThreadId()).map_err(|e| e.to_string()));
-                    let Ok(hook) = hook else { return };
                     let mut msg = MSG::default();
                     while GetMessageW(&mut msg, None, 0, 0).as_bool() {
                         DispatchMessageW(&msg);
+                        let now = UNLOCKS.load(Ordering::Relaxed);
+                        if now != unlocks {
+                            unlocks = now;
+                            // Install a fresh hook first, so no key slips through in between.
+                            if let Ok(fresh) = install() {
+                                let _ = UnhookWindowsHookEx(hook);
+                                hook = fresh;
+                            }
+                        }
                     }
                     let _ = UnhookWindowsHookEx(hook);
+                    if let Some(hwnd) = window {
+                        let _ = WTSUnRegisterSessionNotification(hwnd);
+                        let _ = DestroyWindow(hwnd);
+                    }
                 }
             })
             .map_err(|e| e.to_string())?;

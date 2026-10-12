@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { getVersion } from "@tauri-apps/api/app";
   import { onMount } from "svelte";
   import History from "./components/History.svelte";
   import Now from "./components/Now.svelte";
@@ -13,8 +14,11 @@
     { id: "settings", label: "Settings" },
   ];
 
+  let version = $state("");
+
   onMount(() => {
     session.init();
+    getVersion().then((v) => (version = v)).catch(() => {});
   });
 </script>
 
@@ -23,6 +27,7 @@
     <div class="brand">
       <span class="mark"></span>
       <span class="mono">MITSCHNITT</span>
+      {#if version}<span class="version mono">v{version}</span>{/if}
     </div>
     <nav>
       {#each tabs as t}
@@ -90,6 +95,14 @@
     height: 14px;
     background: var(--edge);
     box-shadow: 0 0 14px rgba(34, 211, 238, 0.6);
+  }
+
+  .version {
+    font-size: 10px;
+    font-weight: 400;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+    opacity: 0.7;
   }
 
   nav {
