@@ -42,8 +42,8 @@ impl Guard {
         match (&self.session, recording) {
             (None, true) => {
                 let (title, artist, cover) = match current {
-                    Some((t, e)) => (format!("rec. {}", t.title), t.artist.as_str(), e.cover.as_ref().map(|c| c.data.as_slice())),
-                    None => ("rec.".to_owned(), "", None),
+                    Some((t, e)) => (format!("Rec. {}", t.title), t.artist.as_str(), e.cover.as_ref().map(|c| c.data.as_slice())),
+                    None => ("Rec.".to_owned(), "", None),
                 };
                 self.session = OwnSession::start(&title, artist, cover).ok();
                 self.unlocks = keys::unlocks();

@@ -1,13 +1,25 @@
 <script lang="ts">
   import { clock } from "../lib/api";
-  import { echolot } from "../lib/echolot.svelte";
+  import { echolot, resultText } from "../lib/echolot.svelte";
+  import { session as listener } from "../lib/session.svelte";
   import Panel from "./Panel.svelte";
 
   const s = $derived(echolot.snapshot);
   const session = $derived(s.session);
   /** A song is being worked on: Pause and Stop take effect after it. */
   const busy = $derived(s.current !== null);
-  const progress = $derived(session && session.total > 0 ? session.done / session.total : s.total > 0 ? s.done / s.total : 0);
+  /** Recorded of the current song: counts down the time left live. */
+  const recorded = $derived(s.current && listener.status?.phase === "recording" ? listener.status.recorded_ms : 0);
+  const doneMs = $derived(session ? Math.min(session.seconds_total * 1000, session.seconds_done * 1000 + recorded) : 0);
+  const leftMs = $derived(session ? session.seconds_total * 1000 - doneMs : 0);
+  /** By time; by songs from an Echolot that doesn't send the time. */
+  const progress = $derived(!session ? 0 : session.seconds_total > 0 ? doneMs / (session.seconds_total * 1000) : session.total > 0 ? session.done / session.total : 0);
+
+  const remaining = (ms: number) => {
+    const s = Math.ceil(ms / 1000);
+    const h = Math.floor(s / 3600);
+    return h > 0 ? `${h}:${String(Math.floor((s % 3600) / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}` : clock(s * 1000);
+  };
 
   const stateText: Record<string, string> = {
     idle: "Ready",
@@ -20,96 +32,51 @@
     by_user: "Paused",
     setup: "Paused - fix Setup",
   };
-  const resultText: Record<string, string> = {
-    filed: "filed",
-    not_better: "not better",
-    rejected: "rejected",
-    recorded: "recorded",
-    lossy_only: "no lossless",
-    wrong_song: "wrong song",
-    took_over: "taken over",
-    stalled: "stalled",
-    failed: "failed",
-  };
 </script>
 
+<!-- Only while connected; connecting is on Setup. -->
 <Panel label="Echolot" index="04">
-  {#snippet actions()}
-    {#if echolot.connected}
-      <button class="btn" onclick={() => echolot.disconnect()} disabled={echolot.busy || busy} title={busy ? "Wait until the current song is done" : undefined}>Disconnect</button>
-    {/if}
-  {/snippet}
+  <div class="who small">
+    <span class="dot" class:offline={s.connection === "offline"}></span>
+    {s.connection === "offline" ? "Offline" : "Connected"}{#if s.state}<span class="muted"> · {stateText[s.state] ?? s.state}</span>{/if}
+  </div>
+  <div class="account mono muted" title="{s.user}@{s.host}">{s.user}@{s.host}</div>
+  {#if s.state === "setup" && s.detail}<div class="hint warn small">{s.detail}</div>{/if}
 
-  {#if echolot.connected}
-    <div class="who mono">
-      <span class="dot" class:offline={s.connection === "offline"}></span>
-      {s.connection === "offline" ? "Offline" : "Connected"} · {s.user}@{s.host}
-    </div>
-    <div class="muted small">{s.device}{#if s.state} · {stateText[s.state] ?? s.state}{/if}</div>
-    {#if s.state === "setup" && s.detail}<div class="hint warn small">{s.detail}</div>{/if}
-
-    {#if session && (session.state === "running" || session.state === "paused" || busy)}
-      <div class="session">
-        <div class="title">{session.title}</div>
-        <div class="bar"><span style:width="{progress * 100}%"></span></div>
-        <div class="counts mono small">
-          <span>{session.done}/{session.total}</span>
-          <span class="ok">{session.filed} filed</span>
-          {#if session.not_better}<span>{session.not_better} not better</span>{/if}
-          {#if session.skipped}<span>{session.skipped} skipped</span>{/if}
-          {#if session.failed}<span class="bad">{session.failed} failed</span>{/if}
-          {#if session.minutes_left}<span>{session.minutes_left} min left</span>{/if}
-        </div>
-        {#if session.state !== "running" && busy}
-          <div class="hint warn small">{session.state === "paused" ? "Pausing" : "Stopping"} after this song…</div>
-        {:else if session.state === "paused"}
-          <div class="hint warn small">{pauseText[session.reason] ?? "Paused"}</div>
-        {/if}
-        {#if s.current}<div class="current small">♪ {s.current.artist} – {s.current.title} <span class="muted mono">{clock(s.current.duration_ms)}</span></div>{/if}
-        <div class="buttons">
-          {#if session.state === "paused"}
-            <button class="btn primary" onclick={() => echolot.session("resume")} disabled={echolot.busy}>Resume</button>
-          {:else if session.state === "running"}
-            <button class="btn" onclick={() => echolot.session("pause")} disabled={echolot.busy}>{busy ? "Pause after this song" : "Pause"}</button>
-          {/if}
-          {#if session.state !== "stopped"}
-            <button class="btn danger" onclick={() => echolot.session("stop")} disabled={echolot.busy}>{busy ? "Stop after this song" : "Stop"}</button>
-          {/if}
-        </div>
+  {#if session && (session.state === "running" || session.state === "paused" || busy)}
+    <div class="session">
+      <div class="title">{session.title}</div>
+      <div class="bar"><span style:width="{progress * 100}%"></span></div>
+      <div class="counts mono small">
+        <span>{session.done}/{session.total}</span>
+        <span class="ok">{session.filed} added</span>
+        {#if session.not_better}<span>{session.not_better} not better</span>{/if}
+        {#if session.skipped}<span>{session.skipped} skipped</span>{/if}
+        {#if session.failed}<span class="bad">{session.failed} failed</span>{/if}
+        {#if session.seconds_total > 0}<span>{remaining(leftMs)} left</span>{:else if session.minutes_left}<span>{session.minutes_left} min left</span>{/if}
       </div>
-    {:else if session}
-      <div class="muted small">Last session: {session.title} - {session.state}, {session.filed} filed of {session.total}</div>
-    {:else}
-      <div class="muted small">Choose songs to record in Echolot; they start here while Mitschnitt is open.</div>
-    {/if}
-    {#if s.uploads > 0}<div class="muted small">Uploading {s.uploads}…</div>{/if}
-  {:else if echolot.running}
-    <div class="title">{s.detail || "Exported list"}</div>
-    <div class="bar"><span style:width="{progress * 100}%"></span></div>
-    <div class="counts mono small"><span>{s.done}/{s.total}</span></div>
-    {#if s.current}<div class="current small">♪ {s.current.artist} – {s.current.title}</div>{/if}
-    <div class="buttons"><button class="btn danger" onclick={() => echolot.stopQueue()}>Stop</button></div>
-  {:else if echolot.pairing}
-    <p class="small">Approve the connection in the browser. If Mitschnitt doesn't open by itself, paste the code Echolot shows:</p>
-    <form
-      class="code"
-      onsubmit={(e) => {
-        e.preventDefault();
-        echolot.submitCode();
-      }}
-    >
-      <input class="mono" bind:value={echolot.code} placeholder="Code" aria-label="Code from Echolot" />
-      <button class="btn primary" type="submit" disabled={echolot.busy || !echolot.code.trim()}>OK</button>
-    </form>
-    <button class="btn wide" onclick={() => echolot.cancel()}>Cancel</button>
-  {:else}
-    <label class="small muted" for="echolot-url">Address</label>
-    <input id="echolot-url" class="mono url" bind:value={echolot.url} placeholder="https://echolot.example.org" />
-    <p class="small note">Echolot will be able to start Spotify on this PC and put recordings into your library.</p>
-    {#if echolot.confirming}<p class="small">Connect to this Echolot?</p>{/if}
-    <button class="btn primary wide" onclick={() => echolot.connect()} disabled={echolot.busy || !echolot.url.trim()}>Connect Echolot</button>
-    <button class="btn wide import" onclick={() => echolot.importQueue()} disabled={echolot.busy}>Import exported list…</button>
+      {#if session.state !== "running" && busy}
+        <div class="hint warn small">{session.state === "paused" ? "Pausing" : "Stopping"} after this song…</div>
+      {:else if session.state === "paused"}
+        <div class="hint warn small">{pauseText[session.reason] ?? "Paused"}</div>
+      {/if}
+      {#if s.current}<div class="current small">♪ {s.current.artist} – {s.current.title} <span class="muted mono">{clock(s.current.duration_ms)}</span></div>{/if}
+      <div class="buttons">
+        {#if session.state === "paused"}
+          <button class="btn primary" onclick={() => echolot.session("resume")} disabled={echolot.busy}>Resume</button>
+        {:else if session.state === "running"}
+          <button class="btn" onclick={() => echolot.session("pause")} disabled={echolot.busy}>Pause</button>
+        {/if}
+        {#if session.state !== "stopped"}
+          <button class="btn danger" onclick={() => echolot.session("stop")} disabled={echolot.busy}>Stop</button>
+        {/if}
+      </div>
+      {#if session.state === "running" && busy}<div class="muted small">Both take effect after this song.</div>{/if}
+    </div>
+  {:else if session}
+    <div class="muted small last">Last session: {session.title} - {session.state}, {session.filed} added of {session.total}</div>
   {/if}
+  {#if s.uploads > 0}<div class="muted small">Uploading {s.uploads}…</div>{/if}
 
   {#if echolot.error || s.error}<div class="error small">{echolot.error ?? s.error}</div>{/if}
 
@@ -117,7 +84,7 @@
     <ul class="results small">
       {#each echolot.results.slice(0, 8) as r (r.id)}
         <li title={r.detail}>
-          <span class="tag mono" class:ok={r.result === "filed" || r.result === "recorded"} class:bad={r.result === "rejected" || r.result === "failed"}>{resultText[r.result] ?? r.result}</span>
+          <span class="tag mono" class:ok={r.result === "filed" || r.result === "recorded"} class:bad={r.result === "rejected" || r.result === "failed" || r.result === "stalled"}>{resultText[r.result] ?? r.result}</span>
           <span class="song">{r.job.artist} – {r.job.title}</span>
         </li>
       {/each}
@@ -130,7 +97,18 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    font-size: 12px;
+  }
+
+  .account {
+    margin: 2px 0 0 15px;
+    font-size: 11px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .last {
+    margin-top: 10px;
   }
 
   .dot {
@@ -196,7 +174,8 @@
   }
 
   .buttons {
-    display: flex;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
     gap: 8px;
     margin-top: 4px;
   }
@@ -206,40 +185,6 @@
     margin-top: 6px;
     border: 1px solid rgba(251, 191, 36, 0.4);
     background: rgba(251, 191, 36, 0.06);
-  }
-
-  .url,
-  .code input {
-    width: 100%;
-    margin: 4px 0 8px;
-    padding: 7px 9px;
-    border: 1px solid var(--faint);
-    background: var(--panel-2);
-    color: var(--text);
-  }
-
-  .code {
-    display: grid;
-    grid-template-columns: 1fr auto;
-    gap: 8px;
-    align-items: center;
-  }
-
-  .code input {
-    margin: 0;
-  }
-
-  .note {
-    color: var(--muted);
-    margin: 0 0 10px;
-  }
-
-  .wide {
-    width: 100%;
-  }
-
-  .import {
-    margin-top: 8px;
   }
 
   .error {

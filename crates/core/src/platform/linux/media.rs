@@ -95,16 +95,25 @@ impl Watcher {
 
     /// Send a command to the player.
     pub fn control(&self, control: Control) -> Result<(), String> {
-        let method = match control {
-            Control::Pause => "Pause",
-            Control::Next => "Next",
-            Control::Previous => "Previous",
-        };
         let destination = self.session.0.inner().destination().to_string();
-        super::bus()?
-            .call_method(Some(destination.as_str()), "/org/mpris/MediaPlayer2", Some("org.mpris.MediaPlayer2.Player"), method, &())
+        let player = |method: &str, args: Option<i64>| {
+            let bus = super::bus()?;
+            let (path, iface) = ("/org/mpris/MediaPlayer2", Some("org.mpris.MediaPlayer2.Player"));
+            match args {
+                Some(offset) => bus.call_method(Some(destination.as_str()), path, iface, method, &offset),
+                None => bus.call_method(Some(destination.as_str()), path, iface, method, &()),
+            }
             .map(|_| ())
             .map_err(|e| e.to_string())
+        };
+        match control {
+            Control::Play => player("Play", None),
+            Control::Pause => player("Pause", None),
+            Control::Next => player("Next", None),
+            Control::Previous => player("Previous", None),
+            // MPRIS clamps a seek before the start to 0.
+            Control::Restart => player("Seek", Some(-1_000_000_000_000)),
+        }
     }
 
     /// Album artist, track number and cover of what is playing now (best effort).

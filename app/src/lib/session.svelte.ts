@@ -1,7 +1,7 @@
 import { api, type Check, type Master, type Platform, type Settings, type Severity, type Source, type SourceInfo, type Status, type Track, type Update } from "./api";
 
 export type Outcome =
-  | { outcome: "saved"; file: string | null; verdict: Severity; master: Master; exact: boolean; issues: string[] }
+  | { outcome: "saved"; file: string | null; size: number; verdict: Severity; master: Master; exact: boolean; issues: string[]; echolot: boolean }
   | { outcome: "exists"; file: string }
   | { outcome: "dropped" | "failed"; message: string };
 
@@ -33,7 +33,10 @@ class Session {
   monitorMuted = $state(false);
   /** Monitor volume = Mitschnitt's Windows mixer entry; null until the monitor reports it. */
   monitorVolume = $state<number | null>(null);
+  /** When the app started: older files are history, newer ones are in this session's list. */
+  readonly startedAt = Date.now();
   #nextId = 0;
+  #polling = false;
 
   get listening(): boolean {
     return this.source !== null;
@@ -50,17 +53,28 @@ class Session {
     await api.onListening((info) => (this.source = info));
     this.platform = await api.platform();
     this.settings = await api.getSettings();
-    await this.refresh();
+    await this.#try(async () => this.#setSources(await api.sources()));
     await this.check();
+    setInterval(() => void this.#poll(), 1000);
   }
 
-  async refresh() {
-    await this.#try(async () => {
-      this.sources = await api.sources();
-      if (!this.sources.some((s) => s.id === this.selected)) {
-        this.selected = (this.sources.find((s) => s.running) ?? this.sources[0])?.id ?? null;
-      }
-    });
+  /** Keeps the source list current while it is shown. Cheap, and the same for every player and platform. */
+  async #poll() {
+    if (this.#polling || this.listening || this.tab !== "listen" || document.hidden) return;
+    this.#polling = true;
+    try {
+      this.#setSources(await api.sources());
+    } catch {
+      // the next poll tries again
+    }
+    this.#polling = false;
+  }
+
+  #setSources(sources: Source[]) {
+    this.sources = sources;
+    if (!sources.find((s) => s.id === this.selected)?.running) {
+      this.selected = (sources.find((s) => s.running) ?? sources.find((s) => s.id === this.selected) ?? sources[0])?.id ?? null;
+    }
   }
 
   async check() {
@@ -129,7 +143,7 @@ class Session {
         this.status = u.status;
         break;
       case "saved":
-        this.#log(u.track, { outcome: "saved", file: u.file, verdict: u.verdict, master: u.master, exact: u.exact, issues: u.issues });
+        this.#log(u.track, { outcome: "saved", file: u.file, size: u.size, verdict: u.verdict, master: u.master, exact: u.exact, issues: u.issues, echolot: u.echolot });
         break;
       case "key_blocked": {
         const at = Date.now();

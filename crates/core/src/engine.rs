@@ -29,7 +29,7 @@ use crate::passive::{Event, Passive, Reason, Status, Track};
 use crate::power::KeepAwake;
 use crate::profile::Profile;
 use crate::runner::{Action, Job, Outcome, Runner, Written};
-use crate::settings::{BitDepth, Format, Settings};
+use crate::settings::{Format, Settings};
 use crate::{desktop, init_thread, sessions};
 
 pub use crate::platform::os::GAIN;
@@ -134,8 +134,9 @@ pub enum Update {
     /// Complete, but a file with its name exists already (`skip_existing`).
     Exists { track: Track, file: String },
     /// Written and checked. `file` is `None` when a flagged file was removed (`keep_flagged` off).
-    /// `exact`: every sample arrived as an exact 24-bit value - an untouched lossless source.
-    Saved { track: Track, file: Option<String>, verdict: Severity, master: Master, exact: bool, issues: Vec<String> },
+    /// `exact`: every sample arrived as an exact 24-bit value - an untouched lossless source. `echolot`: recorded for
+    /// Echolot's queue.
+    Saved { track: Track, file: Option<String>, size: u64, verdict: Severity, master: Master, exact: bool, issues: Vec<String>, echolot: bool },
     Failed { track: Track, error: String },
     /// A media key was swallowed to protect the recording (`count` since listening started).
     KeyBlocked { count: u32 },
@@ -333,6 +334,8 @@ struct Session {
     passive: Passive,
     monitor: Option<Monitor>,
     queue: Option<QueueRun>,
+    /// The output devices (see [`devices::layout`]): a change can glitch every stream for a moment.
+    layout: String,
     /// For worker threads to report back.
     tx: Sender<Msg>,
     _capture: Capture,
@@ -411,6 +414,7 @@ impl Session {
             passive: Passive::new(endpoint.sample_rate, CHANNELS as usize, GAIN),
             monitor,
             queue: None,
+            layout: devices::layout(),
             tx,
             _capture: capture,
         })
@@ -447,11 +451,13 @@ impl Session {
         for action in actions {
             let result = match action {
                 Action::Open => job.map_or(Ok(()), |j| desktop::open_link_in_background(&j.play_uri(), self.profile.exe)),
-                Action::Pause | Action::Next | Action::Previous => {
+                Action::Play | Action::Pause | Action::Next | Action::Previous | Action::Restart => {
                     let control = match action {
+                        Action::Play => Control::Play,
                         Action::Pause => Control::Pause,
                         Action::Next => Control::Next,
-                        _ => Control::Previous,
+                        Action::Previous => Control::Previous,
+                        _ => Control::Restart,
                     };
                     self.watcher.as_ref().map_or(Ok(()), |w| w.control(control))
                 }
@@ -545,6 +551,27 @@ impl Session {
                         error = Some(format!("{} was closed.", self.info.app));
                         break;
                     }
+                    // Windows recreates "Listen to this device" when the outputs change, unmuted: while the monitor
+                    // plays, every one of them stays muted (and is unmuted again at the end).
+                    if self.monitor.is_some() {
+                        let listen = sessions::listen_volumes();
+                        if sessions::muted(&listen).iter().any(|m| !m) {
+                            sessions::set_mute(&listen, true);
+                            if !self.restore.unmute_listen {
+                                self.restore.unmute_listen = true;
+                                self.restore.save();
+                            }
+                        }
+                    }
+                    // Devices coming or going can cut the player's audio for a moment: a queue's song is played again.
+                    let layout = devices::layout();
+                    if layout != self.layout {
+                        self.layout = layout;
+                        if self.queue.is_some() {
+                            let events = self.passive.interrupt(Reason::DeviceChanged);
+                            self.dispatch(events, settings, notify);
+                        }
+                    }
                     let controls = sessions::app_volumes_by_name(self.profile.exe);
                     let volumes = sessions::get(&controls);
                     if volumes.iter().any(|v| (v - GAIN).abs() > 1e-4) {
@@ -606,7 +633,7 @@ impl Session {
         if run.runner.ready(now)
             && let Ok(job) = run.queue.jobs.try_recv()
         {
-            actions.extend(run.runner.assign(job, now, media.playing));
+            actions.extend(run.runner.assign(job, now, media));
         }
         let job = run.runner.job().cloned();
         let done = run.runner.take_done();
@@ -679,7 +706,7 @@ impl Session {
                                 tags.extra = vec![("SPOTIFY_TRACK_ID".into(), job.track_id().into()), ("ISRC".into(), job.isrc.clone())];
                             }
                             // Always a FLAC that is kept, whatever the listening settings say.
-                            let settings = Settings { out_dir: run.queue.out_dir.clone(), format: Format::Flac, bit_depth: BitDepth::Auto, keep_flagged: true, skip_existing: false, ..settings.clone() };
+                            let settings = Settings { out_dir: run.queue.out_dir.clone(), format: Format::Flac, keep_flagged: true, skip_existing: false, ..settings.clone() };
                             let (tx, done) = (self.tx.clone(), run.queue.done.clone());
                             std::thread::spawn(move || {
                                 let written = finish_job(track, tags, samples, (off_grid, off_span), rate, lossless, &settings, &notify);
@@ -707,13 +734,21 @@ struct Checked {
     exact: bool,
     /// Only the player's fade-in at the start is not original: what to tell about it.
     faded: Option<String>,
+    /// Off the grid in more than a short stretch: the stream wasn't lossless (or was processed).
+    lossy: bool,
 }
+
+/// Share of the audio that may be off the grid in one short stretch of an otherwise exact recording: that is a glitch
+/// (worth another try), not a lossy stream.
+const GLITCH_SHARE: f64 = 0.001;
 
 fn check(samples: Vec<i32>, (off_grid, off_span): (usize, Option<(usize, usize)>), rate: u32, lossless: bool) -> Checked {
     let audio = Audio { rate, channels: CHANNELS as usize, bits: 24, samples };
     let exact = off_grid == 0;
     let mut report = analyze::analyze_with(&audio, exact);
     let mut faded = None;
+    let share = off_grid as f64 / audio.frames().max(1) as f64;
+    let lossy = lossless && !exact && share > GLITCH_SHARE;
     if !exact && lossless {
         let ms = |frames: usize| frames as f64 * 1000.0 / rate as f64;
         let text = match off_span {
@@ -724,15 +759,21 @@ fn check(samples: Vec<i32>, (off_grid, off_span): (usize, Option<(usize, usize)>
                 faded = Some(text.clone());
                 text
             }
+            _ if lossy => format!("{:.1} % of the audio did not arrive as exact 24-bit values: lossy stream or processing (normalization, equalizer, crossfade)", share * 100.0),
             _ => {
-                let share = off_grid as f64 * 100.0 / audio.frames().max(1) as f64;
-                format!("{share:.1} % of the audio did not arrive as exact 24-bit values: lossy stream or processing (normalization, equalizer, crossfade)")
+                let at = |frame: usize| crate::timestamp(frame, rate);
+                let (first, last) = off_span.unwrap_or_default();
+                format!("{off_grid} samples between {} and {} are not original, everything else is bit-exact", at(first), at(last))
             }
         };
         report.issues.insert(0, analyze::Issue { severity: Severity::Altered, text });
         report.verdict = report.verdict.max(Severity::Altered);
     }
-    Checked { audio, report, exact, faded }
+    Checked { audio, report, exact, faded, lossy }
+}
+
+fn file_size(path: &std::path::Path) -> u64 {
+    std::fs::metadata(path).map(|m| m.len()).unwrap_or_default()
 }
 
 /// Write, verify and check one finished track.
@@ -745,6 +786,7 @@ fn finish(track: Track, tags: Tags, samples: Vec<i32>, grid: (usize, Option<(usi
     match output::write(&audio, &tags, settings) {
         Ok(path) => {
             let flagged = report.verdict > Severity::Info;
+            let size = file_size(&path);
             let file = if flagged && !settings.keep_flagged {
                 let _ = std::fs::remove_file(&path);
                 None
@@ -753,10 +795,12 @@ fn finish(track: Track, tags: Tags, samples: Vec<i32>, grid: (usize, Option<(usi
             };
             notify(Update::Saved {
                 file,
+                size,
                 verdict: report.verdict,
                 master: report.master,
                 exact,
                 issues: report.issues.into_iter().map(|i| i.text).collect(),
+                echolot: false,
                 track,
             });
         }
@@ -764,23 +808,43 @@ fn finish(track: Track, tags: Tags, samples: Vec<i32>, grid: (usize, Option<(usi
     }
 }
 
-/// Write one song of a queue. Only a lossless stream is kept: exact, or exact after the player's fade-in.
+/// Write one song of a queue. Only an undamaged, lossless recording is handed on for the upload: exact, or exact after
+/// the player's fade-in. A damaged one goes to "Not taken" (when flagged files are kept) and is never uploaded.
 #[allow(clippy::too_many_arguments)]
 fn finish_job(track: Track, tags: Tags, samples: Vec<i32>, grid: (usize, Option<(usize, usize)>), rate: u32, lossless: bool, settings: &Settings, notify: &Notify) -> Written {
-    let Checked { audio, report, exact, faded } = check(samples, grid, rate, lossless);
-    if lossless && !exact && faded.is_none() {
+    let Checked { audio, report, exact, faded, lossy } = check(samples, grid, rate, lossless);
+    if lossy {
         let detail = report.issues.first().map(|i| i.text.clone()).unwrap_or_default();
         notify(Update::Failed { track, error: format!("not lossless, not kept: {detail}") });
         return Written::Lossy { detail };
+    }
+    // Damaged, or altered in a short stretch (a glitch, not the stream): never uploaded, played again.
+    let glitch = lossless && !exact && faded.is_none();
+    if report.verdict == Severity::Corrupt || glitch {
+        let detail = report.issues.iter().filter(|i| i.severity == Severity::Corrupt || glitch).map(|i| i.text.as_str()).collect::<Vec<_>>().join("; ");
+        let file = settings.keep_flagged.then(|| Settings { out_dir: settings.out_dir.with_file_name(crate::recorder::NOT_TAKEN_DIR), ..settings.clone() }).and_then(|s| output::write(&audio, &tags, &s).ok());
+        notify(Update::Saved {
+            size: file.as_deref().map(file_size).unwrap_or_default(),
+            file: file.map(|p| p.display().to_string()),
+            verdict: report.verdict,
+            master: report.master,
+            exact,
+            issues: report.issues.into_iter().map(|i| i.text).collect(),
+            echolot: true,
+            track,
+        });
+        return Written::Corrupt { detail: format!("damaged, not uploaded: {detail}") };
     }
     match output::write(&audio, &tags, settings) {
         Ok(path) => {
             notify(Update::Saved {
                 file: Some(path.display().to_string()),
+                size: file_size(&path),
                 verdict: report.verdict,
                 master: report.master,
                 exact,
                 issues: report.issues.into_iter().map(|i| i.text).collect(),
+                echolot: true,
                 track,
             });
             Written::Saved { file: path, note: faded }
@@ -789,5 +853,46 @@ fn finish_job(track: Track, tags: Tags, samples: Vec<i32>, grid: (usize, Option<
             notify(Update::Failed { track, error: error.clone() });
             Written::Failed { error }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_damaged_queue_recording_is_never_handed_on_for_upload() {
+        let rate = 44_100;
+        // Two seconds of loud audio on the exact 24-bit grid, with 31.5 ms of digital silence in the middle.
+        let mut samples: Vec<i32> = (0..rate as usize * 2 * 2).map(|i| ((i as f64 * 0.03).sin() * 4_000_000.0) as i32 | 1).collect();
+        let gap = rate as usize;
+        samples[gap * 2..(gap + rate as usize * 315 / 10_000) * 2].fill(0);
+        let dir = std::env::temp_dir().join(format!("mitschnitt-corrupt-{}", std::process::id()));
+        let settings = Settings { out_dir: dir.join("Echolot"), format: Format::Flac, keep_flagged: true, ..Settings::default() };
+        let track = Track { title: "Revolution".into(), artist: "Artist".into(), album: String::new(), duration_ms: 2_000 };
+        let tags = Tags { title: track.title.clone(), artist: track.artist.clone(), ..Tags::default() };
+        let notify: Notify = Arc::new(|_| {});
+        let written = finish_job(track, tags, samples, (0, None), rate, true, &settings, &notify);
+        assert!(matches!(&written, Written::Corrupt { detail } if detail.contains("dropout")), "{written:?}");
+        assert!(!dir.join("Echolot").exists(), "nothing waits for an upload");
+        assert!(dir.join("Not taken").join("Artist - Revolution.flac").is_file(), "kept for a look");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_short_altered_stretch_is_a_glitch_and_a_mostly_altered_stream_is_lossy() {
+        let rate = 44_100;
+        let samples: Vec<i32> = (0..rate as usize * 2 * 2).map(|i| ((i as f64 * 0.03).sin() * 4_000_000.0) as i32 | 1).collect();
+        let dir = std::env::temp_dir().join(format!("mitschnitt-glitch-{}", std::process::id()));
+        let settings = Settings { out_dir: dir.join("Echolot"), format: Format::Flac, keep_flagged: false, ..Settings::default() };
+        let track = Track { title: "Song".into(), artist: "Artist".into(), album: String::new(), duration_ms: 2_000 };
+        let notify: Notify = Arc::new(|_| {});
+        // Five samples a second in: not the player's fade-in, not a lossy stream.
+        let glitch = finish_job(track.clone(), Tags::default(), samples.clone(), (5, Some((44_100, 44_104))), rate, true, &settings, &notify);
+        assert!(matches!(&glitch, Written::Corrupt { detail } if detail.contains("0:01.000")), "{glitch:?}");
+        let lossy = finish_job(track, Tags::default(), samples, (60_000, Some((0, 88_199))), rate, true, &settings, &notify);
+        assert!(matches!(lossy, Written::Lossy { .. }));
+        assert!(!dir.join("Echolot").exists(), "nothing waits for an upload");
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

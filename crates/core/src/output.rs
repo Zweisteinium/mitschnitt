@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use crate::audio::Audio;
 use crate::flac::{self, Tags};
-use crate::settings::{BitDepth, Format, Settings};
+use crate::settings::{Format, Settings};
 
 const EXTENSIONS: [&str; 3] = ["flac", "wav", "mp3"];
 
@@ -26,11 +26,8 @@ pub fn write(audio: &Audio, tags: &Tags, settings: &Settings) -> Result<PathBuf,
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("folder {}: {e}", dir.display()))?;
     }
-    let out = match settings.bit_depth {
-        BitDepth::B24 => None,
-        BitDepth::B16 => Some(to_16bit(audio)),
-        BitDepth::Auto => is_16bit(audio).then(|| to_16bit(audio)),
-    };
+    // 16 bit when every sample lies on the 16-bit grid (a 16-bit master): lossless and smaller. Otherwise 24 bit.
+    let out = is_16bit(audio).then(|| to_16bit(audio));
     match settings.format {
         Format::Flac => flac::write(&path, out.as_ref().unwrap_or(audio), tags)?,
         Format::Wav => write_wav(&path, out.as_ref().unwrap_or(audio))?,
@@ -195,7 +192,7 @@ mod tests {
     fn wav_round_trip_is_exact() {
         let audio = Audio { rate: 44_100, channels: 2, bits: 24, samples: (0..20_000).map(|i| (i * 977 % 8_000_000) - 4_000_000).collect() };
         let dir = std::env::temp_dir().join(format!("mitschnitt-wav-{}", std::process::id()));
-        let settings = Settings { out_dir: dir.clone(), format: Format::Wav, bit_depth: BitDepth::Auto, ..Settings::default() };
+        let settings = Settings { out_dir: dir.clone(), format: Format::Wav, ..Settings::default() };
         let path = write(&audio, &track(), &settings).unwrap();
         let back: Vec<i32> = hound::WavReader::open(&path).unwrap().samples::<i32>().map(Result::unwrap).collect();
         assert_eq!(back, audio.samples);

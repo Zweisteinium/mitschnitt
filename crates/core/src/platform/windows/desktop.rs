@@ -9,68 +9,67 @@ pub fn open_link(link: &str) -> Result<(), String> {
     if result.0 as usize > 32 { Ok(()) } else { Err(format!("can't open {link} (error {})", result.0 as usize)) }
 }
 
-/// How an app's window was before a link was opened for it.
-#[derive(Clone, Copy, PartialEq)]
-enum WindowState {
-    NotRunning,
-    /// Running without a visible window (in the tray).
-    Hidden,
-    Minimized,
-    Visible,
-}
-
 /// Open a link for an app that runs in the background (`exe`, e.g. "spotify"). Spotify brings its window to the front
 /// for every link (sometimes twice while it starts), and Windows lets no other program prevent that. So for a few
-/// seconds, whenever it takes the front, its window goes back to how it was (minimized, hidden, or visible behind) and
-/// the focus goes back to the window the user was in. Nothing is touched when the user was in the app itself.
+/// seconds, whenever it takes the front, the focus goes straight back to the window the user was in. A window that was
+/// minimized (or an app that wasn't running) is minimized again with the same command its own minimize button sends,
+/// which also hands the focus back; it is processed by the app itself, after its own show. (Moving another app's window
+/// from outside, in the middle of its own show and activate, leaves it confused: Spotify then sat off-screen and
+/// couldn't be restored.) A window the user keeps open stays as it is and only loses the focus again. Nothing is touched
+/// when the user was in the app itself.
 pub fn open_link_in_background(link: &str, exe: &str) -> Result<(), String> {
     use std::time::{Duration, Instant};
-    use windows::Win32::Foundation::HWND;
-    use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, IsIconic, SW_HIDE, SW_MINIMIZE, SW_SHOWMINNOACTIVE, SW_SHOWNOACTIVATE, ShowWindow};
+    use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, IsIconic, PostMessageW, SC_MINIMIZE, WM_SYSCOMMAND};
 
     // SAFETY: plain query of the foreground window.
     let before = unsafe { GetForegroundWindow() };
     let pids = app_pids(exe);
-    if pids.is_empty() || !window_pid(before).is_some_and(|pid| pids.contains(&pid)) {
-        let state = match main_window(&pids) {
-            _ if pids.is_empty() => WindowState::NotRunning,
-            None => WindowState::Hidden,
-            // SAFETY: a window handle from the system.
-            Some(w) if unsafe { IsIconic(w) }.as_bool() => WindowState::Minimized,
-            Some(_) => WindowState::Visible,
-        };
-        let (before, exe) = (before.0 as isize, exe.to_owned()); // a window handle isn't Send; its value is
-        std::thread::spawn(move || {
-            let before = HWND(before as _);
-            let deadline = Instant::now() + Duration::from_secs(3);
-            let mut seen = HWND::default();
-            while Instant::now() < deadline {
-                std::thread::sleep(Duration::from_millis(15));
-                // SAFETY: plain query of the foreground window.
-                let front = unsafe { GetForegroundWindow() };
-                if front == seen || front == before {
-                    continue;
-                }
-                seen = front;
-                if !window_pid(front).is_some_and(|pid| app_pids(&exe).contains(&pid)) {
-                    continue;
-                }
-                // SAFETY: window handles from the system; every call fails harmlessly for a window that is gone.
-                unsafe {
-                    match state {
-                        WindowState::NotRunning | WindowState::Minimized => _ = ShowWindow(front, SW_SHOWMINNOACTIVE),
-                        WindowState::Hidden => _ = ShowWindow(front, SW_HIDE),
-                        WindowState::Visible => {}
-                    }
-                    if !activate(before, front) && state == WindowState::Visible {
-                        // Windows refused: minimizing activates the window below, then the app comes back unfocused.
-                        let _ = ShowWindow(front, SW_MINIMIZE);
-                        let _ = ShowWindow(front, SW_SHOWNOACTIVATE);
-                    }
+    if !pids.is_empty() && window_pid(before).is_some_and(|pid| pids.contains(&pid)) {
+        return open_link(link);
+    }
+    // SAFETY: a window handle from the system.
+    let minimize_after = main_window(&pids).is_none_or(|w| unsafe { IsIconic(w) }.as_bool());
+    // A starting app can take several seconds to show its window.
+    let watch = if pids.is_empty() { Duration::from_secs(20) } else { Duration::from_secs(3) };
+    let (before, exe) = (before.0 as isize, exe.to_owned()); // a window handle isn't Send; its value is
+    std::thread::spawn(move || {
+        let before = HWND(before as _);
+        let deadline = Instant::now() + watch;
+        let minimized = |window: HWND| unsafe { IsIconic(window) }.as_bool(); // SAFETY: a window handle from the system
+        // SAFETY: posting a standard command to a window from the system; a closed window ignores it.
+        let minimize = |window: HWND| unsafe { _ = PostMessageW(Some(window), WM_SYSCOMMAND, WPARAM(SC_MINIMIZE as usize), LPARAM(0)) };
+        // Since when the app holds the front. Windows may refuse the focus while the app is still activating itself,
+        // so it is handed back on every round for a moment; after that it stays (the user may have clicked it).
+        let mut grabbed: Option<Instant> = None;
+        let mut last_minimize = Instant::now() - Duration::from_secs(1);
+        while Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(15));
+            // SAFETY: plain query of the foreground window.
+            let front = unsafe { GetForegroundWindow() };
+            if front == before || !window_pid(front).is_some_and(|pid| app_pids(&exe).contains(&pid)) {
+                grabbed = None;
+                continue;
+            }
+            if grabbed.get_or_insert_with(Instant::now).elapsed() >= Duration::from_millis(1_500) {
+                continue;
+            }
+            activate(before, front);
+            // Minimizing the active window also makes Windows activate the previous one, when it refused above.
+            if minimize_after && last_minimize.elapsed() >= Duration::from_millis(100) {
+                last_minimize = Instant::now();
+                if let Some(window) = main_window(&app_pids(&exe)).filter(|w| !minimized(*w)) {
+                    minimize(window);
                 }
             }
-        });
-    }
+        }
+        // It may have shown itself again after the last grab.
+        if minimize_after
+            && let Some(window) = main_window(&app_pids(&exe)).filter(|w| !minimized(*w))
+        {
+            minimize(window);
+        }
+    });
     open_link(link)
 }
 

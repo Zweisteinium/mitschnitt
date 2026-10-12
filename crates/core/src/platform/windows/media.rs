@@ -110,9 +110,11 @@ impl Watcher {
     /// Send a command to the player.
     pub fn control(&self, control: Control) -> std::result::Result<(), String> {
         let op = match control {
+            Control::Play => self.session.TryPlayAsync(),
             Control::Pause => self.session.TryPauseAsync(),
             Control::Next => self.session.TrySkipNextAsync(),
             Control::Previous => self.session.TrySkipPreviousAsync(),
+            Control::Restart => self.session.TryChangePlaybackPositionAsync(0),
         };
         op.and_then(|op| op.join()).map(|_| ()).map_err(|e| e.to_string())
     }

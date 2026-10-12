@@ -31,6 +31,30 @@ pub fn render_endpoints() -> windows::core::Result<Vec<Endpoint>> {
     }
 }
 
+/// Ids of the default and all active output devices: changes when a device comes, goes or becomes the default.
+pub fn layout() -> String {
+    com_init();
+    // SAFETY: COM calls on interfaces we own; id strings allocated by COM are freed here.
+    let ids = unsafe {
+        let id = |device: &IMMDevice| {
+            device.GetId().map(|id| {
+                let s = id.to_string().unwrap_or_default();
+                CoTaskMemFree(Some(id.0 as _));
+                s
+            })
+        };
+        enumerator().and_then(|e| {
+            let mut ids = vec![id(&e.GetDefaultAudioEndpoint(eRender, eConsole)?)?];
+            let collection = e.EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE)?;
+            for i in 0..collection.GetCount()? {
+                ids.push(id(&collection.Item(i)?)?);
+            }
+            Ok(ids)
+        })
+    };
+    ids.map(|ids| ids.join("|")).unwrap_or_default()
+}
+
 /// The default output device.
 pub fn default_endpoint() -> windows::core::Result<Endpoint> {
     com_init();

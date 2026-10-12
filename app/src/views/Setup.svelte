@@ -1,4 +1,5 @@
 <script lang="ts">
+  import EcholotSetup from "../components/EcholotSetup.svelte";
   import Panel from "../components/Panel.svelte";
   import { api, type CheckState } from "../lib/api";
   import { session } from "../lib/session.svelte";
@@ -8,30 +9,33 @@
 </script>
 
 <div class="grid">
-  <Panel label="Health" index="01">
-    {#snippet actions()}
-      <button class="btn" onclick={() => session.check()} disabled={session.checking}>{session.checking ? "Checking…" : "Re-check"}</button>
-    {/snippet}
+  <div class="col">
+    <Panel label="Health" index="01">
+      {#snippet actions()}
+        <button class="btn" onclick={() => session.check()} disabled={session.checking}>{session.checking ? "Checking…" : "Re-check"}</button>
+      {/snippet}
 
-    <p class="muted intro mono">Source: {session.sources.find((s) => s.id === session.selected)?.name ?? "—"}</p>
-    <ul class="checks">
-      {#each session.checks as c (c.id)}
-        <li class="s-{c.state}">
-          <span class="badge mono">{badge[c.state]}</span>
-          <div>
-            <div class="title">{c.title}</div>
-            <div class="detail muted">{c.detail}</div>
-          </div>
-          {#if c.fix}
-            <button class="btn primary" onclick={() => session.fix(c.fix!)} disabled={session.fixing !== null}>
-              {session.fixing === c.fix ? "Working…" : (fixLabel[c.fix] ?? "Fix")}
-            </button>
-          {/if}
-        </li>
-      {/each}
-    </ul>
-    {#if session.notice}<p class="notice ok mono">{session.notice}</p>{/if}
-  </Panel>
+      <p class="muted intro mono">Source: {session.sources.find((s) => s.id === session.selected)?.name ?? "—"}</p>
+      <ul class="checks">
+        {#each session.checks as c (c.id)}
+          <li class="s-{c.state}">
+            <span class="badge mono">{badge[c.state]}</span>
+            <div>
+              <div class="title">{c.title}</div>
+              <div class="detail muted">{c.detail}</div>
+            </div>
+            {#if c.fix}
+              <button class="btn primary" onclick={() => session.fix(c.fix!)} disabled={session.fixing !== null}>
+                {session.fixing === c.fix ? "Working…" : (fixLabel[c.fix] ?? "Fix")}
+              </button>
+            {/if}
+          </li>
+        {/each}
+      </ul>
+      {#if session.notice}<p class="notice ok mono">{session.notice}</p>{/if}
+    </Panel>
+    <EcholotSetup />
+  </div>
 
   <Panel label="How it works" index="02">
     <ol>
@@ -60,6 +64,11 @@
     grid-template-columns: 1.4fr 1fr;
     gap: 16px;
     align-items: start;
+  }
+
+  .col {
+    display: grid;
+    gap: 16px;
   }
 
   .intro {

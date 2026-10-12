@@ -56,7 +56,7 @@
       <div class="listen">
         <div class="col">
           <Source />
-          <Echolot />
+          {#if echolot.connected}<Echolot />{/if}
         </div>
         <div class="col">
           <Now />

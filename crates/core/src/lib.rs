@@ -1,8 +1,9 @@
 //! Mitschnitt core: everything that doesn't need a UI.
 //!
 //! Platform-neutral: [`passive`] (when a track starts, completes or is discarded), [`analyze`] (forensic checks),
-//! [`flac`] and [`output`] (files), [`profile`] (supported apps), [`settings`], [`runner`] (playing a queue of songs),
-//! [`echolot`] (the Echolot API) and [`recorder`] (working through Echolot's or an exported queue).
+//! [`flac`] and [`output`] (files), [`history`] (files written), [`profile`] (supported apps), [`settings`],
+//! [`runner`] (playing a queue of songs), [`echolot`] (the Echolot API) and [`recorder`] (working through Echolot's or
+//! an exported queue).
 //! Per platform, behind the same API: [`capture`], [`devices`], [`media`], [`sessions`], [`setup`], [`monitor`],
 //! [`guard`], [`power`], [`desktop`]; [`engine`] wires them to [`passive`].
 
@@ -13,6 +14,7 @@ pub mod devices;
 pub mod echolot;
 pub mod engine;
 pub mod flac;
+pub mod history;
 pub mod media;
 pub mod monitor;
 pub mod output;

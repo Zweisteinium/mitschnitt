@@ -14,7 +14,7 @@ export type Update =
   | { kind: "started"; track: Track }
   | { kind: "dropped"; track: Track; reason: string; message: string }
   | { kind: "exists"; track: Track; file: string }
-  | { kind: "saved"; track: Track; file: string | null; verdict: Severity; master: Master; exact: boolean; issues: string[] }
+  | { kind: "saved"; track: Track; file: string | null; size: number; verdict: Severity; master: Master; exact: boolean; issues: string[]; echolot: boolean }
   | { kind: "failed"; track: Track; error: string }
   | { kind: "key_blocked"; count: number }
   | { kind: "monitor_muted"; muted: boolean }
@@ -25,11 +25,9 @@ export type Source = { id: string; name: string; running: boolean; playing: bool
 export type SourceInfo = { app: string; device: string; rate: number };
 
 export type Format = "flac" | "wav" | "mp3";
-export type BitDepth = "auto" | "b16" | "b24";
 export type Settings = {
   out_dir: string;
   format: Format;
-  bit_depth: BitDepth;
   template: string;
   keep_flagged: boolean;
   skip_existing: boolean;
@@ -59,6 +57,9 @@ export type EcholotSession = {
   skipped: number;
   failed: number;
   minutes_left: number;
+  /** Length of all songs, and of those answered for (not the one being recorded). */
+  seconds_total: number;
+  seconds_done: number;
 };
 export type DeviceState = "idle" | "busy" | "recording" | "setup";
 export type RecorderSnapshot = {
@@ -78,6 +79,8 @@ export type RecorderSnapshot = {
 };
 export type RecorderUpdate = { kind: "snapshot"; snapshot: RecorderSnapshot } | { kind: "song"; job: Job; result: string; detail: string };
 export type CardState = { snapshot: RecorderSnapshot; url: string; pairing: boolean };
+/** A file Mitschnitt wrote (any run). `at`: Unix ms. `result`: Echolot's answer to the upload. */
+export type HistoryRecord = { at: number; track: Track; file: string; size: number; verdict: Severity; master: Master; exact: boolean; echolot: boolean; result: string | null; exists: boolean };
 
 export const api = {
   sources: () => invoke<Source[]>("sources"),
@@ -93,20 +96,24 @@ export const api = {
   fix: (action: string, app: string) => invoke<string>("fix", { action, app }),
   open: (target: string) => invoke<void>("open", { target }),
   platform: () => invoke<Platform>("platform"),
+  history: () => invoke<HistoryRecord[]>("history"),
   echolotState: () => invoke<CardState>("echolot_state"),
   echolotConnect: (url: string) => invoke<void>("echolot_connect", { url }),
   echolotCode: (code: string) => invoke<void>("echolot_code", { code }),
   echolotCancel: () => invoke<void>("echolot_cancel"),
   echolotDisconnect: () => invoke<void>("echolot_disconnect"),
   echolotSession: (action: "pause" | "resume" | "stop") => invoke<void>("echolot_session", { action }),
-  importQueue: () => invoke<void>("import_queue"),
-  stopQueue: () => invoke<void>("stop_queue"),
   onEcholot: (handler: (u: RecorderUpdate) => void): Promise<UnlistenFn> => listen<RecorderUpdate>("echolot", (e) => handler(e.payload)),
   onEcholotConnect: (handler: (url: string) => void): Promise<UnlistenFn> => listen<string>("echolot-connect", (e) => handler(e.payload)),
   onEcholotError: (handler: (error: string) => void): Promise<UnlistenFn> => listen<string>("echolot-error", (e) => handler(e.payload)),
   onListening: (handler: (info: SourceInfo) => void): Promise<UnlistenFn> => listen<SourceInfo>("listening", (e) => handler(e.payload)),
   onUpdate: (handler: (u: Update) => void): Promise<UnlistenFn> => listen<Update>("update", (e) => handler(e.payload)),
 };
+
+/** File size as Explorer counts it (1 MB = 1024 KB). */
+export function megabytes(bytes: number): string {
+  return `${(bytes / 1048576).toFixed(1)} MB`;
+}
 
 export function clock(ms: number): string {
   const s = Math.floor(ms / 1000);

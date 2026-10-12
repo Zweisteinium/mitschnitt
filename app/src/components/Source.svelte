@@ -5,10 +5,6 @@
 </script>
 
 <Panel label="Source" index="01">
-  {#snippet actions()}
-    {#if !session.listening}<button class="btn" onclick={() => session.refresh()}>Refresh</button>{/if}
-  {/snippet}
-
   {#if session.listening && session.source}
     <div class="active">
       <div class="name">{session.source.app}</div>

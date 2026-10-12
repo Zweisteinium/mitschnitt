@@ -18,9 +18,12 @@ pub struct Source {
 /// A command for the player (the queue runner drives it).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Control {
+    Play,
     Pause,
     Next,
     Previous,
+    /// Back to the beginning of the current track.
+    Restart,
 }
 
 /// Tags beyond the track identity, read once when a recording starts.

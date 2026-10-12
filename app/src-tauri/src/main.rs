@@ -5,7 +5,8 @@ mod echolot;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use mitschnitt_core::engine::{self, Config, Engine, SourceInfo};
+use mitschnitt_core::engine::{self, Config, Engine, SourceInfo, Update};
+use mitschnitt_core::history::{self, Record};
 use mitschnitt_core::media::{self, Source};
 use mitschnitt_core::profile::{self, Profile};
 use mitschnitt_core::settings::Settings;
@@ -42,11 +43,24 @@ async fn start(app: String, handle: AppHandle, state: State<'_, App>) -> Result<
         return Err("Already listening.".into());
     }
     let settings = lock(&state.settings)?.clone();
-    let (engine, info) = Engine::start(Config { profile, settings, trace: None, queue: None }, move |update| {
-        let _ = handle.emit("update", &update);
-    })?;
+    let (engine, info) = Engine::start(Config { profile, settings, trace: None, queue: None }, move |update| notify(&handle, update))?;
     *slot = Some(engine);
     Ok(info)
+}
+
+/// Pass an engine update to the UI; a written file goes into the history too.
+pub(crate) fn notify(handle: &AppHandle, update: Update) {
+    if let Update::Saved { track, file: Some(file), size, verdict, master, exact, echolot, .. } = &update {
+        let record = Record { at: history::now_ms(), track: track.clone(), file: file.clone(), size: *size, verdict: *verdict, master: *master, exact: *exact, echolot: *echolot, result: None, exists: true };
+        history::add(&history::default_path(), &record);
+    }
+    let _ = handle.emit("update", &update);
+}
+
+/// Every file written, newest first.
+#[tauri::command]
+async fn history() -> Vec<Record> {
+    history::load(&history::default_path())
 }
 
 #[tauri::command]
@@ -149,7 +163,6 @@ fn main() {
             }
         }))
         .plugin(tauri_plugin_deep_link::init())
-        .plugin(tauri_plugin_dialog::init())
         .manage(App { engine: Mutex::new(None), settings: Mutex::new(settings), for_queue: AtomicBool::new(false) })
         .manage(echolot::Echolot::default())
         .setup(|app| {
@@ -190,14 +203,13 @@ fn main() {
             fix,
             open,
             platform,
+            history,
             echolot::echolot_state,
             echolot::echolot_connect,
             echolot::echolot_code,
             echolot::echolot_cancel,
             echolot::echolot_disconnect,
-            echolot::echolot_session,
-            echolot::import_queue,
-            echolot::stop_queue
+            echolot::echolot_session
         ])
         .build(tauri::generate_context!())
         .expect("error while building Mitschnitt")

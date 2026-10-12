@@ -29,7 +29,7 @@ pub const PENDING_DIR: &str = "Echolot";
 pub const NOT_TAKEN_DIR: &str = "Not taken";
 
 const LONG_POLL_S: u32 = 25;
-const HEARTBEAT: Duration = Duration::from_secs(30);
+const HEARTBEAT: Duration = Duration::from_secs(10);
 const SETUP_CHECK: Duration = Duration::from_secs(60);
 const PLAYER_START: Duration = Duration::from_secs(30);
 /// Upload retries: growing pauses, giving up after an hour.
@@ -70,12 +70,21 @@ pub struct Snapshot {
     pub total: u32,
 }
 
+/// A few per song: their size doesn't matter.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RecorderUpdate {
-    Snapshot { snapshot: Box<Snapshot> },
+    Snapshot { snapshot: Snapshot },
     /// One song finished: Echolot's answer (`filed`, `not_better`, `rejected`) or the reason it wasn't recorded.
-    Song { job: Job, result: String, detail: String },
+    /// `moved`: the uploaded file and where it went then (`None`: deleted).
+    Song {
+        job: Job,
+        result: String,
+        detail: String,
+        #[serde(skip)]
+        moved: Option<(PathBuf, Option<PathBuf>)>,
+    },
 }
 
 /// Shared between the loop and the commands (pause/resume/stop, disconnect).
@@ -104,7 +113,7 @@ impl Recorder {
             s.session = session;
             s.clone()
         };
-        host.update(RecorderUpdate::Snapshot { snapshot: Box::new(snapshot) });
+        host.update(RecorderUpdate::Snapshot { snapshot });
         Ok(())
     }
 }
@@ -117,7 +126,7 @@ fn publish(snapshot: &Mutex<Snapshot>, host: &dyn Host, change: impl FnOnce(&mut
         }
         Err(_) => return,
     };
-    host.update(RecorderUpdate::Snapshot { snapshot: Box::new(snapshot) });
+    host.update(RecorderUpdate::Snapshot { snapshot });
 }
 
 /// Start the player when it isn't running (opening its scheme launches it) and wait for its process.
@@ -283,7 +292,7 @@ fn echolot_loop(client: &Client, profile: &Profile, out_dir: &Path, shared_host:
                         paused_for_sound = true;
                         let _ = client.session("pause");
                     }
-                    host.update(RecorderUpdate::Song { job: job.clone(), result: result.into(), detail: detail.clone() });
+                    host.update(RecorderUpdate::Song { job: job.clone(), result: result.into(), detail: detail.clone(), moved: None });
                     match client.result(&item, result, &detail) {
                         Ok(session) => publish(snapshot, host, |s| s.session = session.or(s.session.take())),
                         Err(Error::Unauthorized) => return disconnected(snapshot, host),
@@ -455,33 +464,34 @@ fn uploader(client: Client, not_taken: PathBuf, snapshot: Arc<Mutex<Snapshot>>, 
                         other => break other,
                     }
                 };
-                let (result, detail) = match answer {
+                let (result, detail, to) = match answer {
                     Ok(filed) => {
                         // Rejected: kept for a look. Otherwise kept in the library, or deleted, as the settings say.
                         let settings = host.settings();
-                        if filed.result == "rejected" {
-                            move_to(&upload.file, &not_taken.join(&upload.keep_as));
+                        let to = if filed.result == "rejected" {
+                            move_to(&upload.file, &not_taken.join(&upload.keep_as))
                         } else if settings.keep_echolot_copies {
-                            move_to(&upload.file, &settings.out_dir.join(&upload.keep_as));
+                            move_to(&upload.file, &settings.out_dir.join(&upload.keep_as))
                         } else {
                             let _ = std::fs::remove_file(&upload.file);
-                        }
+                            None
+                        };
                         publish(&snapshot, &*host, |s| {
                             s.session = filed.session.clone().or(s.session.take());
                             s.error = None;
                         });
-                        (filed.result, filed.detail)
+                        (filed.result, filed.detail, to)
                     }
                     Err(e) => {
-                        move_to(&upload.file, &not_taken.join(&upload.keep_as));
+                        let to = move_to(&upload.file, &not_taken.join(&upload.keep_as));
                         if !e.transient() {
                             // Still worth telling Echolot, so the song goes back to its queue.
                             let _ = client.result(&upload.item, "failed", &e.to_string());
                         }
-                        ("failed".into(), format!("upload: {e}"))
+                        ("failed".into(), format!("upload: {e}"), to)
                     }
                 };
-                host.update(RecorderUpdate::Song { job: upload.job, result, detail });
+                host.update(RecorderUpdate::Song { job: upload.job, result, detail, moved: Some((upload.file, to)) });
                 publish(&snapshot, &*host, |s| s.uploads = s.uploads.saturating_sub(1));
             }
         })
@@ -536,7 +546,7 @@ pub fn run_list(export: Export, profile: Profile, out_dir: PathBuf, host: Arc<dy
                     Outcome::Recorded { file, note } => ("recorded", note.clone().unwrap_or_else(|| file.display().to_string())),
                     other => result_of(other),
                 };
-                host.update(RecorderUpdate::Song { job, result: result.into(), detail: detail.clone() });
+                host.update(RecorderUpdate::Song { job, result: result.into(), detail: detail.clone(), moved: None });
                 publish(snapshot, host, |s| s.done += 1);
                 if matches!(outcome, Outcome::TookOver { .. } | Outcome::NoSound) {
                     publish(snapshot, host, |s| s.error = Some(format!("Stopped: {detail}")));

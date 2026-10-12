@@ -1,24 +1,21 @@
 <script lang="ts">
   import Panel from "../components/Panel.svelte";
-  import { api, type BitDepth, type Format } from "../lib/api";
+  import { api, type Format } from "../lib/api";
   import { session } from "../lib/session.svelte";
 
   const s = $derived(session.settings);
   const formats: { value: Format; label: string; note: string }[] = [
-    { value: "flac", label: "FLAC", note: "lossless, compressed, tagged" },
-    { value: "wav", label: "WAV", note: "lossless, uncompressed, no tags" },
+    { value: "flac", label: "FLAC", note: "lossless, compressed, tagged – 16-bit for 16-bit masters, else 24-bit" },
+    { value: "wav", label: "WAV", note: "lossless, uncompressed, no tags – 16-bit for 16-bit masters, else 24-bit" },
     { value: "mp3", label: "MP3", note: "320 kbit/s, tagged – lossy, encoded from the verified recording" },
-  ];
-  const depths: { value: BitDepth; label: string; note: string }[] = [
-    { value: "auto", label: "Auto", note: "16-bit when the master is 16-bit, else 24-bit – always lossless" },
-    { value: "b24", label: "24-bit", note: "always 24-bit" },
-    { value: "b16", label: "16-bit", note: "rounds 24-bit sources – not lossless for them" },
   ];
 
   const sample = { artist: "Daft Punk", title: "Digital Love", album: "Discovery" };
+  /** The template while typing (saved when the field is left). */
+  let draft = $state<string | null>(null);
   const preview = $derived.by(() => {
     if (!s) return "";
-    const filled = s.template.split("/").map((part) => part.replaceAll("{artist}", sample.artist).replaceAll("{title}", sample.title).replaceAll("{album}", sample.album));
+    const filled = (draft ?? s.template).split("/").map((part) => part.replaceAll("{artist}", sample.artist).replaceAll("{title}", sample.title).replaceAll("{album}", sample.album));
     return `${filled.join(" / ")}.${s.format}`;
   });
 
@@ -50,19 +47,17 @@
         <span class="note muted">{formats.find((f) => f.value === s.format)?.note}</span>
       </div>
 
-      <div class="field" class:off={s.format === "mp3"}>
-        <span class="name mono">Bit depth</span>
-        <div class="seg">
-          {#each depths as d}
-            <button class:on={s.bit_depth === d.value} onclick={() => set("bit_depth", d.value)}>{d.label}</button>
-          {/each}
-        </div>
-        <span class="note muted">{depths.find((d) => d.value === s.bit_depth)?.note}</span>
-      </div>
-
       <label class="field">
         <span class="name mono">File name</span>
-        <input value={s.template} onchange={(e) => set("template", e.currentTarget.value)} spellcheck="false" />
+        <input
+          value={s.template}
+          oninput={(e) => (draft = e.currentTarget.value)}
+          onchange={(e) => {
+            set("template", e.currentTarget.value);
+            draft = null;
+          }}
+          spellcheck="false"
+        />
         <span class="note muted"><code>{"{artist}"}</code> <code>{"{title}"}</code> <code>{"{album}"}</code> · <code>/</code> makes folders</span>
         <span class="note mono preview">→ {preview}</span>
       </label>
@@ -185,11 +180,6 @@
 
   .note {
     font-size: 12px;
-  }
-
-  .off {
-    opacity: 0.35;
-    pointer-events: none;
   }
 
   code {

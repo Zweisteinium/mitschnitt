@@ -77,6 +77,11 @@ pub struct SessionInfo {
     pub failed: u32,
     #[serde(default)]
     pub minutes_left: u32,
+    /// Length of all songs, and of those answered for (not the one being recorded).
+    #[serde(default)]
+    pub seconds_total: u64,
+    #[serde(default)]
+    pub seconds_done: u64,
 }
 
 impl SessionInfo {
@@ -262,7 +267,7 @@ impl Client {
         if let Some(id) = item {
             body["item"] = json!(id);
         }
-        parse(self.post(&format!("/api/recorder/poll?wait={wait}"), &body, Duration::from_secs(wait as u64 + 30))?)
+        parse(self.post(&format!("/api/recorder/poll?wait={wait}"), &body, Duration::from_secs(wait as u64 + 60))?)
     }
 
     /// Upload the recording of an item (multipart field `file`, optional text field `note`).
@@ -286,13 +291,13 @@ impl Client {
 
     /// A song without a file: `lossy_only`, `wrong_song`, `took_over`, `stalled` or `failed`.
     pub fn result(&self, item: &Item, result: &str, detail: &str) -> Result<Option<SessionInfo>, Error> {
-        let value = self.post(&item.result, &json!({ "result": result, "detail": detail }), Duration::from_secs(30))?;
+        let value = self.post(&item.result, &json!({ "result": result, "detail": detail }), Duration::from_secs(60))?;
         Ok(serde_json::from_value(value["session"].clone()).ok())
     }
 
     /// `pause`, `resume` or `stop` the session.
     pub fn session(&self, action: &str) -> Result<Option<SessionInfo>, Error> {
-        let value = self.post("/api/recorder/session", &json!({ "action": action }), Duration::from_secs(30))?;
+        let value = self.post("/api/recorder/session", &json!({ "action": action }), Duration::from_secs(60))?;
         Ok(serde_json::from_value(value["session"].clone()).ok())
     }
 

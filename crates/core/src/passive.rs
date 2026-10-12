@@ -18,7 +18,7 @@
 
 use std::collections::VecDeque;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// `AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY`: the capture lost data.
 pub const FLAG_GLITCH: u32 = 0x1;
@@ -41,10 +41,13 @@ const WAIT_MS: u64 = 5_000;
 const START_TOLERANCE_MS: i64 = 3_000;
 const POSITION_MATCH_MS: i64 = 1_500;
 const SEEK_TOLERANCE_MS: i64 = 3_000;
+/// A new title may briefly come with the previous track's position: only a position that stays this long means the
+/// track really was joined in the middle.
+const POSITION_SETTLE_MS: u64 = 2_000;
 /// Players announce the next track shortly before the old one has played out of their buffer.
 const EARLY_ANNOUNCE_MS: u64 = 1_500;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Track {
     pub title: String,
     pub artist: String,
@@ -72,6 +75,7 @@ pub enum Reason {
     Stopped,
     MidTrack,
     NoCleanStart,
+    DeviceChanged,
 }
 
 impl Reason {
@@ -86,6 +90,7 @@ impl Reason {
             Reason::Stopped => "Stopped",
             Reason::MidTrack => "Joined mid-track",
             Reason::NoCleanStart => "No silence before the track (gapless) - exact start unknown",
+            Reason::DeviceChanged => "Audio devices changed during the track",
         }
     }
 }
@@ -171,7 +176,10 @@ pub struct Passive {
     starts: VecDeque<u64>,
     /// Last track that was finished or given up on - not retried until it changes or restarts.
     done: Option<Track>,
+    /// Position while playing, to notice a restart from the beginning.
     last_position_ms: i64,
+    /// A track first shown beyond the start, and the frame it was first seen at (see [`POSITION_SETTLE_MS`]).
+    late: Option<(Track, u64)>,
     level: [f32; 2],
     /// Sum of squares per channel and the frames it covers, since the last status.
     energy: ([f64; 2], u64),
@@ -200,6 +208,7 @@ impl Passive {
             starts: VecDeque::new(),
             done: None,
             last_position_ms: 0,
+            late: None,
             level: [0.0; 2],
             energy: ([0.0; 2], 0),
             grid: GridCount::default(),
@@ -332,12 +341,23 @@ impl Passive {
         }
 
         if let (State::Idle, true, Some(track)) = (&self.state, m.playing, &m.track) {
-            let restarted = m.position_ms <= START_TOLERANCE_MS && self.last_position_ms > START_TOLERANCE_MS + 2_000;
+            // Back to the beginning (seeked to 0, or started again): a finished or dropped track may be taken again.
+            // The margin only absorbs the jitter of the player's reported position.
+            let restarted = m.position_ms <= START_TOLERANCE_MS && self.last_position_ms > m.position_ms + 250;
             if restarted || self.done.as_ref() != Some(track) {
                 self.consider_start(track.clone(), m.position_ms, &mut events);
             }
         }
-        self.last_position_ms = m.position_ms;
+        if m.playing {
+            self.last_position_ms = m.position_ms;
+        }
+        events
+    }
+
+    /// Something outside the stream spoilt the recording (e.g. audio devices changed): drop it.
+    pub fn interrupt(&mut self, reason: Reason) -> Vec<Event> {
+        let mut events = Vec::new();
+        self.drop_recording(reason, &mut events);
         events
     }
 
@@ -385,10 +405,22 @@ impl Passive {
             return;
         }
         if position_ms > START_TOLERANCE_MS {
+            let first = match &self.late {
+                Some((t, frame)) if *t == track => *frame,
+                _ => {
+                    self.late = Some((track.clone(), self.frame));
+                    self.frame
+                }
+            };
+            if self.frame - first < ms_to_frames(POSITION_SETTLE_MS, self.rate) as u64 {
+                return;
+            }
+            self.late = None;
             self.done = Some(track.clone());
             events.push(Event::Dropped { track, reason: Reason::MidTrack });
             return;
         }
+        self.late = None;
         // The audio may already be running: the clean start must lie `position` ago (within tolerance).
         let target = self.frame as i64 - ms_to_frames(position_ms.max(0) as u64, self.rate) as i64;
         let tolerance = ms_to_frames(POSITION_MATCH_MS as u64, self.rate) as i64;
@@ -686,9 +718,47 @@ mod tests {
     fn joining_mid_track_is_skipped() {
         let t = track(60_000);
         let mut p = Passive::new(RATE, 2, GAIN);
-        let ev = p.media(playing(&t, 30_000));
+        let mut ev = p.media(playing(&t, 30_000));
+        assert!(ev.is_empty(), "a position beyond the start may be stale for a moment");
+        silence(&mut p, 2_100, &mut ev);
+        ev.extend(p.media(playing(&t, 32_100)));
         assert!(matches!(ev[..], [Event::Dropped { reason: Reason::MidTrack, .. }]));
-        assert!(p.media(playing(&t, 30_100)).is_empty(), "the same track is not reported again");
+        assert!(p.media(playing(&t, 32_200)).is_empty(), "the same track is not reported again");
+    }
+
+    #[test]
+    fn a_stale_position_settles_and_the_track_is_recorded() {
+        // The new title arrives with the previous track's position, then the real one: recorded from the clean start.
+        let t = track(1_000);
+        let (_, raw) = master(ms_to_frames(1_000, RATE), 9);
+        let mut p = Passive::new(RATE, 2, GAIN);
+        let mut ev = Vec::new();
+        silence(&mut p, 1_200, &mut ev);
+        ev.extend(p.media(playing(&t, 95_000)));
+        feed(&mut p, &raw[..ms_to_frames(300, RATE) * 2], &mut ev);
+        ev.extend(p.media(playing(&t, 300)));
+        feed(&mut p, &raw[ms_to_frames(300, RATE) * 2..], &mut ev);
+        assert!(ev.iter().any(|e| matches!(e, Event::Completed { .. })), "{ev:?}");
+    }
+
+    #[test]
+    fn a_dropped_track_is_taken_again_when_it_starts_over() {
+        let t = track(1_000);
+        let (_, raw) = master(ms_to_frames(1_000, RATE), 5);
+        let mut p = Passive::new(RATE, 2, GAIN);
+        let mut ev = Vec::new();
+        silence(&mut p, 1_200, &mut ev);
+        ev.extend(p.media(playing(&t, 0)));
+        feed(&mut p, &raw[..ms_to_frames(400, RATE) * 2], &mut ev);
+        ev.extend(p.media(playing(&t, 400)));
+        ev.extend(p.media(Media { playing: false, track: Some(t.clone()), position_ms: 400 }));
+        assert!(ev.iter().any(|e| matches!(e, Event::Dropped { reason: Reason::Paused, .. })));
+        // Back to the start while paused, a moment of silence, then played again from 0:00.
+        ev.extend(p.media(Media { playing: false, track: Some(t.clone()), position_ms: 0 }));
+        silence(&mut p, 300, &mut ev);
+        ev.extend(p.media(playing(&t, 0)));
+        feed(&mut p, &raw, &mut ev);
+        assert!(ev.iter().any(|e| matches!(e, Event::Completed { .. })), "{ev:?}");
     }
 
     #[test]

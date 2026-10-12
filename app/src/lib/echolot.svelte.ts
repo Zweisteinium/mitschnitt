@@ -1,6 +1,20 @@
 import { api, type Job, type RecorderSnapshot } from "./api";
+import { session } from "./session.svelte";
 
 export type SongResult = { id: number; at: Date; job: Job; result: string; detail: string };
+
+/** What became of a song, in a word. `stalled` and `failed` are the same to Echolot: it tries once more. */
+export const resultText: Record<string, string> = {
+  filed: "added",
+  not_better: "not better",
+  rejected: "rejected",
+  recorded: "recorded",
+  lossy_only: "no lossless",
+  wrong_song: "wrong song",
+  took_over: "taken over",
+  stalled: "failed",
+  failed: "failed",
+};
 
 const empty: RecorderSnapshot = { connection: "", user: "", host: "", device: "", state: null, detail: "", session: null, current: null, uploads: 0, error: null, done: 0, total: 0 };
 
@@ -23,11 +37,6 @@ class Echolot {
     return this.snapshot.connection === "connected" || this.snapshot.connection === "offline";
   }
 
-  /** An exported list is being worked through. */
-  get running(): boolean {
-    return this.snapshot.connection === "file";
-  }
-
   async init() {
     await api.onEcholot((u) => {
       if (u.kind === "snapshot") {
@@ -40,6 +49,7 @@ class Echolot {
     await api.onEcholotConnect((url) => {
       this.url = url;
       this.confirming = true;
+      session.tab = "setup";
     });
     await api.onEcholotError((e) => {
       this.error = e;
@@ -85,15 +95,6 @@ class Echolot {
   /** Mitschnitt's own Stop / Stop after track: a running session pauses first. */
   async pauseForStop() {
     if (this.connected && this.snapshot.session?.state === "running") await this.session("pause");
-    if (this.running) await this.stopQueue();
-  }
-
-  async importQueue() {
-    await this.#try(() => api.importQueue());
-  }
-
-  async stopQueue() {
-    await this.#try(() => api.stopQueue());
   }
 
   async #try(action: () => Promise<void>) {

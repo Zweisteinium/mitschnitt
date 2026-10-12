@@ -4,8 +4,9 @@
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
-use mitschnitt_core::echolot::{self, Client, Export, Link, Pairing, store};
+use mitschnitt_core::echolot::{self, Client, Link, Pairing, store};
 use mitschnitt_core::engine::{Config, Engine, Queue};
+use mitschnitt_core::history;
 use mitschnitt_core::profile::SPOTIFY;
 use mitschnitt_core::recorder::{self, Host, Recorder, RecorderUpdate, Snapshot};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -39,9 +40,7 @@ impl Host for AppHost {
         };
         let settings = lock(&state.settings)?.clone();
         let handle = self.handle.clone();
-        let (engine, info) = Engine::start(Config { profile: SPOTIFY, settings, trace: None, queue: Some(queue) }, move |update| {
-            let _ = handle.emit("update", &update);
-        })?;
+        let (engine, info) = Engine::start(Config { profile: SPOTIFY, settings, trace: None, queue: Some(queue) }, move |update| crate::notify(&handle, update))?;
         *slot = Some(engine);
         state.for_queue.store(true, Ordering::Relaxed);
         let _ = self.handle.emit("listening", &info);
@@ -63,6 +62,10 @@ impl Host for AppHost {
     }
 
     fn update(&self, update: RecorderUpdate) {
+        if let RecorderUpdate::Song { result, moved: Some((from, to)), .. } = &update {
+            let to = to.as_ref().map(|p| p.display().to_string());
+            history::moved(&history::default_path(), &from.display().to_string(), to.as_deref(), result);
+        }
         let _ = self.handle.emit("echolot", &update);
     }
 }
@@ -187,7 +190,7 @@ pub async fn echolot_disconnect(handle: AppHandle) -> Result<(), String> {
         let _ = Client::new(&saved.base, &token).disconnect();
     }
     store::forget();
-    let _ = handle.emit("echolot", RecorderUpdate::Snapshot { snapshot: Box::default() });
+    let _ = handle.emit("echolot", RecorderUpdate::Snapshot { snapshot: Snapshot::default() });
     Ok(())
 }
 
@@ -198,27 +201,3 @@ pub async fn echolot_session(action: String, handle: AppHandle) -> Result<(), St
     recorder.session(&action, &*host(&handle))
 }
 
-/// Record an exported list (offline fallback): pick the file, then work through it.
-#[tauri::command]
-pub async fn import_queue(handle: AppHandle) -> Result<(), String> {
-    use tauri_plugin_dialog::DialogExt;
-    let state = handle.state::<Echolot>();
-    if lock(&state.recorder)?.as_ref().is_some_and(|r| r.client.is_some() || !r.snapshot().connection.is_empty()) {
-        return Err("Disconnect from Echolot first - a connected device gets its songs from Echolot.".into());
-    }
-    let Some(file) = handle.dialog().file().add_filter("Echolot export", &["json"]).blocking_pick_file() else { return Ok(()) };
-    let path = file.into_path().map_err(|e| e.to_string())?;
-    let export = Export::load(&path)?;
-    let recorder = recorder::run_list(export, SPOTIFY, out_dir(&handle)?, host(&handle));
-    *lock(&state.recorder)? = Some(recorder);
-    Ok(())
-}
-
-/// Stop an exported list now (the current song counts as stalled).
-#[tauri::command]
-pub fn stop_queue(state: State<'_, Echolot>) -> Result<(), String> {
-    if let Some(r) = lock(&state.recorder)?.as_ref().filter(|r| r.client.is_none()) {
-        r.stop();
-    }
-    Ok(())
-}

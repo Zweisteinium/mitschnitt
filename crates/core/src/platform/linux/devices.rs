@@ -7,6 +7,11 @@ pub fn render_endpoints() -> Result<Vec<Endpoint>, String> {
     Ok(graph.nodes.iter().filter(|n| n.class() == "Audio/Sink").map(|n| describe(&conn, &graph, n)).collect())
 }
 
+/// Output device changes don't touch the app's own stream on Linux (it is captured directly): nothing to watch.
+pub fn layout() -> String {
+    String::new()
+}
+
 pub fn default_endpoint() -> Result<Endpoint, String> {
     let conn = Conn::new()?;
     let graph = conn.graph();

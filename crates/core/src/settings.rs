@@ -20,21 +20,11 @@ pub enum Format {
     Mp3,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum BitDepth {
-    /// 16-bit when every sample lies on the 16-bit grid (lossless and smaller), otherwise 24-bit.
-    Auto,
-    B16,
-    B24,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     pub out_dir: PathBuf,
     pub format: Format,
-    pub bit_depth: BitDepth,
     /// File name without extension; `{artist}`, `{title}`, `{album}`; `/` creates folders.
     pub template: String,
     /// Keep files the forensic check marks as altered or corrupt (otherwise they are deleted).
@@ -60,7 +50,6 @@ impl Default for Settings {
         Settings {
             out_dir: music.join("Mitschnitt"),
             format: Format::Flac,
-            bit_depth: BitDepth::Auto,
             template: "{artist} - {title}".into(),
             keep_flagged: true,
             skip_existing: true,
@@ -98,7 +87,6 @@ mod tests {
     fn partial_json_falls_back_to_defaults() {
         let s: Settings = serde_json::from_str(r#"{ "format": "wav" }"#).unwrap();
         assert_eq!(s.format, Format::Wav);
-        assert_eq!(s.bit_depth, BitDepth::Auto);
         assert_eq!(s.template, "{artist} - {title}");
     }
 }

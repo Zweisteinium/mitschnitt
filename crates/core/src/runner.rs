@@ -1,6 +1,7 @@
 //! Queue runner: plays requested songs one after another in the player and records each one.
 //!
-//! For every [`Job`] it opens the song's link (`spotify:track:<id>:play` starts it at 0:00), checks that the right
+//! For every [`Job`] it opens the song's link (`spotify:track:<id>:play` starts it at 0:00; a song the player has
+//! loaded already is put back to 0:00 and played instead, as its link would resume it), checks that the right
 //! song plays (correcting an album that starts one track off with next/previous), lets [`crate::passive`] record
 //! it, pauses the player at the exact end (otherwise the album plays on) and waits a moment of silence before the
 //! next song, so every song gets a clean start. Anything the runner didn't cause - pause, skip, seek, volume,
@@ -27,6 +28,8 @@ const CORRECTION_TIMEOUT: Duration = Duration::from_secs(4);
 const SOUND_TIMEOUT: Duration = Duration::from_secs(6);
 /// A song only counts as started from the beginning below this position.
 const MAX_START_POSITION_MS: i64 = 3_000;
+/// A new song may briefly show the previous position; a position beyond the start that stays this long is real.
+const POSITION_SETTLE: Duration = Duration::from_millis(1_500);
 const LENGTH_TOLERANCE_MS: u64 = 2_000;
 /// A song handed over while the user plays something himself waits this long for the player to be idle.
 const BUSY_TIMEOUT: Duration = Duration::from_secs(10);
@@ -68,9 +71,12 @@ impl Job {
 pub enum Action {
     /// Open a link with the desktop (starts the player if needed).
     Open,
+    Play,
     Pause,
     Next,
     Previous,
+    /// Back to the beginning of the current song.
+    Restart,
 }
 
 /// How a job ended.
@@ -96,6 +102,8 @@ pub enum Written {
     Saved { file: PathBuf, note: Option<String> },
     /// Not on the lossless grid: the stream wasn't lossless (or was processed).
     Lossy { detail: String },
+    /// The check found damage (a dropout, a cut): never uploaded, worth another try.
+    Corrupt { detail: String },
     Failed { error: String },
 }
 
@@ -105,15 +113,17 @@ enum Stage {
     Idle { since: Instant },
     /// The user plays something himself: wait before starting the job.
     Waiting { job: Job, since: Instant },
-    /// The link was opened; waiting for the player to show the song.
-    Starting { job: Job, at: Instant, timeout: Duration, corrections: usize, wrong: Option<Track>, retried: bool },
+    /// The link was opened; waiting for the player to show the song. `late`: since when the right song shows a
+    /// position beyond the start; `rewound`: it was already put back to the start once.
+    Starting { job: Job, at: Instant, timeout: Duration, corrections: usize, wrong: Option<Track>, retried: bool, rewound: bool, late: Option<Instant> },
     /// The right song plays; waiting for the recording to start.
     Playing { job: Job, at: Instant, retried: bool },
     Recording { job: Job, at: Instant, retried: bool },
     /// Complete; the file is being written.
     Writing { job: Job },
-    /// Start the same song again after the gap (the first try was spoilt by the runner's own start-up).
-    Reopen { job: Job, since: Instant },
+    /// The player is paused: after the gap, play the song again from the beginning. Opening its link again would
+    /// only resume it where it is.
+    Rewind { job: Job, since: Instant, retried: bool },
 }
 
 pub struct Runner {
@@ -137,7 +147,7 @@ impl Runner {
     pub fn job(&self) -> Option<&Job> {
         match &self.stage {
             Stage::Idle { .. } => None,
-            Stage::Waiting { job, .. } | Stage::Starting { job, .. } | Stage::Playing { job, .. } | Stage::Recording { job, .. } | Stage::Writing { job } | Stage::Reopen { job, .. } => Some(job),
+            Stage::Waiting { job, .. } | Stage::Starting { job, .. } | Stage::Playing { job, .. } | Stage::Recording { job, .. } | Stage::Writing { job } | Stage::Rewind { job, .. } => Some(job),
         }
     }
 
@@ -146,20 +156,23 @@ impl Runner {
         matches!(self.stage, Stage::Recording { .. })
     }
 
-    /// Start `job` (returns the action that opens its link), or wait while the player plays something else.
-    pub fn assign(&mut self, job: Job, now: Instant, playing: bool) -> Vec<Action> {
-        if playing {
+    /// Start `job`, or wait while the player plays something else. `media`: what the player shows now.
+    pub fn assign(&mut self, job: Job, now: Instant, media: &Media) -> Vec<Action> {
+        if media.playing {
             self.stage = Stage::Waiting { job, since: now };
             return Vec::new();
         }
-        self.open(job, now)
+        self.open(job, now, media)
     }
 
-    fn open(&mut self, job: Job, now: Instant) -> Vec<Action> {
+    fn open(&mut self, job: Job, now: Instant, media: &Media) -> Vec<Action> {
         let timeout = if self.first { FIRST_START_TIMEOUT } else { START_TIMEOUT };
         self.first = false;
-        self.stage = Stage::Starting { job, at: now, timeout, corrections: 0, wrong: None, retried: false };
-        vec![Action::Open]
+        // Already loaded (an earlier try, or the album moved on to it): its link would resume it, and the player fades
+        // a resume in (10 ms). Put back to 0:00 and played, it starts bit-exact.
+        let loaded = media.track.as_ref().is_some_and(|t| matches(&job, t).is_ok());
+        self.stage = Stage::Starting { job, at: now, timeout, corrections: 0, wrong: None, retried: false, rewound: false, late: None };
+        if loaded { vec![Action::Restart, Action::Play] } else { vec![Action::Open] }
     }
 
     /// Finished jobs since the last call.
@@ -193,27 +206,27 @@ impl Runner {
             Stage::Waiting { job, since } => {
                 let job = job.clone();
                 if !media.playing {
-                    return self.open(job, now);
+                    return self.open(job, now, media);
                 }
                 if now.duration_since(*since) < BUSY_TIMEOUT {
                     return Vec::new();
                 }
                 self.finish(job, Outcome::TookOver { detail: "Spotify is in use".into() }, now, false)
             }
-            Stage::Reopen { job, since } => {
+            Stage::Rewind { job, since, retried } => {
                 if now < *since + GAP {
                     return Vec::new();
                 }
-                let job = job.clone();
-                self.stage = Stage::Starting { job, at: now, timeout: START_TIMEOUT, corrections: 0, wrong: None, retried: true };
-                vec![Action::Open]
+                let (job, retried) = (job.clone(), *retried);
+                self.stage = Stage::Starting { job, at: now, timeout: START_TIMEOUT, corrections: 0, wrong: None, retried, rewound: true, late: None };
+                vec![Action::Restart, Action::Play]
             }
             Stage::Playing { job, at, retried } => {
                 // Paused before the recording began (a key pressed while the player had the focus): once more.
                 if !media.playing && media.track.is_some() {
                     let (job, retried) = (job.clone(), *retried);
                     if !retried {
-                        self.stage = Stage::Reopen { job, since: now };
+                        self.stage = Stage::Rewind { job, since: now, retried: true };
                         return Vec::new();
                     }
                     return self.finish(job, Outcome::TookOver { detail: "Paused".into() }, now, false);
@@ -224,7 +237,7 @@ impl Runner {
                 let job = job.clone();
                 self.finish(job, Outcome::NoSound, now, true)
             }
-            Stage::Starting { job, at, timeout, corrections, wrong, retried } => {
+            Stage::Starting { job, at, timeout, corrections, wrong, retried, rewound, late } => {
                 let showing = media.track.as_ref().filter(|_| media.playing);
                 let fresh = showing.filter(|t| wrong.as_ref() != Some(*t));
                 let Some(track) = fresh else {
@@ -239,13 +252,23 @@ impl Runner {
                     return self.finish(job, Outcome::Failed { detail: "the player didn't start the song".into() }, now, true);
                 };
                 if media.position_ms > MAX_START_POSITION_MS && wrong.is_none() && *corrections == 0 {
-                    // Still the previous state of the player (or it resumed somewhere): wait for the start.
+                    // Beyond the start: a stale position for a moment, the previous song still playing, or the player
+                    // resumed the song somewhere. The right song gets put back to the start (once).
+                    if now.duration_since(*late.get_or_insert(now)) < POSITION_SETTLE {
+                        return Vec::new();
+                    }
+                    if matches(job, track).is_ok() && !*rewound {
+                        let (job, retried) = (job.clone(), *retried);
+                        self.stage = Stage::Rewind { job, since: now, retried };
+                        return vec![Action::Pause];
+                    }
                     if now.duration_since(*at) < *timeout {
                         return Vec::new();
                     }
                     let job = job.clone();
                     return self.finish(job, Outcome::Failed { detail: format!("the song started at {} s instead of 0:00", media.position_ms / 1000) }, now, true);
                 }
+                *late = None;
                 match matches(job, track) {
                     Ok(()) => {
                         let (job, retried) = (job.clone(), *retried);
@@ -263,13 +286,13 @@ impl Runner {
 
     /// Another song plays: try the next correction, or give up.
     fn correct(&mut self, job: Job, wrong: Track, now: Instant) -> Vec<Action> {
-        let (corrections, retried) = match &self.stage {
-            Stage::Starting { corrections, retried, .. } => (*corrections, *retried),
-            _ => (0, false),
+        let (corrections, retried, rewound) = match &self.stage {
+            Stage::Starting { corrections, retried, rewound, .. } => (*corrections, *retried, *rewound),
+            _ => (0, false, false),
         };
         match CORRECTIONS.get(corrections) {
             Some(action) => {
-                self.stage = Stage::Starting { job, at: now, timeout: START_TIMEOUT, corrections: corrections + 1, wrong: Some(wrong), retried };
+                self.stage = Stage::Starting { job, at: now, timeout: START_TIMEOUT, corrections: corrections + 1, wrong: Some(wrong), retried, rewound, late: None };
                 vec![*action]
             }
             None => {
@@ -304,13 +327,13 @@ impl Runner {
                 // A pause right after the start is most likely a key that reached the player while it had the focus.
                 let startup = matches!(reason, Reason::VolumeChanged | Reason::NoCleanStart | Reason::MidTrack | Reason::Paused) && now.duration_since(at) < Duration::from_secs(4);
                 if startup && !retried {
-                    self.stage = Stage::Reopen { job, since: now };
+                    self.stage = Stage::Rewind { job, since: now, retried: true };
                     return vec![Action::Pause];
                 }
                 let detail = reason.message().to_owned();
                 let outcome = match reason {
                     Reason::Paused | Reason::Seeked | Reason::TrackChanged | Reason::VolumeChanged => Outcome::TookOver { detail },
-                    Reason::Underrun | Reason::Glitch | Reason::Stopped | Reason::MidTrack | Reason::NoCleanStart => Outcome::Stalled { detail },
+                    Reason::Underrun | Reason::Glitch | Reason::Stopped | Reason::MidTrack | Reason::NoCleanStart | Reason::DeviceChanged => Outcome::Stalled { detail },
                 };
                 // After a take-over the player is the user's: leave it alone.
                 let pause = !matches!(outcome, Outcome::TookOver { .. });
@@ -349,6 +372,7 @@ impl From<Written> for Outcome {
         match result {
             Written::Saved { file, note } => Outcome::Recorded { file, note },
             Written::Lossy { detail } => Outcome::LossyOnly { detail },
+            Written::Corrupt { detail } => Outcome::Stalled { detail },
             Written::Failed { error } => Outcome::Failed { detail: error },
         }
     }
@@ -385,13 +409,16 @@ pub fn matches(job: &Job, track: &Track) -> Result<(), String> {
     if a != b && (base_title(&job.title).is_empty() || base_title(&job.title) != base_title(&track.title)) {
         return Err(format!("title is \"{}\", expected \"{}\"", track.title, job.title));
     }
-    let shown = norm(&track.artist);
-    let artist_ok = std::iter::once(&job.artist).chain(&job.artists).map(|n| norm(n)).any(|n| !n.is_empty() && (shown.contains(&n) || n.contains(&shown)));
-    if !artist_ok && !shown.is_empty() {
-        return Err(format!("artist is \"{}\", expected \"{}\"", track.artist, job.artist));
-    }
     if job.duration_ms > 0 && track.duration_ms.abs_diff(job.duration_ms) > LENGTH_TOLERANCE_MS {
         return Err(format!("length is {} s, expected {} s", track.duration_ms / 1000, job.duration_ms / 1000));
+    }
+    // Artists get renamed, and the app shows the new name before the Web API does ("TheDoDo" -> "Pbb Yea"). The same
+    // title with the same length is the song; a neighbour after an off-by-one differs in both.
+    let renamed = a == b && job.duration_ms > 0;
+    let shown = norm(&track.artist);
+    let artist_ok = std::iter::once(&job.artist).chain(&job.artists).map(|n| norm(n)).any(|n| !n.is_empty() && (shown.contains(&n) || n.contains(&shown)));
+    if !artist_ok && !shown.is_empty() && !renamed {
+        return Err(format!("artist is \"{}\", expected \"{}\"", track.artist, job.artist));
     }
     Ok(())
 }
@@ -421,6 +448,21 @@ mod tests {
         Media { playing: true, track: Some(t.clone()), position_ms: pos }
     }
 
+    fn busy() -> Media {
+        playing(&track("Mine", "Me", 100_000), 5_000)
+    }
+
+    #[test]
+    fn a_song_already_loaded_is_started_from_zero_not_resumed_by_its_link() {
+        let t = Instant::now();
+        let mut r = Runner::new(t - GAP);
+        let loaded = Media { playing: false, track: Some(track("Feel It", "NYCO", 225_000)), position_ms: 0 };
+        assert_eq!(r.assign(job(), t, &loaded), vec![Action::Restart, Action::Play]);
+        let mut r = Runner::new(t - GAP);
+        let other = Media { playing: false, track: Some(track("Other Song", "NYCO", 200_000)), position_ms: 0 };
+        assert_eq!(r.assign(job(), t, &other), vec![Action::Open]);
+    }
+
     #[test]
     fn job_links() {
         assert_eq!(job().track_id(), "6fhlcLPTrpYfPXRT0pwnxk");
@@ -435,7 +477,9 @@ mod tests {
         assert!(matches(&j, &track("Feel It - Radio Edit", "NYCO", 224_000)).is_ok());
         assert!(matches(&j, &track("Feel It", "NYCO", 180_000)).is_err(), "another version has another length");
         assert!(matches(&j, &track("Other Song", "NYCO", 225_000)).is_err());
-        assert!(matches(&j, &track("Feel It", "Somebody Else", 225_000)).is_err());
+        assert!(matches(&j, &track("Feel It", "Renamed Artist", 225_400)).is_ok(), "a renamed artist: same title and length");
+        assert!(matches(&j, &track("Feel It - Radio Edit", "Somebody Else", 225_000)).is_err());
+        assert!(matches(&Job { duration_ms: 0, ..job() }, &track("Feel It", "Somebody Else", 225_000)).is_err());
         let umlaut = Job { title: "Probier's mal mit Gemütlichkeit".into(), artist: "Edgar Ott".into(), ..job() };
         assert!(matches(&umlaut, &track("Probier’s mal mit Gemütlichkeit", "Edgar Ott", 225_000)).is_ok());
     }
@@ -447,7 +491,7 @@ mod tests {
         assert!(!r.ready(t0));
         let t = t0 + GAP;
         assert!(r.ready(t));
-        assert_eq!(r.assign(job(), t, false), vec![Action::Open]);
+        assert_eq!(r.assign(job(), t, &Media::default()), vec![Action::Open]);
         let song = track("Feel It", "NYCO", 225_000);
         assert!(r.tick(t, &Media::default()).is_empty(), "nothing plays yet");
         assert!(r.tick(t + Duration::from_secs(1), &playing(&song, 200)).is_empty());
@@ -468,7 +512,7 @@ mod tests {
     fn corrects_an_album_that_starts_one_track_off() {
         let t = Instant::now();
         let mut r = Runner::new(t - GAP);
-        r.assign(job(), t, false);
+        r.assign(job(), t, &Media::default());
         let before = track("Intro", "NYCO", 60_000);
         assert_eq!(r.tick(t + Duration::from_secs(1), &playing(&before, 100)), vec![Action::Next]);
         // Still showing the wrong song for a moment: no new action.
@@ -483,7 +527,7 @@ mod tests {
     fn gives_up_after_next_and_two_previous() {
         let t = Instant::now();
         let mut r = Runner::new(t - GAP);
-        r.assign(job(), t, false);
+        r.assign(job(), t, &Media::default());
         let songs = ["A", "B", "C", "D"].map(|s| track(s, "X", 100_000));
         assert_eq!(r.tick(t, &playing(&songs[0], 0)), vec![Action::Next]);
         assert_eq!(r.tick(t, &playing(&songs[1], 0)), vec![Action::Previous]);
@@ -496,7 +540,7 @@ mod tests {
     fn user_actions_are_a_take_over_and_leave_the_player_alone() {
         let t = Instant::now();
         let mut r = Runner::new(t - GAP);
-        r.assign(job(), t, false);
+        r.assign(job(), t, &Media::default());
         let song = track("Feel It", "NYCO", 225_000);
         r.event(t, &Event::Started(song.clone()));
         let actions = r.event(t + Duration::from_secs(30), &Event::Dropped { track: song, reason: Reason::Paused });
@@ -508,14 +552,14 @@ mod tests {
     fn a_spoilt_start_is_tried_once_more() {
         let t = Instant::now();
         let mut r = Runner::new(t - GAP);
-        r.assign(job(), t, false);
+        r.assign(job(), t, &Media::default());
         let song = track("Feel It", "NYCO", 225_000);
         r.event(t, &Event::Started(song.clone()));
         // The new audio stream came up at the wrong volume: the engine fixed it and dropped the recording.
         assert_eq!(r.event(t + Duration::from_millis(400), &Event::Dropped { track: song.clone(), reason: Reason::VolumeChanged }), vec![Action::Pause]);
         assert!(r.take_done().is_empty());
         assert!(r.tick(t + Duration::from_millis(500), &Media::default()).is_empty());
-        assert_eq!(r.tick(t + Duration::from_secs(2), &Media::default()), vec![Action::Open]);
+        assert_eq!(r.tick(t + Duration::from_secs(2), &Media::default()), vec![Action::Restart, Action::Play]);
         // The second time it counts.
         r.event(t + Duration::from_secs(3), &Event::Started(song.clone()));
         r.event(t + Duration::from_secs(3), &Event::Dropped { track: song, reason: Reason::VolumeChanged });
@@ -526,33 +570,62 @@ mod tests {
     fn a_pause_right_after_the_start_starts_the_song_again() {
         let t = Instant::now();
         let mut r = Runner::new(t - GAP);
-        r.assign(job(), t, false);
+        r.assign(job(), t, &Media::default());
         let song = track("Feel It", "NYCO", 225_000);
         r.event(t, &Event::Started(song.clone()));
         assert_eq!(r.event(t + Duration::from_secs(1), &Event::Dropped { track: song, reason: Reason::Paused }), vec![Action::Pause]);
         assert!(r.take_done().is_empty());
-        assert_eq!(r.tick(t + Duration::from_secs(3), &Media::default()), vec![Action::Open]);
+        assert_eq!(r.tick(t + Duration::from_secs(3), &Media::default()), vec![Action::Restart, Action::Play]);
     }
 
     #[test]
     fn waits_while_the_user_plays_something() {
         let t = Instant::now();
         let mut r = Runner::new(t - GAP);
-        assert!(r.assign(job(), t, true).is_empty());
+        assert!(r.assign(job(), t, &busy()).is_empty());
         let other = playing(&track("Mine", "Me", 100_000), 5_000);
         assert!(r.tick(t + Duration::from_secs(5), &other).is_empty());
         assert_eq!(r.tick(t + Duration::from_secs(6), &Media::default()), vec![Action::Open]);
         let mut r = Runner::new(t - GAP);
-        r.assign(job(), t, true);
+        r.assign(job(), t, &busy());
         assert!(r.tick(t + Duration::from_secs(11), &other).is_empty());
         assert!(matches!(r.take_done()[0].1, Outcome::TookOver { .. }));
+    }
+
+    #[test]
+    fn a_song_that_starts_beyond_the_beginning_is_put_back_to_the_start_once() {
+        let t = Instant::now();
+        let mut r = Runner::new(t - GAP);
+        r.assign(job(), t, &Media::default());
+        let song = track("Feel It", "NYCO", 225_000);
+        // A stale position for a moment is no reason to act.
+        assert!(r.tick(t + Duration::from_millis(300), &playing(&song, 95_000)).is_empty());
+        assert!(r.tick(t + Duration::from_millis(1_000), &playing(&song, 95_700)).is_empty());
+        // It stays beyond the start: the player resumed the song. Pause, then from the beginning after the gap.
+        assert_eq!(r.tick(t + Duration::from_millis(2_000), &playing(&song, 96_700)), vec![Action::Pause]);
+        let paused = Media { playing: false, track: Some(song.clone()), position_ms: 96_700 };
+        assert!(r.tick(t + Duration::from_millis(2_500), &paused).is_empty());
+        assert_eq!(r.tick(t + Duration::from_millis(3_300), &paused), vec![Action::Restart, Action::Play]);
+        assert!(r.tick(t + Duration::from_millis(3_600), &playing(&song, 200)).is_empty());
+        r.event(t + Duration::from_millis(3_600), &Event::Started(song.clone()));
+        assert!(r.recording());
+        // Only once: a song that still won't start at the beginning fails.
+        let mut r = Runner::new(t - GAP);
+        r.assign(job(), t, &Media::default());
+        r.tick(t, &playing(&song, 95_000));
+        r.tick(t + Duration::from_secs(2), &playing(&song, 97_000));
+        r.tick(t + Duration::from_secs(4), &paused);
+        r.tick(t + Duration::from_secs(5), &playing(&song, 99_000));
+        r.tick(t + Duration::from_secs(7), &playing(&song, 101_000));
+        assert!(r.tick(t + Duration::from_secs(18), &playing(&song, 112_000)).contains(&Action::Pause));
+        assert!(matches!(&r.take_done()[0].1, Outcome::Failed { detail } if detail.contains("instead of 0:00")));
     }
 
     #[test]
     fn no_sound_on_this_pc() {
         let t = Instant::now();
         let mut r = Runner::new(t - GAP);
-        r.assign(job(), t, false);
+        r.assign(job(), t, &Media::default());
         let song = track("Feel It", "NYCO", 225_000);
         r.tick(t, &playing(&song, 0));
         assert!(r.tick(t + Duration::from_secs(3), &playing(&song, 3_000)).is_empty());
@@ -564,7 +637,7 @@ mod tests {
     fn a_player_that_never_starts_fails() {
         let t = Instant::now();
         let mut r = Runner::new(t - GAP);
-        r.assign(job(), t, false);
+        r.assign(job(), t, &Media::default());
         assert!(r.tick(t + Duration::from_secs(20), &Media::default()).is_empty(), "the first start may take long");
         assert_eq!(r.tick(t + Duration::from_secs(26), &Media::default()), vec![Action::Pause]);
         assert!(matches!(r.take_done()[0].1, Outcome::Failed { .. }));
@@ -574,7 +647,7 @@ mod tests {
     fn other_tracks_completing_are_not_the_target() {
         let t = Instant::now();
         let mut r = Runner::new(t - GAP);
-        r.assign(job(), t, false);
+        r.assign(job(), t, &Media::default());
         let other = track("Next One", "NYCO", 200_000);
         assert!(r.event(t, &Event::Completed { track: other.clone(), samples: vec![], off_grid: 0, off_span: None }).is_empty());
         assert!(!r.is_target(&other));
