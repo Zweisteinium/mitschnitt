@@ -178,7 +178,7 @@ export async function listen<T>(event: string, handler: (event: { payload: T }) 
 }
 
 export async function getVersion(): Promise<string> {
-  return "0.4.3";
+  return "0.5.0";
 }
 
 // Once both stores have subscribed.
