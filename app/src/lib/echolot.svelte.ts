@@ -1,9 +1,9 @@
-import { api, type Job, type RecorderSnapshot } from "./api";
+import { api, type RecorderSnapshot, type Track } from "./api";
 import { session } from "./session.svelte";
 
-export type SongResult = { id: number; at: Date; job: Job; result: string; detail: string };
+type SongResult = { id: number; at: Date; job: Track; result: string; detail: string };
 
-/** What became of a song, in a word. `stalled` and `failed` are the same to Echolot: it tries once more. */
+/** `stalled` and `failed` are the same to Echolot: it tries once more. */
 export const resultText: Record<string, string> = {
   filed: "added",
   not_better: "not better",
@@ -16,12 +16,10 @@ export const resultText: Record<string, string> = {
   failed: "failed",
 };
 
-const empty: RecorderSnapshot = { connection: "", user: "", host: "", device: "", state: null, detail: "", session: null, current: null, uploads: 0, error: null, done: 0, total: 0 };
+const empty: RecorderSnapshot = { connection: "", user: "", host: "", device: "", state: null, detail: "", session: null, current: null, uploads: 0, error: null };
 
-/** Echolot: connection, the session it runs on this PC, and what became of each song. */
 class Echolot {
   snapshot = $state<RecorderSnapshot>(empty);
-  /** The address to connect to. */
   url = $state("");
   /** A sign-in waits for the approval in the browser. */
   pairing = $state(false);
@@ -35,6 +33,12 @@ class Echolot {
 
   get connected(): boolean {
     return this.snapshot.connection === "connected" || this.snapshot.connection === "offline";
+  }
+
+  /** Running, paused, or a song still being finished: the card has the controls then. */
+  get active(): boolean {
+    const state = this.snapshot.session?.state;
+    return this.connected && (state === "running" || state === "paused" || this.snapshot.current !== null);
   }
 
   async init() {
@@ -92,7 +96,7 @@ class Echolot {
     await this.#try(() => api.echolotSession(action));
   }
 
-  /** Mitschnitt's own Stop / Stop after track: a running session pauses first. */
+  /** Mitschnitt's own Stop: a running session pauses first. */
   async pauseForStop() {
     if (this.connected && this.snapshot.session?.state === "running") await this.session("pause");
   }

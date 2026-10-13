@@ -20,7 +20,6 @@ pub fn manager() -> Result<Manager> {
     Manager::RequestAsync()?.join()
 }
 
-/// Every supported app, running or not.
 pub fn sources() -> Result<Vec<Source>> {
     let procs = sessions::processes();
     let sessions = manager()?.GetSessions()?;
@@ -41,7 +40,6 @@ pub fn sources() -> Result<Vec<Source>> {
     Ok(out)
 }
 
-/// The media session of `profile`'s app.
 pub fn find(profile: &Profile) -> Result<Option<Session>> {
     for session in manager()?.GetSessions()? {
         if profile.matches_media(&session.SourceAppUserModelId()?.to_string()) {
@@ -51,11 +49,8 @@ pub fn find(profile: &Profile) -> Result<Option<Session>> {
     Ok(None)
 }
 
-/// Polls one session cheaply: playback state and timeline every call, titles only when the track
-/// length changes or every [`TITLE_REFRESH`].
-///
-/// Spotify publishes the new length ~0.3-0.4 s before the new title. Until the title catches up (or
-/// [`SETTLE`] passes - the next track may share its title), no track is reported, so a recording never
+/// Titles are read only when the length changes or every [`TITLE_REFRESH`]. Spotify publishes the new length ~0.3 s
+/// before the new title: no track is reported until the title catches up (or [`SETTLE`] passes), so a recording never
 /// starts under the previous track's name.
 pub struct Watcher {
     session: Session,
@@ -63,6 +58,41 @@ pub struct Watcher {
     titles_at: Instant,
     /// The length changed but the title didn't (yet): since when, and the title it still shows.
     unsettled: Option<(Instant, String, String)>,
+    clock: Clock,
+}
+
+/// Extrapolates the timeline (a position at `LastUpdatedTime`) only from when the snapshot or the playback was first
+/// seen: a snapshot published while the song was loading or paused made a fresh start look seconds in ("joined
+/// mid-track" on first tries).
+#[derive(Default)]
+struct Clock {
+    snapshot: Option<((i64, i64), Instant)>,
+    playing: Option<(bool, Instant)>,
+}
+
+impl Clock {
+    /// `snapshot`: (position ms, update stamp); `age_ms`: how old the player says it is.
+    fn position(&mut self, now: Instant, playing: bool, snapshot: (i64, i64), age_ms: i64) -> i64 {
+        // The first look can't tell when anything began: the player's own age is all there is.
+        let first = now.checked_sub(Duration::from_millis(age_ms.max(0) as u64)).unwrap_or(now);
+        let snapshot_seen = match self.snapshot {
+            Some((s, at)) if s == snapshot => at,
+            Some(_) => now,
+            None => first,
+        };
+        let playing_seen = match self.playing {
+            Some((p, at)) if p == playing => at,
+            Some(_) => now,
+            None => first,
+        };
+        self.snapshot = Some((snapshot, snapshot_seen));
+        self.playing = Some((playing, playing_seen));
+        if !playing {
+            return snapshot.0;
+        }
+        let since = now.duration_since(snapshot_seen.max(playing_seen)).as_millis() as i64;
+        snapshot.0 + age_ms.min(since).max(0)
+    }
 }
 
 const TITLE_REFRESH: Duration = Duration::from_millis(400);
@@ -70,18 +100,17 @@ const SETTLE: Duration = Duration::from_millis(1_500);
 
 impl Watcher {
     pub fn new(session: Session) -> Watcher {
-        Watcher { session, track: None, titles_at: Instant::now() - TITLE_REFRESH, unsettled: None }
+        Watcher { session, track: None, titles_at: Instant::now() - TITLE_REFRESH, unsettled: None, clock: Clock::default() }
     }
 
     pub fn snapshot(&mut self) -> Result<Media> {
         let playing = self.session.GetPlaybackInfo()?.PlaybackStatus()? == PlaybackStatus::Playing;
         let timeline = self.session.GetTimelineProperties()?;
         let duration_ms = ((timeline.EndTime()?.Duration - timeline.StartTime()?.Duration) / 10_000).max(0) as u64;
-        let mut position_ms = timeline.Position()?.Duration / 10_000;
-        if playing {
-            // The timeline is a snapshot from `LastUpdatedTime`; extrapolate to now.
-            position_ms += ((filetime_now() - timeline.LastUpdatedTime()?.UniversalTime) / 10_000).max(0);
-        }
+        let position = timeline.Position()?.Duration / 10_000;
+        let updated = timeline.LastUpdatedTime()?.UniversalTime;
+        let age_ms = (filetime_now() - updated) / 10_000;
+        let position_ms = self.clock.position(Instant::now(), playing, (position, updated), age_ms);
         let length_changed = self.track.as_ref().is_some_and(|t| t.duration_ms != duration_ms);
         let stale = self.track.is_none() || length_changed || self.unsettled.is_some() || self.titles_at.elapsed() >= TITLE_REFRESH;
         if stale {
@@ -93,10 +122,10 @@ impl Watcher {
                     self.unsettled.get_or_insert((Instant::now(), old.0, old.1));
                 }
             }
-            if let Some((since, title, artist)) = &self.unsettled {
-                if track.title != *title || track.artist != *artist || since.elapsed() >= SETTLE {
-                    self.unsettled = None;
-                }
+            if let Some((since, title, artist)) = &self.unsettled
+                && (track.title != *title || track.artist != *artist || since.elapsed() >= SETTLE)
+            {
+                self.unsettled = None;
             }
             self.track = Some(track);
             self.titles_at = Instant::now();
@@ -107,7 +136,6 @@ impl Watcher {
 }
 
 impl Watcher {
-    /// Send a command to the player.
     pub fn control(&self, control: Control) -> std::result::Result<(), String> {
         let op = match control {
             Control::Play => self.session.TryPlayAsync(),
@@ -119,7 +147,6 @@ impl Watcher {
         op.and_then(|op| op.join()).map(|_| ()).map_err(|e| e.to_string())
     }
 
-    /// Album artist, track number and cover of what is playing now (best effort).
     pub fn extra(&self) -> Extra {
         let Ok(props) = self.session.TryGetMediaPropertiesAsync().and_then(|op| op.join()) else { return Extra::default() };
         Extra {
@@ -150,4 +177,44 @@ fn filetime_now() -> i64 {
     const UNIX_TO_FILETIME: i64 = 116_444_736_000_000_000;
     let since_unix = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
     UNIX_TO_FILETIME + (since_unix.as_nanos() / 100) as i64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MS: Duration = Duration::from_millis(1);
+
+    #[test]
+    fn a_snapshot_from_before_the_start_does_not_count_as_played() {
+        let mut clock = Clock::default();
+        let t0 = Instant::now();
+        // Paused (or loading) at 0:00; the player refreshed the snapshot 1 s before the first look.
+        assert_eq!(clock.position(t0, false, (0, 100), 1_000), 0);
+        // Playing 4 s later with the same snapshot, now 5 s old: only the 300 ms since the start are played.
+        assert_eq!(clock.position(t0 + 4_000 * MS, true, (0, 100), 5_000), 0);
+        assert_eq!(clock.position(t0 + 4_300 * MS, true, (0, 100), 5_300), 300);
+        // The player's next snapshot takes over.
+        assert_eq!(clock.position(t0 + 6_000 * MS, true, (2_000, 200), 20), 2_000);
+        assert_eq!(clock.position(t0 + 7_000 * MS, true, (2_000, 200), 1_020), 3_000);
+    }
+
+    #[test]
+    fn a_running_song_is_extrapolated_by_the_players_age() {
+        let mut clock = Clock::default();
+        let t0 = Instant::now();
+        // First look in the middle of a song: nothing better than the player's own age.
+        assert_eq!(clock.position(t0, true, (60_000, 100), 2_000), 62_000);
+        assert_eq!(clock.position(t0 + 500 * MS, true, (60_000, 100), 2_500), 62_500);
+    }
+
+    #[test]
+    fn a_clock_that_runs_off_is_capped() {
+        let mut clock = Clock::default();
+        let t0 = Instant::now();
+        assert_eq!(clock.position(t0, true, (10_000, 100), 50), 10_050);
+        // A new snapshot stamped 4 s in the past (the player's clock is off): counted from when it was seen.
+        assert_eq!(clock.position(t0 + 2_000 * MS, true, (12_000, 200), 4_000), 12_000);
+        assert_eq!(clock.position(t0 + 3_000 * MS, true, (12_000, 200), 5_000), 13_000);
+    }
 }

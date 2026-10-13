@@ -1,6 +1,6 @@
 <script lang="ts">
   import Panel from "../components/Panel.svelte";
-  import { api, type Format } from "../lib/api";
+  import { api, type Format, type Settings } from "../lib/api";
   import { session } from "../lib/session.svelte";
 
   const s = $derived(session.settings);
@@ -11,7 +11,7 @@
   ];
 
   const sample = { artist: "Daft Punk", title: "Digital Love", album: "Discovery" };
-  /** The template while typing (saved when the field is left). */
+  /** Saved when the field is left. */
   let draft = $state<string | null>(null);
   const preview = $derived.by(() => {
     if (!s) return "";
@@ -19,9 +19,8 @@
     return `${filled.join(" / ")}.${s.format}`;
   });
 
-  function set<K extends keyof NonNullable<typeof s>>(key: K, value: NonNullable<typeof s>[K]) {
-    if (!session.settings) return;
-    session.settings[key] = value;
+  function set<K extends keyof Settings>(key: K, value: Settings[K]) {
+    session.settings![key] = value;
     session.save();
   }
 </script>

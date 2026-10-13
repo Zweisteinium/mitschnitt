@@ -4,7 +4,6 @@ pub use crate::platform::os::media::{Watcher, find, sources};
 
 use crate::flac::Cover;
 
-/// A supported app and what it is doing right now.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Source {
     pub id: &'static str,
@@ -15,14 +14,13 @@ pub struct Source {
     pub artist: String,
 }
 
-/// A command for the player (the queue runner drives it).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Control {
     Play,
     Pause,
     Next,
     Previous,
-    /// Back to the beginning of the current track.
+    /// To the start of the current track.
     Restart,
 }
 

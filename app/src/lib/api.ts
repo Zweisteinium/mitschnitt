@@ -1,22 +1,20 @@
 import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { listen } from "@tauri-apps/api/event";
 
 export type Track = { title: string; artist: string; album: string; duration_ms: number };
-export type Phase = "idle" | "waiting" | "recording";
-/** Share of the audio arriving as exact 24-bit / 16-bit values (1 = untouched lossless source). */
-export type Grid = { bit24: number; bit16: number };
-export type Status = { phase: Phase; track: Track | null; recorded_ms: number; level: [number, number]; rms: [number, number]; grid: Grid | null };
+/** `grid.bit24`: share of the audio arriving as exact 24-bit values (1 = untouched lossless source). */
+export type Status = { phase: "idle" | "waiting" | "recording"; track: Track | null; recorded_ms: number; level: [number, number]; rms: [number, number]; grid: { bit24: number } | null };
 export type Severity = "info" | "altered" | "corrupt";
 export type Master = "bit16_exact" | "bit16_partly" | "bit24";
 
 export type Update =
   | { kind: "status"; status: Status }
   | { kind: "started"; track: Track }
-  | { kind: "dropped"; track: Track; reason: string; message: string }
+  | { kind: "dropped"; track: Track; message: string }
   | { kind: "exists"; track: Track; file: string }
-  | { kind: "saved"; track: Track; file: string | null; size: number; verdict: Severity; master: Master; exact: boolean; issues: string[]; echolot: boolean }
+  | { kind: "saved"; track: Track; file: string | null; size: number; verdict: Severity; master: Master; exact: boolean; faded: boolean; issues: string[]; echolot: boolean }
   | { kind: "failed"; track: Track; error: string }
-  | { kind: "key_blocked"; count: number }
+  | { kind: "key_blocked" }
   | { kind: "monitor_muted"; muted: boolean }
   | { kind: "monitor_volume"; volume: number }
   | { kind: "stopped"; error: string | null };
@@ -37,16 +35,12 @@ export type Settings = {
   echolot_url: string;
 };
 
-/** What this system offers; the UI shows only what works here. */
 export type Platform = { os: string; monitor: boolean; media_keys: boolean; gain: number };
 
 export type CheckState = "ok" | "warn" | "bad" | "check";
 export type Check = { id: string; title: string; state: CheckState; detail: string; fix: string | null };
 
-/** A song Echolot (or an exported list) wants recorded. */
-export type Job = { id: number | null; uri: string; artist: string; artists: string[]; title: string; album: string; duration_ms: number; isrc: string };
 export type EcholotSession = {
-  id: number;
   title: string;
   state: "running" | "paused" | "done" | "stopped";
   reason: string;
@@ -57,30 +51,27 @@ export type EcholotSession = {
   skipped: number;
   failed: number;
   minutes_left: number;
-  /** Length of all songs, and of those answered for (not the one being recorded). */
+  /** `seconds_done` excludes the song being recorded. */
   seconds_total: number;
   seconds_done: number;
 };
-export type DeviceState = "idle" | "busy" | "recording" | "setup";
 export type RecorderSnapshot = {
-  /** "connected", "offline", "disconnected", "file" (an exported list runs) or "" (nothing). */
-  connection: string;
+  /** "file": an exported list runs. */
+  connection: "connected" | "offline" | "disconnected" | "file" | "";
   user: string;
   host: string;
   device: string;
-  state: DeviceState | null;
+  state: "idle" | "busy" | "recording" | "setup" | null;
   detail: string;
   session: EcholotSession | null;
-  current: Job | null;
+  current: Track | null;
   uploads: number;
   error: string | null;
-  done: number;
-  total: number;
 };
-export type RecorderUpdate = { kind: "snapshot"; snapshot: RecorderSnapshot } | { kind: "song"; job: Job; result: string; detail: string };
-export type CardState = { snapshot: RecorderSnapshot; url: string; pairing: boolean };
-/** A file Mitschnitt wrote (any run). `at`: Unix ms. `result`: Echolot's answer to the upload. */
-export type HistoryRecord = { at: number; track: Track; file: string; size: number; verdict: Severity; master: Master; exact: boolean; echolot: boolean; result: string | null; exists: boolean };
+type RecorderUpdate = { kind: "snapshot"; snapshot: RecorderSnapshot } | { kind: "song"; job: Track; result: string; detail: string };
+type CardState = { snapshot: RecorderSnapshot; url: string; pairing: boolean };
+/** `at`: Unix ms. `result`: Echolot's answer to the upload. */
+export type HistoryRecord = { at: number; track: Track; file: string; size: number; verdict: Severity; master: Master; exact: boolean; faded: boolean; echolot: boolean; result: string | null; exists: boolean };
 
 export const api = {
   sources: () => invoke<Source[]>("sources"),
@@ -103,11 +94,11 @@ export const api = {
   echolotCancel: () => invoke<void>("echolot_cancel"),
   echolotDisconnect: () => invoke<void>("echolot_disconnect"),
   echolotSession: (action: "pause" | "resume" | "stop") => invoke<void>("echolot_session", { action }),
-  onEcholot: (handler: (u: RecorderUpdate) => void): Promise<UnlistenFn> => listen<RecorderUpdate>("echolot", (e) => handler(e.payload)),
-  onEcholotConnect: (handler: (url: string) => void): Promise<UnlistenFn> => listen<string>("echolot-connect", (e) => handler(e.payload)),
-  onEcholotError: (handler: (error: string) => void): Promise<UnlistenFn> => listen<string>("echolot-error", (e) => handler(e.payload)),
-  onListening: (handler: (info: SourceInfo) => void): Promise<UnlistenFn> => listen<SourceInfo>("listening", (e) => handler(e.payload)),
-  onUpdate: (handler: (u: Update) => void): Promise<UnlistenFn> => listen<Update>("update", (e) => handler(e.payload)),
+  onEcholot: (handler: (u: RecorderUpdate) => void) => listen<RecorderUpdate>("echolot", (e) => handler(e.payload)),
+  onEcholotConnect: (handler: (url: string) => void) => listen<string>("echolot-connect", (e) => handler(e.payload)),
+  onEcholotError: (handler: (error: string) => void) => listen<string>("echolot-error", (e) => handler(e.payload)),
+  onListening: (handler: (info: SourceInfo) => void) => listen<SourceInfo>("listening", (e) => handler(e.payload)),
+  onUpdate: (handler: (u: Update) => void) => listen<Update>("update", (e) => handler(e.payload)),
 };
 
 /** File size as Explorer counts it (1 MB = 1024 KB). */

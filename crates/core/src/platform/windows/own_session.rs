@@ -1,17 +1,14 @@
-//! Mitschnitt's own media session (SMTC).
-//!
-//! Hardware and Bluetooth media commands (headset buttons, earbud in-ear detection via AVRCP) don't arrive as
-//! keys; Windows hands them to the *current* media session. While a track is recording, Mitschnitt presents
-//! its own session as "playing": Windows makes it current within ~60 ms, so those commands land here - and
-//! are ignored - instead of pausing the player. Closing it hands control straight back (measured 2026-10-10,
-//! `mitschnitt smtc`).
+//! Mitschnitt's own media session (SMTC). Headset and Bluetooth commands (AVRCP, earbud in-ear detection) don't
+//! arrive as keys; Windows hands them to the current media session. A "playing" session of ours becomes current
+//! within ~60 ms, so they land here instead of pausing the player; closing it hands control straight back
+//! (measured 2026-10-10).
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use windows::Foundation::TypedEventHandler;
 use windows::Media::{
-    MediaPlaybackStatus, MediaPlaybackType, SystemMediaTransportControls, SystemMediaTransportControlsButton,
-    SystemMediaTransportControlsButtonPressedEventArgs,
+    MediaPlaybackStatus, MediaPlaybackType, SystemMediaTransportControls, SystemMediaTransportControlsButtonPressedEventArgs,
 };
 use windows::Storage::Streams::{DataWriter, InMemoryRandomAccessStream, RandomAccessStreamReference};
 use windows::Win32::UI::Shell::ExtractIconExW;
@@ -24,16 +21,13 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{HSTRING, Result, w};
 
-/// Artwork when the track has no cover.
 const LOGO: &[u8] = include_bytes!("../../../../../app/src-tauri/icons/128x128@2x.png");
 
-/// A registered media session; removed when dropped.
 pub struct OwnSession {
     smtc: SystemMediaTransportControls,
     hwnd: HWND,
     token: i64,
-    /// Buttons pressed on this session (for diagnostics).
-    pub pressed: Arc<Mutex<Vec<String>>>,
+    pressed: Arc<AtomicU32>,
 }
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
@@ -42,8 +36,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
 }
 
 impl OwnSession {
-    /// Register a session showing `title` / `artist` and `cover` (JPEG/PNG; the logo when `None`).
-    /// Desktop apps need a window to own it; a hidden one is enough.
+    /// `cover`: JPEG/PNG. Desktop apps need a window to own the session; a hidden one is enough.
     pub fn start(title: &str, artist: &str, cover: Option<&[u8]>) -> Result<OwnSession> {
         // SAFETY: plain Win32 window creation; the class name and procedure live for the whole process.
         let hwnd = unsafe {
@@ -51,7 +44,6 @@ impl OwnSession {
             let class = WNDCLASSW { lpfnWndProc: Some(wndproc), hInstance: instance.into(), lpszClassName: w!("MitschnittSession"), ..Default::default() };
             RegisterClassW(&class); // fails harmlessly if already registered
             let hwnd = CreateWindowExW(WINDOW_EX_STYLE(0), w!("MitschnittSession"), w!("Mitschnitt"), WS_OVERLAPPED, 0, 0, 0, 0, None, None, Some(instance.into()), None)?;
-            // The executable's icon for the window that owns the session.
             if let Ok(exe) = std::env::current_exe() {
                 let (mut big, mut small) = (HICON::default(), HICON::default());
                 if ExtractIconExW(&HSTRING::from(exe.as_os_str()), 0, Some(&mut big), Some(&mut small), 1) > 0 {
@@ -83,22 +75,12 @@ impl OwnSession {
         }
         updater.Update()?;
 
-        let pressed = Arc::new(Mutex::new(Vec::new()));
-        let log = pressed.clone();
+        let pressed = Arc::new(AtomicU32::new(0));
+        let count = pressed.clone();
         let token = smtc.ButtonPressed(&TypedEventHandler::<SystemMediaTransportControls, SystemMediaTransportControlsButtonPressedEventArgs>::new(
             move |_, args| {
-                if let Some(args) = args.as_ref() {
-                    let name = match args.Button()? {
-                        SystemMediaTransportControlsButton::Play => "play",
-                        SystemMediaTransportControlsButton::Pause => "pause",
-                        SystemMediaTransportControlsButton::Stop => "stop",
-                        SystemMediaTransportControlsButton::Next => "next",
-                        SystemMediaTransportControlsButton::Previous => "previous",
-                        _ => "other",
-                    };
-                    if let Ok(mut l) = log.lock() {
-                        l.push(name.to_owned());
-                    }
+                if args.is_some() {
+                    count.fetch_add(1, Ordering::Relaxed);
                 }
                 Ok(())
             },
@@ -107,11 +89,7 @@ impl OwnSession {
         Ok(OwnSession { smtc, hwnd, token, pressed })
     }
 
-    pub fn set_playing(&self, playing: bool) -> Result<()> {
-        self.smtc.SetPlaybackStatus(if playing { MediaPlaybackStatus::Playing } else { MediaPlaybackStatus::Paused })
-    }
-
-    /// Handle pending window messages (call regularly on the thread that created the session).
+    /// Call regularly on the thread that created the session.
     pub fn pump(&self) {
         let mut msg = MSG::default();
         // SAFETY: standard message pump for our own thread.
@@ -123,12 +101,12 @@ impl OwnSession {
         }
     }
 
-    pub fn take_pressed(&self) -> Vec<String> {
-        self.pressed.lock().map(|mut l| std::mem::take(&mut *l)).unwrap_or_default()
+    /// Buttons pressed since the last call.
+    pub fn take_pressed(&self) -> u32 {
+        self.pressed.swap(0, Ordering::Relaxed)
     }
 }
 
-/// An in-memory image as SMTC artwork.
 fn artwork(bytes: &[u8]) -> Result<RandomAccessStreamReference> {
     let stream = InMemoryRandomAccessStream::new()?;
     let writer = DataWriter::CreateDataWriter(&stream)?;

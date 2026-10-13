@@ -3,7 +3,7 @@
   import Panel from "./Panel.svelte";
 
   const s = $derived(echolot.snapshot);
-  /** A song is being worked on: disconnecting would drop it. */
+  /** Disconnecting would drop the current song. */
   const busy = $derived(s.current !== null);
 </script>
 

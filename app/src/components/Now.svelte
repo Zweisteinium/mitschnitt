@@ -15,7 +15,7 @@
     recording: "Recording",
   };
 
-  /** Meter deflection 0..1 for a linear level, IEC 60268-18 style: -20 dB sits at half, the top 10 dB get room. */
+  /** IEC 60268-18 style: -20 dB sits at half. */
   function meter(x: number): number {
     const db = 20 * Math.log10(Math.max(x, 1e-6));
     const curve: [number, number][] = [[-70, 0], [-60, 0.025], [-50, 0.075], [-40, 0.15], [-30, 0.3], [-20, 0.5], [0, 1]];
@@ -26,9 +26,7 @@
     return m0 + ((db - d0) / (d1 - d0)) * (m1 - m0);
   }
 
-  // Mitschnitt's Windows mixer entry: moving this moves the mixer, and the other way round.
-  // The mixer level is a linear amplitude; hearing is logarithmic. The slider uses the usual cubic audio taper
-  // (50 % ≈ -18 dB, 10 % ≈ -60 dB), so every part of it changes the loudness noticeably.
+  // The mixer level is linear amplitude; a cubic audio taper makes the whole slider audibly useful.
   const position = $derived(Math.cbrt(session.monitorVolume ?? 1));
 </script>
 
@@ -221,7 +219,6 @@
     margin-top: 16px;
   }
 
-  /* Segmented LED-style meter. */
   .meter {
     position: relative;
     height: 6px;
@@ -236,7 +233,6 @@
     transition: clip-path 80ms linear;
   }
 
-  /* Peak hold line; red from about -6 dBFS on. */
   .peak {
     position: absolute;
     top: -1px;

@@ -93,7 +93,6 @@ impl Watcher {
         Ok(Media { playing: props.playing(), track, position_ms: props.position_ms() })
     }
 
-    /// Send a command to the player.
     pub fn control(&self, control: Control) -> Result<(), String> {
         let destination = self.session.0.inner().destination().to_string();
         let player = |method: &str, args: Option<i64>| {

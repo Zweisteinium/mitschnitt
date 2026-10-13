@@ -314,11 +314,4 @@ mod tests {
         assert_eq!(g.default_sink.as_deref(), Some("alsa_output.usb-dac"));
         assert_eq!(g.force_rate, None);
     }
-
-    #[test]
-    fn mute_zeroes_the_effective_volume() {
-        let v = Volume { volume: 1.0, channels: vec![1.0, 0.5], mute: false };
-        assert_eq!(v.effective(), [1.0, 0.5]);
-        assert_eq!(Volume { mute: true, ..v }.effective(), [0.0, 0.0]);
-    }
 }

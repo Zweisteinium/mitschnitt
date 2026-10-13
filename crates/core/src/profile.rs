@@ -1,6 +1,4 @@
-//! Supported apps. Everything app-specific lives here (how to find it, what it delivers, how to tell an ad);
-//! the capture core is the same for all of them. An app gets a profile only after it was verified to deliver
-//! untouched lossless audio (the 24-bit grid check of `passive`).
+//! Supported apps. An app gets a profile only after it was verified to deliver untouched lossless audio.
 
 use serde::Serialize;
 
@@ -8,16 +6,14 @@ use crate::passive::Track;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Profile {
-    /// Stable key, e.g. "spotify".
     pub id: &'static str,
     pub name: &'static str,
-    /// Matched against executable names (".exe" ignored, case-insensitive).
     pub exe: &'static str,
-    /// Matched against the media session's app id (case-insensitive substring).
+    /// Substring of the media session's app id.
     pub media_id: &'static str,
-    /// The rate the app delivers; the cable must run at it, or the audio gets resampled.
+    /// The cable must run at it, or the audio gets resampled.
     pub rate: u32,
-    /// The app delivers lossless audio: every sample must pass the 24-bit grid check.
+    /// Every sample must pass the 24-bit grid check.
     pub lossless: bool,
     /// How to point the app's output at the cable by hand.
     pub output_hint: &'static str,
@@ -46,7 +42,7 @@ pub fn get(id: &str) -> Option<&'static Profile> {
 }
 
 impl Profile {
-    /// A profile for any app, for experiments (CLI only): no setup checks, no lossless expectation.
+    /// For experiments with other apps (CLI only).
     pub fn adhoc(app: &str) -> Profile {
         let app: &'static str = Box::leak(app.trim_end_matches(".exe").to_lowercase().into_boxed_str());
         Profile { id: app, name: app, exe: app, media_id: app, rate: 0, lossless: false, output_hint: "", is_ad: |_| false }

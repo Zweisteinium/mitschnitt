@@ -28,7 +28,7 @@ pub struct Capture {
 }
 
 impl Capture {
-    /// Capture the process tree of `pid` as `channels` x 32-bit float at `rate`, the rate of its output.
+    /// `rate`: the rate of the app's output.
     pub fn start(pid: u32, rate: u32, channels: u16, sink: impl FnMut(CaptureEvent) + Send + 'static) -> Result<Capture, String> {
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
         let (quit, quit_rx) = pw::channel::channel();

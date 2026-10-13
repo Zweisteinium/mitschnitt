@@ -23,7 +23,7 @@
   box-sizing: border-box;
 }
 
-/* Reserve the scrollbar's room on every tab, so the layout doesn't shift when a tab gets taller. */
+/* No layout shift when a tab gets tall enough to scroll. */
 html {
   scrollbar-gutter: stable;
   background: var(--bg);
@@ -36,7 +36,7 @@ body {
   font: 14px/1.5 var(--font);
   -webkit-font-smoothing: antialiased;
   user-select: none;
-  /* Glows over a faint pointy-top hexagon grid (one 34.64 x 60 tile: a hexagon plus its link to the next row). */
+  /* Hexagon grid tile: a hexagon plus its link to the next row. */
   background:
     radial-gradient(1200px 500px at 0% -10%, rgba(34, 211, 238, 0.07), transparent 60%),
     radial-gradient(900px 500px at 110% 0%, rgba(167, 139, 250, 0.06), transparent 60%),
@@ -56,7 +56,6 @@ button {
   cursor: pointer;
 }
 
-/* Sharp outlined button; .primary gets the edge gradient. */
 .btn {
   padding: 7px 14px;
   border: 1px solid var(--line-strong);

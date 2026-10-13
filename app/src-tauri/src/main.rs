@@ -17,7 +17,7 @@ use tauri_plugin_deep_link::DeepLinkExt;
 pub(crate) struct App {
     pub(crate) engine: Mutex<Option<Engine>>,
     pub(crate) settings: Mutex<Settings>,
-    /// The running engine was started for Echolot's queue (and is stopped again when the queue lets it go).
+    /// Started for Echolot's queue, so stopped again when the queue lets it go.
     pub(crate) for_queue: AtomicBool,
 }
 
@@ -48,16 +48,14 @@ async fn start(app: String, handle: AppHandle, state: State<'_, App>) -> Result<
     Ok(info)
 }
 
-/// Pass an engine update to the UI; a written file goes into the history too.
 pub(crate) fn notify(handle: &AppHandle, update: Update) {
-    if let Update::Saved { track, file: Some(file), size, verdict, master, exact, echolot, .. } = &update {
-        let record = Record { at: history::now_ms(), track: track.clone(), file: file.clone(), size: *size, verdict: *verdict, master: *master, exact: *exact, echolot: *echolot, result: None, exists: true };
+    if let Update::Saved { track, file: Some(file), size, verdict, master, exact, faded, echolot, .. } = &update {
+        let record = Record { at: history::now_ms(), track: track.clone(), file: file.clone(), size: *size, verdict: *verdict, master: *master, exact: *exact, faded: *faded, echolot: *echolot, result: None, exists: true };
         history::add(&history::default_path(), &record);
     }
     let _ = handle.emit("update", &update);
 }
 
-/// Every file written, newest first.
 #[tauri::command]
 async fn history() -> Vec<Record> {
     history::load(&history::default_path())
@@ -71,7 +69,6 @@ async fn stop(state: State<'_, App>) -> Result<(), String> {
     Ok(())
 }
 
-/// Finish the current track, then stop (the engine reports `Stopped`).
 #[tauri::command]
 fn stop_after_track(state: State<'_, App>) -> Result<(), String> {
     if let Some(engine) = lock(&state.engine)?.as_ref() {
@@ -80,7 +77,6 @@ fn stop_after_track(state: State<'_, App>) -> Result<(), String> {
     Ok(())
 }
 
-/// Unmute a monitor that muted itself because the output device changed.
 #[tauri::command]
 fn unmute_monitor(state: State<'_, App>) -> Result<(), String> {
     if let Some(engine) = lock(&state.engine)?.as_ref() {
@@ -102,7 +98,6 @@ fn get_settings(state: State<'_, App>) -> Result<Settings, String> {
     Ok(lock(&state.settings)?.clone())
 }
 
-/// Monitor volume = the app's Windows mixer entry (applies immediately, remembered by Windows).
 #[tauri::command]
 fn set_monitor_volume(volume: f32, state: State<'_, App>) -> Result<(), String> {
     if let Some(engine) = lock(&state.engine)?.as_ref() {
@@ -111,7 +106,6 @@ fn set_monitor_volume(volume: f32, state: State<'_, App>) -> Result<(), String> 
     Ok(())
 }
 
-/// Save settings (applied to the next start).
 #[tauri::command]
 fn save_settings(settings: Settings, state: State<'_, App>) -> Result<(), String> {
     settings.save(&Settings::default_path()).map_err(|e| e.to_string())?;
@@ -129,19 +123,16 @@ async fn fix(action: String, app: String) -> Result<String, String> {
     setup::fix(&action, supported(&app)?)
 }
 
-/// Show a file in the file manager, or open a folder or web link.
 #[tauri::command]
 fn open(target: String) -> Result<(), String> {
     mitschnitt_core::desktop::open(&target)
 }
 
-/// What this system offers, so the UI only shows what works here.
 #[derive(serde::Serialize)]
 struct Platform {
     os: &'static str,
     monitor: bool,
     media_keys: bool,
-    /// App volume while listening (0..1).
     gain: f32,
 }
 
@@ -155,7 +146,7 @@ fn main() {
     std::thread::spawn(engine::recover);
     let settings = Settings::load(&Settings::default_path());
     tauri::Builder::default()
-        // First: a second start (a `mitschnitt://` link opened while Mitschnitt runs) hands its link to this one.
+        // Must be first: a second start (a `mitschnitt://` link) hands its link to this instance.
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.unminimize();
@@ -180,7 +171,6 @@ fn main() {
                     echolot::open_link(app.handle(), url.as_str());
                 }
             }
-            // A connected device asks Echolot for work whenever Mitschnitt is open.
             let handle = app.handle().clone();
             std::thread::spawn(move || {
                 if let Err(e) = echolot::resume(&handle) {

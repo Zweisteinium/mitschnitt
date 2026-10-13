@@ -9,14 +9,11 @@ pub fn open_link(link: &str) -> Result<(), String> {
     if result.0 as usize > 32 { Ok(()) } else { Err(format!("can't open {link} (error {})", result.0 as usize)) }
 }
 
-/// Open a link for an app that runs in the background (`exe`, e.g. "spotify"). Spotify brings its window to the front
-/// for every link (sometimes twice while it starts), and Windows lets no other program prevent that. So for a few
-/// seconds, whenever it takes the front, the focus goes straight back to the window the user was in. A window that was
-/// minimized (or an app that wasn't running) is minimized again with the same command its own minimize button sends,
-/// which also hands the focus back; it is processed by the app itself, after its own show. (Moving another app's window
-/// from outside, in the middle of its own show and activate, leaves it confused: Spotify then sat off-screen and
-/// couldn't be restored.) A window the user keeps open stays as it is and only loses the focus again. Nothing is touched
-/// when the user was in the app itself.
+/// For an app running in the background (`exe`). Spotify brings its window to the front for every link (sometimes
+/// twice while it starts), and Windows lets no other program prevent that. So for a few seconds the focus goes
+/// straight back to the window the user was in, and a window that was minimized (or not running) is minimized
+/// again via its own minimize command. (Moving another app's window from outside, in the middle of its own show,
+/// left Spotify off-screen and unrestorable.)
 pub fn open_link_in_background(link: &str, exe: &str) -> Result<(), String> {
     use std::time::{Duration, Instant};
     use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
@@ -39,8 +36,8 @@ pub fn open_link_in_background(link: &str, exe: &str) -> Result<(), String> {
         let minimized = |window: HWND| unsafe { IsIconic(window) }.as_bool(); // SAFETY: a window handle from the system
         // SAFETY: posting a standard command to a window from the system; a closed window ignores it.
         let minimize = |window: HWND| unsafe { _ = PostMessageW(Some(window), WM_SYSCOMMAND, WPARAM(SC_MINIMIZE as usize), LPARAM(0)) };
-        // Since when the app holds the front. Windows may refuse the focus while the app is still activating itself,
-        // so it is handed back on every round for a moment; after that it stays (the user may have clicked it).
+        // Windows may refuse the focus while the app is still activating itself, so it is handed back on every round
+        // for a moment; after that it stays (the user may have clicked it).
         let mut grabbed: Option<Instant> = None;
         let mut last_minimize = Instant::now() - Duration::from_secs(1);
         while Instant::now() < deadline {
@@ -73,23 +70,21 @@ pub fn open_link_in_background(link: &str, exe: &str) -> Result<(), String> {
     open_link(link)
 }
 
-/// Give `target` the focus that `front` holds. Windows only lets the foreground's own input queue do that, so the
-/// calling thread shares it for the moment.
-fn activate(target: windows::Win32::Foundation::HWND, front: windows::Win32::Foundation::HWND) -> bool {
+/// Windows only lets the foreground's own input queue hand over the focus, so the calling thread shares it briefly.
+fn activate(target: windows::Win32::Foundation::HWND, front: windows::Win32::Foundation::HWND) {
     use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
     use windows::Win32::UI::WindowsAndMessaging::{GetWindowThreadProcessId, SetForegroundWindow};
     if target.is_invalid() {
-        return false;
+        return;
     }
     // SAFETY: thread ids and window handles from the system; the input queues are detached again right after.
     unsafe {
         let (ours, theirs) = (GetCurrentThreadId(), GetWindowThreadProcessId(front, None));
         let attached = AttachThreadInput(ours, theirs, true).as_bool();
-        let done = SetForegroundWindow(target).as_bool();
+        let _ = SetForegroundWindow(target);
         if attached {
             let _ = AttachThreadInput(ours, theirs, false);
         }
-        done
     }
 }
 
@@ -108,7 +103,7 @@ fn app_pids(exe: &str) -> Vec<u32> {
     crate::sessions::processes().into_iter().filter(|p| p.name.to_lowercase().trim_end_matches(".exe") == exe).map(|p| p.pid).collect()
 }
 
-/// The app's main window: a visible top-level window with a title.
+/// A visible top-level window with a title.
 fn main_window(pids: &[u32]) -> Option<windows::Win32::Foundation::HWND> {
     use windows::Win32::Foundation::{HWND, LPARAM};
     use windows::Win32::UI::WindowsAndMessaging::{EnumWindows, GetWindowTextLengthW, IsWindowVisible};

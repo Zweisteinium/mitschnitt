@@ -1,13 +1,11 @@
-//! Setup assistant: health checks of everything that affects a bit-exact recording, and one-click fixes
-//! where they can be applied reliably (installing VB-Cable, its sample rate, routing the app to it).
-//! Everything else is reported with a short how-to.
+//! One-click fixes: installing VB-Cable, its sample rate, routing the app to it.
 
 use std::io::Cursor;
 use std::path::Path;
 use std::ptr::addr_of;
 
 use windows::Win32::Foundation::{CloseHandle, HWND};
-use windows::Win32::Media::Audio::{EDataFlow, ERole, WAVEFORMATEX, WAVEFORMATEXTENSIBLE, WAVEFORMATEXTENSIBLE_0, eConsole, eMultimedia, eRender};
+use windows::Win32::Media::Audio::{EDataFlow, ERole, WAVEFORMATEX, eConsole, eMultimedia, eRender};
 use windows::Win32::Media::Multimedia::KSDATAFORMAT_SUBTYPE_IEEE_FLOAT;
 use windows::Win32::System::Com::{CLSCTX_ALL, CoCreateInstance};
 use windows::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject};
@@ -16,7 +14,7 @@ use windows::Win32::UI::WindowsAndMessaging::SW_HIDE;
 use windows::core::{GUID, HRESULT, HSTRING, IUnknown, IUnknown_Vtbl, PCWSTR, w};
 use windows_core::interface;
 
-use super::devices::{com_init, render_endpoints};
+use super::devices::{com_init, render_endpoints, wave_format};
 use crate::devices::Endpoint;
 use crate::profile::Profile;
 use crate::sessions;
@@ -25,7 +23,6 @@ use crate::setup::{Check, State, check, spotify_checks};
 const CABLE: &str = "CABLE Input";
 const CABLE_ZIP: &str = "https://download.vb-audio.com/Download_CABLE/VBCABLE_Driver_Pack45.zip";
 
-/// All checks for recording with `profile`.
 pub fn health(profile: &Profile) -> Vec<Check> {
     com_init();
     let mut out = Vec::new();
@@ -78,7 +75,7 @@ pub fn health(profile: &Profile) -> Vec<Check> {
     out
 }
 
-/// Apply a one-click fix from [`Check::fix`]. Returns a message for the user.
+/// Returns a message for the user.
 pub fn fix(action: &str, profile: &Profile) -> Result<String, String> {
     com_init();
     match action {
@@ -89,8 +86,8 @@ pub fn fix(action: &str, profile: &Profile) -> Result<String, String> {
     }
 }
 
-/// Point the app at the cable the way Windows' "App volume and device preferences" page does: a per-app
-/// default device that Windows remembers. The app must use its "default" output for this to apply.
+/// Like Windows' "App volume and device preferences" page: a per-app default device that Windows remembers.
+/// Only applies when the app plays on its "default" output.
 fn route_to_cable(profile: &Profile) -> Result<String, String> {
     let cable = render_endpoints().map_err(|e| e.to_string())?.into_iter().find(|e| e.name.starts_with(CABLE)).ok_or("VB-Cable not found")?;
     let procs = sessions::processes();
@@ -109,8 +106,8 @@ fn route_to_cable(profile: &Profile) -> Result<String, String> {
     Ok(format!("{} now plays into the cable. If it still uses another device, set its own output to \"default\" or: {}", profile.name, profile.output_hint))
 }
 
-/// Undocumented WinRT factory behind Windows' per-app device page (Windows 10 21H2+ layout).
-/// Only the vtable order matters; the unused methods are placeholders.
+/// Undocumented WinRT factory behind Windows' per-app device page (Windows 10 21H2+ layout). Only the vtable
+/// order matters; the unused methods are placeholders.
 #[allow(non_snake_case)]
 mod route {
     use super::*;
@@ -150,8 +147,8 @@ mod route {
     }
 }
 
-/// Download the official VB-Cable package and run VB-Audio's installer elevated (Windows asks for consent
-/// and shows its driver prompt). Nothing of VB-Audio is shipped with Mitschnitt.
+/// Downloads the official package and runs VB-Audio's installer elevated; nothing of VB-Audio is shipped with
+/// Mitschnitt.
 fn install_cable(rate: u32) -> Result<String, String> {
     let zip = ureq::get(CABLE_ZIP)
         .call()
@@ -200,8 +197,7 @@ fn run_elevated(exe: &Path, args: &str) -> Result<u32, String> {
     }
 }
 
-/// Undocumented but long-stable endpoint configuration interface (used by the Sound control panel).
-/// Method names keep their COM spelling; only the vtable order matters.
+/// Undocumented but long-stable interface of the Sound control panel; only the vtable order matters.
 #[allow(non_snake_case)]
 mod policy {
     use super::*;
@@ -225,24 +221,10 @@ use policy::{IPolicyConfig, set_device_format};
 const KSDATAFORMAT_SUBTYPE_PCM: GUID = GUID::from_u128(0x00000001_0000_0010_8000_00aa00389b71);
 const CLSID_POLICY_CONFIG: GUID = GUID::from_u128(0x870af99c_171d_4f9e_af0d_e63df40c2bc9);
 
-/// Set the cable to 2 ch / 24-bit / `rate` (engine mix: 32-bit float at `rate`).
+/// 2 ch / 24-bit / `rate`, engine mix 32-bit float.
 fn set_cable_rate(rate: u32) -> Result<String, String> {
     let cable = render_endpoints().map_err(|e| e.to_string())?.into_iter().find(|e| e.name.starts_with(CABLE)).ok_or("VB-Cable not found")?;
-    let format = |bits: u16, sub: GUID| WAVEFORMATEXTENSIBLE {
-        Format: WAVEFORMATEX {
-            wFormatTag: 0xFFFE,
-            nChannels: 2,
-            nSamplesPerSec: rate,
-            nAvgBytesPerSec: rate * 2 * (bits as u32 / 8),
-            nBlockAlign: 2 * bits / 8,
-            wBitsPerSample: bits,
-            cbSize: 22,
-        },
-        Samples: WAVEFORMATEXTENSIBLE_0 { wValidBitsPerSample: bits },
-        dwChannelMask: 0x3,
-        SubFormat: sub,
-    };
-    let (device, mix) = (format(24, KSDATAFORMAT_SUBTYPE_PCM), format(32, KSDATAFORMAT_SUBTYPE_IEEE_FLOAT));
+    let (device, mix) = (wave_format(rate, 2, 24, KSDATAFORMAT_SUBTYPE_PCM), wave_format(rate, 2, 32, KSDATAFORMAT_SUBTYPE_IEEE_FLOAT));
     let id = HSTRING::from(cable.id.as_str());
     // SAFETY: both formats outlive the call, which copies them.
     unsafe {

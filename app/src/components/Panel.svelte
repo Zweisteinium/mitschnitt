@@ -20,7 +20,6 @@
     background: linear-gradient(180deg, rgba(34, 211, 238, 0.045), rgba(167, 139, 250, 0.015) 55%, transparent), var(--panel);
   }
 
-  /* Edge gradient along the top and corner ticks: the "instrument" look. */
   .panel::before {
     content: "";
     position: absolute;

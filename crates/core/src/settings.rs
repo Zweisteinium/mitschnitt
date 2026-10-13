@@ -1,11 +1,9 @@
-//! User settings, persisted as JSON. Every field has a sensible default, so a missing or older file
-//! simply falls back to defaults field by field.
+//! User settings as JSON; missing fields fall back to their defaults.
 
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-/// Folder name under the system's config and state directories.
 #[cfg(windows)]
 pub const APP_DIR: &str = "Mitschnitt";
 #[cfg(not(windows))]
@@ -16,7 +14,7 @@ pub const APP_DIR: &str = "mitschnitt";
 pub enum Format {
     Flac,
     Wav,
-    /// 320 kbit/s CBR, encoded from the verified recording (lossy - for devices that need it).
+    /// 320 kbit/s CBR.
     Mp3,
 }
 
@@ -27,20 +25,16 @@ pub struct Settings {
     pub format: Format,
     /// File name without extension; `{artist}`, `{title}`, `{album}`; `/` creates folders.
     pub template: String,
-    /// Keep files the forensic check marks as altered or corrupt (otherwise they are deleted).
+    /// Keep files the forensic check marks as altered or corrupt.
     pub keep_flagged: bool,
-    /// Don't save a track again when a file with its name already exists (any format).
+    /// Skip a track when a file with its name exists (any format).
     pub skip_existing: bool,
-    /// Swallow media keys (keyboard, headset, earbuds) while a track is recording; only the player's own
-    /// pause button can interrupt it.
     pub protect_media_keys: bool,
-    /// Play the captured audio on the default output device (Windows only, see [`crate::monitor`]). Its volume
-    /// is the app's Windows mixer entry (remembered by Windows), so it isn't stored here.
+    /// Windows only. Its volume is the app's Windows mixer entry, which Windows remembers, so it isn't stored here.
     pub monitor: bool,
-    /// After Echolot answered for an upload, keep the recording in the output folder (otherwise it is deleted;
-    /// files Echolot rejects are kept in "Not taken" either way).
+    /// Keep a recording in the output folder after Echolot took it.
     pub keep_echolot_copies: bool,
-    /// The Echolot this PC was last connected to (the token itself is in the credential store).
+    /// The token is in the credential store.
     pub echolot_url: String,
 }
 
@@ -73,7 +67,6 @@ impl Settings {
         std::fs::write(path, serde_json::to_string_pretty(self).expect("settings serialize"))
     }
 
-    /// Where the settings live: `%APPDATA%\Mitschnitt\settings.json`, `~/.config/mitschnitt/settings.json`.
     pub fn default_path() -> PathBuf {
         dirs::config_dir().unwrap_or_else(std::env::temp_dir).join(APP_DIR).join("settings.json")
     }

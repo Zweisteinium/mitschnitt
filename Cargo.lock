@@ -2642,7 +2642,7 @@ dependencies = [
 
 [[package]]
 name = "mitschnitt-app"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "mitschnitt-core",
  "serde",
@@ -2655,7 +2655,7 @@ dependencies = [
 
 [[package]]
 name = "mitschnitt-cli"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "clap",
  "claxon",
@@ -2665,7 +2665,7 @@ dependencies = [
 
 [[package]]
 name = "mitschnitt-core"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "base64 0.22.1",
  "claxon",

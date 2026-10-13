@@ -1,13 +1,6 @@
-//! Media-key guard: while a track is recording, media keys (play/pause, stop, next, previous) from keyboards
-//! and headsets are swallowed system-wide, so nothing but the player's own pause button can interrupt it.
-//!
-//! A low-level keyboard hook (`WH_KEYBOARD_LL`) sees keys before Windows hands them to any app. The callback
-//! only compares the virtual-key code - every other key passes through untouched, nothing is stored. It
-//! runs on its own thread with a message loop (required for LL hooks) and must stay fast: Windows silently
-//! removes hooks that take longer than `LowLevelHooksTimeout`.
-//!
-//! Locking the PC can cost the hook (and the media session, see `guard`): the thread also watches for the
-//! session being unlocked, installs the hook again and counts the unlock.
+//! Media-key guard: a low-level keyboard hook swallows media keys system-wide while a track is recording.
+//! Every other key passes through untouched. The hook must stay fast: Windows silently removes hooks that take
+//! longer than `LowLevelHooksTimeout`. Locking the PC can cost the hook, so it is installed again after an unlock.
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -28,20 +21,17 @@ use windows::core::w;
 const VK_MEDIA_NEXT: u32 = 0xB0;
 const VK_MEDIA_PLAY_PAUSE: u32 = 0xB3;
 
-/// Swallow media keys right now (set while a track is recording).
 static ARMED: AtomicBool = AtomicBool::new(false);
-/// Key presses swallowed since the guard started.
 static BLOCKED: AtomicU32 = AtomicU32::new(0);
-/// Diagnostics: media and volume keys seen (vk codes), when logging.
+/// Diagnostics: vk codes seen, while logging.
 static LOG: Mutex<Option<Vec<u32>>> = Mutex::new(None);
-/// Times the session was unlocked since the process started.
 static UNLOCKS: AtomicU32 = AtomicU32::new(0);
 
 fn is_media(vk: u32) -> bool {
     (VK_MEDIA_NEXT..=VK_MEDIA_PLAY_PAUSE).contains(&vk)
 }
 
-/// Keys that are logged in diagnostics mode: browser, volume, media and app-launch keys - never typing keys.
+/// Browser, volume, media and app-launch keys; never typing keys.
 fn is_loggable(vk: u32) -> bool {
     (0xA6..=0xB7).contains(&vk)
 }
@@ -51,12 +41,12 @@ unsafe extern "system" fn hook(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRE
         // SAFETY: for WH_KEYBOARD_LL with HC_ACTION, lparam points to a KBDLLHOOKSTRUCT.
         let vk = unsafe { (*(lparam.0 as *const KBDLLHOOKSTRUCT)).vkCode };
         let down = wparam.0 == WM_KEYDOWN as usize || wparam.0 == WM_SYSKEYDOWN as usize;
-        if down && is_loggable(vk) {
-            if let Ok(mut log) = LOG.try_lock() {
-                if let Some(log) = log.as_mut() {
-                    log.push(vk);
-                }
-            }
+        if down
+            && is_loggable(vk)
+            && let Ok(mut log) = LOG.try_lock()
+            && let Some(log) = log.as_mut()
+        {
+            log.push(vk);
         }
         if is_media(vk) && ARMED.load(Ordering::Relaxed) {
             if down {
@@ -82,7 +72,7 @@ fn install() -> windows::core::Result<HHOOK> {
     unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook), GetModuleHandleW(None).ok().map(Into::into), 0) }
 }
 
-/// A hidden window that receives session lock/unlock notifications (best effort).
+/// A hidden window for session unlock notifications.
 fn session_window() -> Option<HWND> {
     // SAFETY: plain Win32 window creation on this thread; class name and procedure live for the whole process.
     unsafe {
@@ -98,12 +88,12 @@ fn session_window() -> Option<HWND> {
     }
 }
 
-/// Times the session was unlocked so far (a change means: take the media session back).
+/// A change means: take the media session back.
 pub fn unlocks() -> u32 {
     UNLOCKS.load(Ordering::Relaxed)
 }
 
-/// The installed hook; removed when dropped. One per process.
+/// One per process.
 pub struct KeyGuard {
     thread_id: u32,
     thread: Option<JoinHandle<()>>,
@@ -150,17 +140,15 @@ impl KeyGuard {
         Ok(KeyGuard { thread_id, thread: Some(thread) })
     }
 
-    /// Swallow media keys (true while a track is recording).
     pub fn arm(&self, armed: bool) {
         ARMED.store(armed, Ordering::Relaxed);
     }
 
-    /// Key presses swallowed so far.
     pub fn blocked(&self) -> u32 {
         BLOCKED.load(Ordering::Relaxed)
     }
 
-    /// Diagnostics: start collecting media/volume keys seen (see [`KeyGuard::take_log`]).
+    /// Diagnostics, see [`KeyGuard::take_log`].
     pub fn log(&self, on: bool) {
         if let Ok(mut log) = LOG.lock() {
             *log = on.then(Vec::new);
@@ -185,7 +173,6 @@ impl Drop for KeyGuard {
     }
 }
 
-/// Readable name of a logged key.
 pub fn key_name(vk: u32) -> &'static str {
     match vk {
         0xAD => "volume mute",

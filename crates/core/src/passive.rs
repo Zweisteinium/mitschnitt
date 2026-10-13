@@ -1,48 +1,30 @@
-//! Passive mode: record every track that plays from its very first sample to its exact end, and
-//! discard anything that isn't provably complete.
+//! Records every track from its first sample to its exact end, and drops anything not provably complete.
 //!
-//! The state machine is fed with captured packets ([`Passive::push`]) and media snapshots
-//! ([`Passive::media`]) and knows nothing about Windows, so it is fully unit-testable.
-//!
-//! Start: a track is only recorded if it begins after at least [`MIN_SILENCE_MS`] of digital silence
-//! (play pressed, or the previous track ended in silence) - that silence-to-audio edge is the exact first
-//! sample. If the player's stream itself starts there (packets flagged "no data" before), the start is the
-//! first rendered frame instead, so a master's leading digital silence is kept. Metadata may arrive before
-//! or after the audio, so recent clean starts are remembered for [`LOOKBACK_MS`] and matched against the
-//! player's position.
-//! End: exactly the track length the player reports (millisecond precision).
-//! Discard: pause, seek, skip, a stalled player (silent packets), capture glitches, volume changes.
-//! Source proof: a lossless source played untouched reaches us as exact multiples of 2^-24 (24-bit grid at
-//! gain 0.5); decoded lossy audio or any processing (normalization, EQ, resampling) leaves that grid. Every
-//! sample is checked before it is rounded, per track and live.
+//! A track starts at a silence-to-audio edge (Spotify leaves 10 ms of digital silence when a track is started). A
+//! lossless source played at gain 0.5 arrives as exact 24-bit values; anything off that grid was altered on the way.
 
 use std::collections::VecDeque;
 
 use serde::{Deserialize, Serialize};
 
-/// `AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY`: the capture lost data.
+/// `AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY`
 pub const FLAG_GLITCH: u32 = 0x1;
-/// `AUDCLNT_BUFFERFLAGS_SILENT`: the player delivered no audio for this packet.
+/// `AUDCLNT_BUFFERFLAGS_SILENT`: the player delivered no audio.
 pub const FLAG_SILENT: u32 = 0x2;
 
-/// Spotify leaves exactly 10 ms of digital silence between tracks when the user switches.
 const MIN_SILENCE_MS: u64 = 10;
-/// Rendered zeros that were already there when the capture started prove nothing (the stream warms up with
-/// a few ms of zeros even mid-track); they only count as a start when they lasted this long. A stream that
-/// wasn't rendering at all ("silent" packets) is real silence.
+/// Rendered zeros at the start of the capture prove nothing: the stream warms up with a few ms of zeros even mid-track.
 const MIN_INITIAL_SILENCE_MS: u64 = 1_000;
-/// A recording dropped this early because the title changed was most likely started under stale metadata:
-/// its clean start is handed back so the actual track can claim it.
+/// A recording dropped this early by a title change was started under stale metadata: its start goes back to the pool.
 const RELEASE_START_MS: u64 = 3_000;
-/// Leading digital silence of a master that is kept when the player's stream starts right before it.
+/// A master's leading digital silence is kept when the player's stream starts right before it.
 const MAX_LEAD_MS: u64 = 3_000;
 const LOOKBACK_MS: u64 = 6_000;
 const WAIT_MS: u64 = 5_000;
 const START_TOLERANCE_MS: i64 = 3_000;
 const POSITION_MATCH_MS: i64 = 1_500;
 const SEEK_TOLERANCE_MS: i64 = 3_000;
-/// A new title may briefly come with the previous track's position: only a position that stays this long means the
-/// track really was joined in the middle.
+/// A new title may briefly come with the previous track's position.
 const POSITION_SETTLE_MS: u64 = 2_000;
 /// Players announce the next track shortly before the old one has played out of their buffer.
 const EARLY_ANNOUNCE_MS: u64 = 1_500;
@@ -59,7 +41,7 @@ pub struct Track {
 pub struct Media {
     pub playing: bool,
     pub track: Option<Track>,
-    /// Current position, extrapolated to "now" while playing.
+    /// Extrapolated to now while playing.
     pub position_ms: i64,
 }
 
@@ -98,9 +80,7 @@ impl Reason {
 #[derive(Debug)]
 pub enum Event {
     Started(Track),
-    /// Exactly `duration_ms` worth of frames, restored to the original level (24-bit integers).
-    /// `off_grid`: frames that were not exact 24-bit values before rounding (0 = untouched lossless source);
-    /// `off_span`: first and last such frame, relative to the track start.
+    /// `samples` at the original level (24 bit); `off_grid`/`off_span`: frames that weren't exact, the first and last.
     Completed { track: Track, samples: Vec<i32>, off_grid: usize, off_span: Option<(usize, usize)> },
     Dropped { track: Track, reason: Reason },
 }
@@ -113,20 +93,19 @@ pub enum Phase {
     Recording,
 }
 
+/// Levels and grid since the last status.
 #[derive(Debug, Clone, Serialize)]
 pub struct Status {
     pub phase: Phase,
     pub track: Option<Track>,
     pub recorded_ms: u64,
-    /// Peak per channel since the last status (fraction of full scale, original level).
     pub level: [f32; 2],
-    /// RMS per channel since the last status (fraction of full scale).
     pub rms: [f32; 2],
-    /// Grid check of the audio since the last status; `None` when only silence arrived.
+    /// `None` when only silence arrived.
     pub grid: Option<Grid>,
 }
 
-/// How much of the audio is exact: share of non-zero frames on the 24-bit / 16-bit grid (0..1).
+/// Share of non-zero frames on the 24-bit / 16-bit grid.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub struct Grid {
     pub bit24: f32,
@@ -158,37 +137,34 @@ pub struct Passive {
     channels: usize,
     inv_gain: f64,
     state: State,
-    /// Absolute index of the next frame to arrive.
+    /// Index of the next frame.
     frame: u64,
-    /// The last [`LOOKBACK_MS`] of restored samples: frames `[ring_first, frame)`.
+    /// The last `LOOKBACK_MS`: frames `[ring_first, frame)`, and per frame whether it was off the grid.
     ring: VecDeque<i32>,
-    /// Per ring frame: was it off the 24-bit grid before rounding?
     ring_off: VecDeque<bool>,
     ring_first: u64,
     zero_run: u64,
-    /// First frame of the current zero run, and whether it contains "silent" packets (stream not rendering).
     zero_from: u64,
+    /// The zero run contains "silent" packets: the stream wasn't rendering, so it is real silence.
     zero_silent: bool,
-    /// Frames of consecutive "no data" packets, and where the player's stream last (re)started rendering.
     silent_run: u64,
+    /// Where the player's stream last started rendering.
     render_start: Option<u64>,
-    /// Clean starts (first frame of a track after enough digital silence) still inside the ring.
+    /// Clean starts still inside the ring.
     starts: VecDeque<u64>,
-    /// Last track that was finished or given up on - not retried until it changes or restarts.
+    /// Finished or given up: not taken again until it changes or starts over.
     done: Option<Track>,
-    /// Position while playing, to notice a restart from the beginning.
     last_position_ms: i64,
-    /// A track first shown beyond the start, and the frame it was first seen at (see [`POSITION_SETTLE_MS`]).
+    /// A track first shown beyond the start, and since which frame.
     late: Option<(Track, u64)>,
     level: [f32; 2],
-    /// Sum of squares per channel and the frames it covers, since the last status.
     energy: ([f64; 2], u64),
     grid: GridCount,
     scratch: Vec<i32>,
 }
 
 impl Passive {
-    /// `gain` is the exact factor the player applied (app volume), undone on every sample.
+    /// `gain`: the player's app volume, undone on every sample.
     pub fn new(rate: u32, channels: usize, gain: f32) -> Self {
         let ring_frames = ms_to_frames(LOOKBACK_MS, rate);
         Passive {
@@ -216,14 +192,14 @@ impl Passive {
         }
     }
 
-    /// Feed one captured packet (`data` is interleaved; empty or ignored when `FLAG_SILENT` is set).
+    /// One captured packet, interleaved.
     pub fn push(&mut self, data: &[f32], frames: usize, flags: u32) -> Vec<Event> {
         let mut events = Vec::new();
         let silent = flags & FLAG_SILENT != 0 || data.len() < frames * self.channels;
         if flags & FLAG_GLITCH != 0 {
             self.drop_recording(Reason::Glitch, &mut events);
         }
-        if silent && matches!(self.state, State::Recording { .. }) {
+        if silent {
             self.drop_recording(Reason::Underrun, &mut events);
         }
 
@@ -256,11 +232,6 @@ impl Passive {
             }
 
             self.energy.1 += 1;
-            if !zero {
-                self.grid.frames += 1;
-                self.grid.off24 += off24 as u64;
-                self.grid.off16 += off16 as u64;
-            }
             if zero {
                 if self.zero_run == 0 {
                     (self.zero_from, self.zero_silent) = (self.frame, false);
@@ -268,9 +239,11 @@ impl Passive {
                 self.zero_silent |= silent;
                 self.zero_run += 1;
             } else {
+                self.grid.frames += 1;
+                self.grid.off24 += off24 as u64;
+                self.grid.off16 += off16 as u64;
                 let initial = self.zero_from == 0 && !self.zero_silent && self.zero_run < ms_to_frames(MIN_INITIAL_SILENCE_MS, self.rate) as u64;
                 if self.zero_run >= min_silence && !initial {
-                    // The stream started rendering shortly before: its leading zeros belong to the track.
                     let start = self.render_start.take().filter(|r| self.frame - r <= max_lead).unwrap_or(self.frame);
                     self.starts.push_back(start);
                     if let State::Waiting { track, .. } = &self.state {
@@ -314,7 +287,6 @@ impl Passive {
         events
     }
 
-    /// Feed a media snapshot (poll it a few times per second).
     pub fn media(&mut self, m: Media) -> Vec<Event> {
         let mut events = Vec::new();
         match &self.state {
@@ -341,8 +313,7 @@ impl Passive {
         }
 
         if let (State::Idle, true, Some(track)) = (&self.state, m.playing, &m.track) {
-            // Back to the beginning (seeked to 0, or started again): a finished or dropped track may be taken again.
-            // The margin only absorbs the jitter of the player's reported position.
+            // Started over: a finished or dropped track may be taken again (the margin absorbs position jitter).
             let restarted = m.position_ms <= START_TOLERANCE_MS && self.last_position_ms > m.position_ms + 250;
             if restarted || self.done.as_ref() != Some(track) {
                 self.consider_start(track.clone(), m.position_ms, &mut events);
@@ -354,23 +325,15 @@ impl Passive {
         events
     }
 
-    /// Something outside the stream spoilt the recording (e.g. audio devices changed): drop it.
+    /// Something outside the stream spoilt the recording (volume, devices).
     pub fn interrupt(&mut self, reason: Reason) -> Vec<Event> {
         let mut events = Vec::new();
         self.drop_recording(reason, &mut events);
         events
     }
 
-    /// The app's volume left the value the recording relies on.
-    pub fn volume_changed(&mut self) -> Vec<Event> {
-        let mut events = Vec::new();
-        self.drop_recording(Reason::VolumeChanged, &mut events);
-        events
-    }
-
     pub fn stop(&mut self) -> Vec<Event> {
-        let mut events = Vec::new();
-        self.drop_recording(Reason::Stopped, &mut events);
+        let events = self.interrupt(Reason::Stopped);
         self.state = State::Idle;
         events
     }
@@ -379,7 +342,6 @@ impl Passive {
         matches!(self.state, State::Recording { .. })
     }
 
-    /// How much of the current track is recorded so far.
     pub fn recorded_ms(&self) -> u64 {
         match &self.state {
             State::Recording { samples, .. } => frames_to_ms(samples.len() / self.channels, self.rate),
@@ -387,17 +349,17 @@ impl Passive {
         }
     }
 
-    /// Current state; resets the level meter.
+    /// Resets the level meter.
     pub fn status(&mut self) -> Status {
-        let (phase, track, recorded) = match &self.state {
-            State::Idle => (Phase::Idle, None, 0),
-            State::Waiting { track, .. } => (Phase::Waiting, Some(track.clone()), 0),
-            State::Recording { track, samples, .. } => (Phase::Recording, Some(track.clone()), samples.len() / self.channels),
+        let (phase, track) = match &self.state {
+            State::Idle => (Phase::Idle, None),
+            State::Waiting { track, .. } => (Phase::Waiting, Some(track.clone())),
+            State::Recording { track, .. } => (Phase::Recording, Some(track.clone())),
         };
         let level = std::mem::take(&mut self.level);
         let (sums, frames) = std::mem::take(&mut self.energy);
         let rms = sums.map(|s| if frames > 0 { (s / frames as f64).sqrt() as f32 } else { 0.0 });
-        Status { phase, track, recorded_ms: frames_to_ms(recorded, self.rate), level, rms, grid: self.grid.take() }
+        Status { phase, track, recorded_ms: self.recorded_ms(), level, rms, grid: self.grid.take() }
     }
 
     fn consider_start(&mut self, track: Track, position_ms: i64, events: &mut Vec<Event>) {
@@ -405,30 +367,27 @@ impl Passive {
             return;
         }
         if position_ms > START_TOLERANCE_MS {
-            let first = match &self.late {
+            let since = match &self.late {
                 Some((t, frame)) if *t == track => *frame,
                 _ => {
                     self.late = Some((track.clone(), self.frame));
                     self.frame
                 }
             };
-            if self.frame - first < ms_to_frames(POSITION_SETTLE_MS, self.rate) as u64 {
-                return;
+            if self.frame - since >= ms_to_frames(POSITION_SETTLE_MS, self.rate) as u64 {
+                self.late = None;
+                self.done = Some(track.clone());
+                events.push(Event::Dropped { track, reason: Reason::MidTrack });
             }
-            self.late = None;
-            self.done = Some(track.clone());
-            events.push(Event::Dropped { track, reason: Reason::MidTrack });
             return;
         }
         self.late = None;
-        // The audio may already be running: the clean start must lie `position` ago (within tolerance).
+        // The audio may already be running: its clean start lies `position` ago.
         let target = self.frame as i64 - ms_to_frames(position_ms.max(0) as u64, self.rate) as i64;
         let tolerance = ms_to_frames(POSITION_MATCH_MS as u64, self.rate) as i64;
-        if let Some(&start) = self.starts.iter().rev().find(|s| (**s as i64 - target).abs() <= tolerance) {
-            self.start_recording(track, start, events);
-        } else {
-            let until = self.frame + ms_to_frames(WAIT_MS, self.rate) as u64;
-            self.state = State::Waiting { track, until };
+        match self.starts.iter().rev().find(|s| (**s as i64 - target).abs() <= tolerance) {
+            Some(&start) => self.start_recording(track, start, events),
+            None => self.state = State::Waiting { track, until: self.frame + ms_to_frames(WAIT_MS, self.rate) as u64 },
         }
     }
 
@@ -438,12 +397,13 @@ impl Passive {
         let first = (start - self.ring_first) as usize;
         samples.extend(self.ring.range(first * self.channels..));
         let off: Vec<usize> = self.ring_off.range(first..).enumerate().filter(|(_, o)| **o).map(|(i, _)| i).collect();
-        let (off_grid, off_span) = (off.len(), off.first().map(|a| (*a, *off.last().unwrap_or(a))));
-        // A start belongs to exactly one track: never let a later track claim it (or an earlier one).
+        let (off_grid, off_span) = (off.len(), off.first().zip(off.last()).map(|(a, b)| (*a, *b)));
+        // A start belongs to exactly one track.
         self.starts.retain(|s| *s > start);
         events.push(Event::Started(track.clone()));
+        let complete = samples.len() >= expected * self.channels;
         self.state = State::Recording { track, expected, samples, off_grid, off_span, start };
-        if let State::Recording { expected, samples, .. } = &self.state && samples.len() >= expected * self.channels {
+        if complete {
             self.complete(events);
         }
     }
@@ -457,21 +417,20 @@ impl Passive {
     }
 
     fn drop_recording(&mut self, reason: Reason, events: &mut Vec<Event>) {
-        if matches!(self.state, State::Recording { .. })
-            && let State::Recording { track, samples, start, .. } = std::mem::replace(&mut self.state, State::Idle)
-        {
-            let early = frames_to_ms(samples.len() / self.channels, self.rate) < RELEASE_START_MS;
-            if reason == Reason::TrackChanged && early && start >= self.ring_first {
-                let at = self.starts.partition_point(|s| *s < start);
-                self.starts.insert(at, start);
-            }
-            self.done = Some(track.clone());
-            events.push(Event::Dropped { track, reason });
+        if !self.recording() {
+            return;
         }
+        let State::Recording { track, samples, start, .. } = std::mem::replace(&mut self.state, State::Idle) else { unreachable!() };
+        let early = frames_to_ms(samples.len() / self.channels, self.rate) < RELEASE_START_MS;
+        if reason == Reason::TrackChanged && early && start >= self.ring_first {
+            let at = self.starts.partition_point(|s| *s < start);
+            self.starts.insert(at, start);
+        }
+        self.done = Some(track.clone());
+        events.push(Event::Dropped { track, reason });
     }
 
-    /// Undo the player's gain and quantise to 24 bit; also reports whether the value already was an exact
-    /// 24-bit sample (exact for a 0.5 gain on untouched 24/16-bit sources).
+    /// Undoes the gain and rounds to 24 bit; `true` when the value already was exact.
     fn restore(&self, x: f32) -> (i32, bool) {
         let v = x as f64 * self.inv_gain * 8_388_608.0;
         let r = v.round();
@@ -633,7 +592,7 @@ mod tests {
     fn replay_trace() {
         let dir = std::path::PathBuf::from(std::env::var("MITSCHNITT_TRACE").expect("MITSCHNITT_TRACE"));
         let bytes = std::fs::read(dir.join("raw.f32")).unwrap();
-        let raw: Vec<f32> = bytes.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect();
+        let raw: Vec<f32> = bytes.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)).collect();
         // media lines: frame, "media", playing, "artist - title", duration_ms, position_ms
         let mut media: Vec<(u64, Media)> = Vec::new();
         for line in std::fs::read_to_string(dir.join("events.tsv")).unwrap().lines() {
@@ -675,27 +634,23 @@ mod tests {
     }
 
     #[test]
-    fn pause_discards_the_track() {
-        let t = track(2_000);
+    fn pause_stall_and_seek_discard_the_track() {
+        let t = track(10_000);
         let (_, raw) = master(ms_to_frames(1_000, RATE), 3);
-        let mut p = Passive::new(RATE, 2, GAIN);
-        let mut ev = p.media(playing(&t, 0));
-        silence(&mut p, 100, &mut ev);
-        feed(&mut p, &raw, &mut ev);
-        ev.extend(p.media(Media { playing: false, track: Some(t.clone()), position_ms: 1_000 }));
-        assert!(ev.iter().any(|e| matches!(e, Event::Dropped { reason: Reason::Paused, .. })));
-    }
-
-    #[test]
-    fn stalled_player_discards_the_track() {
-        let t = track(2_000);
-        let (_, raw) = master(ms_to_frames(500, RATE), 4);
-        let mut p = Passive::new(RATE, 2, GAIN);
-        let mut ev = p.media(playing(&t, 0));
-        silence(&mut p, 100, &mut ev);
-        feed(&mut p, &raw, &mut ev);
-        silence(&mut p, 10, &mut ev); // a silent packet mid-track = underrun
-        assert!(ev.iter().any(|e| matches!(e, Event::Dropped { reason: Reason::Underrun, .. })));
+        type Interrupt = fn(&mut Passive, &Track) -> Vec<Event>;
+        let interruptions: [(Interrupt, Reason); 3] = [
+            (|p, t| p.media(Media { playing: false, track: Some(t.clone()), position_ms: 1_000 }), Reason::Paused),
+            (|p, _| p.push(&[], 80, FLAG_SILENT), Reason::Underrun),
+            (|p, t| p.media(playing(t, 7_000)), Reason::Seeked),
+        ];
+        for (interrupt, reason) in interruptions {
+            let mut p = Passive::new(RATE, 2, GAIN);
+            let mut ev = p.media(playing(&t, 0));
+            silence(&mut p, 100, &mut ev);
+            feed(&mut p, &raw, &mut ev);
+            ev.extend(interrupt(&mut p, &t));
+            assert!(ev.iter().any(|e| matches!(e, Event::Dropped { reason: r, .. } if *r == reason)), "{reason:?}: {ev:?}");
+        }
     }
 
     #[test]
@@ -759,17 +714,5 @@ mod tests {
         ev.extend(p.media(playing(&t, 0)));
         feed(&mut p, &raw, &mut ev);
         assert!(ev.iter().any(|e| matches!(e, Event::Completed { .. })), "{ev:?}");
-    }
-
-    #[test]
-    fn seeking_discards_the_track() {
-        let t = track(10_000);
-        let (_, raw) = master(ms_to_frames(1_000, RATE), 6);
-        let mut p = Passive::new(RATE, 2, GAIN);
-        let mut ev = p.media(playing(&t, 0));
-        silence(&mut p, 100, &mut ev);
-        feed(&mut p, &raw, &mut ev);
-        ev.extend(p.media(playing(&t, 7_000))); // position jumped far ahead of what was recorded
-        assert!(ev.iter().any(|e| matches!(e, Event::Dropped { reason: Reason::Seeked, .. })));
     }
 }

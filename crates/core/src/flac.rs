@@ -18,7 +18,7 @@ pub struct Tags {
     /// 0 = unknown.
     pub track_number: u32,
     pub cover: Option<Cover>,
-    /// More Vorbis comments, e.g. `SPOTIFY_TRACK_ID` and `ISRC` for recordings made for Echolot.
+    /// More Vorbis comments, e.g. `ISRC`.
     pub extra: Vec<(String, String)>,
 }
 
@@ -38,17 +38,15 @@ pub fn read(path: &Path) -> Result<Audio, claxon::Error> {
     Ok(Audio { rate: info.sample_rate, channels: info.channels as usize, bits: info.bits_per_sample, samples })
 }
 
-/// Encode `audio` losslessly to `path` (written to `<path>.part` first), tag it, then decode the file
-/// again and compare every sample - a file only gets its final name once it is proven identical.
+/// The file is decoded again and compared; only an identical file gets its final name.
 pub fn write(path: &Path, audio: &Audio, tags: &Tags) -> Result<(), String> {
     let stream = encode(audio)?;
     let mut sink = flacenc::bitsink::ByteSink::new();
     stream.write(&mut sink).map_err(|e| format!("serialize: {e:?}"))?;
 
-    let part = path.with_extension("flac.part");
-    std::fs::write(&part, sink.as_slice()).map_err(|e| format!("write {}: {e}", part.display()))?;
-    let result = (|| {
-        let mut tag = metaflac::Tag::read_from_path(&part).map_err(|e| format!("tags: {e}"))?;
+    crate::output::via_part(path, "flac.part", |part| {
+        std::fs::write(part, sink.as_slice()).map_err(|e| format!("write {}: {e}", part.display()))?;
+        let mut tag = metaflac::Tag::read_from_path(part).map_err(|e| format!("tags: {e}"))?;
         for (key, value) in [("TITLE", &tags.title), ("ARTIST", &tags.artist), ("ALBUM", &tags.album), ("ALBUMARTIST", &tags.album_artist)] {
             if !value.is_empty() {
                 tag.set_vorbis(key, vec![value.as_str()]);
@@ -68,16 +66,12 @@ pub fn write(path: &Path, audio: &Audio, tags: &Tags) -> Result<(), String> {
         tag.set_vorbis("ENCODER", vec!["Mitschnitt"]);
         tag.save().map_err(|e| format!("tags: {e}"))?;
 
-        let back = read(&part).map_err(|e| format!("verify: {e}"))?;
+        let back = read(part).map_err(|e| format!("verify: {e}"))?;
         if back.samples != audio.samples || back.rate != audio.rate || back.channels != audio.channels {
             return Err("verify: decoded file differs from the recording".to_owned());
         }
-        std::fs::rename(&part, path).map_err(|e| format!("rename: {e}"))
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&part);
-    }
-    result
+        Ok(())
+    })
 }
 
 /// Encode frame by frame. flacenc's Rice cost estimate overflows on loud 24-bit audio, so it can pick a fixed

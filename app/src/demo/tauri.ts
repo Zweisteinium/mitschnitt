@@ -1,8 +1,6 @@
-// Demo mode (`npm run demo`): the UI in a browser, with this simulation in place of Tauri. Vite points
-// `@tauri-apps/api/{core,event,app}` here in that mode only; the app never includes it. Used for the README screenshot.
-import type { Check, EcholotSession, HistoryRecord, Job, RecorderSnapshot, Settings, Status, Track } from "../lib/api";
+// `npm run demo`: Vite points `@tauri-apps/api/{core,event,app}` here, for the README screenshot.
+import type { Check, EcholotSession, HistoryRecord, RecorderSnapshot, Settings, Status, Track } from "../lib/api";
 
-export type UnlistenFn = () => void;
 type Handler = (event: { payload: unknown }) => void;
 
 const handlers = new Map<string, Set<Handler>>();
@@ -29,7 +27,6 @@ function earlier(minutes: number, action: () => void) {
 }
 
 const rick: Track = { title: "Never Gonna Give You Up", artist: "Rick Astley", album: "Whenever You Need Somebody", duration_ms: 213_573 };
-const rickJob: Job = { id: 4711, uri: "spotify:track:4uLU6hMCjMI75M1A2tKUQC", artist: "Rick Astley", artists: ["Rick Astley"], title: rick.title, album: rick.album, duration_ms: rick.duration_ms, isrc: "GBARL9300135" };
 
 const out = "C:\\Users\\Anna\\Music\\Mitschnitt";
 const settings: Settings = {
@@ -54,7 +51,6 @@ const checks: Check[] = [
 
 // What Echolot sent so far: 9 of 24 songs answered.
 const session: EcholotSession = {
-  id: 12,
   title: "80s Classics · Not lossless",
   state: "running",
   reason: "",
@@ -76,30 +72,29 @@ let snapshot: RecorderSnapshot = {
   state: "recording",
   detail: "",
   session,
-  current: rickJob,
+  current: rick,
   uploads: 0,
   error: null,
-  done: 0,
-  total: 0,
 };
 
 const mb = (minutes: number, seconds: number, bits: 16 | 24) => Math.round((minutes * 60 + seconds) * (bits === 16 ? 112_000 : 168_000));
 const day = 86_400_000;
-const record = (daysAgo: number, artist: string, title: string, length: [number, number], bits: 16 | 24, echolot: string | null, exists = true): HistoryRecord => ({
+const record = (daysAgo: number, artist: string, title: string, length: [number, number], bits: 16 | 24, echolot: string | null, exists = true, faded = false): HistoryRecord => ({
   at: Date.now() - daysAgo * day,
   track: { title, artist, album: "", duration_ms: (length[0] * 60 + length[1]) * 1000 },
   file: `${out}\\${artist} - ${title}.flac`,
   size: mb(length[0], length[1], bits),
-  verdict: "info",
-  master: bits === 16 ? "bit16_exact" : "bit24",
-  exact: true,
+  verdict: faded ? "altered" : "info",
+  master: faded ? "bit16_partly" : bits === 16 ? "bit16_exact" : "bit24",
+  exact: !faded,
+  faded,
   echolot: echolot !== null,
   result: echolot,
   exists,
 });
 const history: HistoryRecord[] = [
   record(1, "Tears for Fears", "Everybody Wants to Rule the World", [4, 11], 16, "filed"),
-  record(1, "Eurythmics", "Sweet Dreams (Are Made of This)", [3, 36], 16, "filed"),
+  record(1, "Eurythmics", "Sweet Dreams (Are Made of This)", [3, 36], 16, "filed", true, true),
   record(1, "Talk Talk", "It's My Life", [3, 53], 16, "not_better", false),
   record(2, "Daft Punk", "Digital Love", [5, 1], 24, null),
   record(3, "Kraftwerk", "Computer Love", [7, 15], 24, null),
@@ -120,9 +115,8 @@ function start() {
   emit("listening", { app: "Spotify", device: "CABLE Input (VB-Audio Virtual Cable)", rate: 44_100 });
   for (const [ago, track, result] of earlierSongs) {
     earlier(ago, () => {
-      emit("update", { kind: "saved", track, file: `${out}\\${track.artist} - ${track.title}.flac`, size: Math.round((track.duration_ms / 1000) * 112_000), verdict: "info", master: "bit16_exact", exact: true, issues: [], echolot: true });
-      const job: Job = { id: null, uri: "", artist: track.artist, artists: [track.artist], title: track.title, album: track.album, duration_ms: track.duration_ms, isrc: "" };
-      emit("echolot", { kind: "song", job, result, detail: resultDetail[result] });
+      emit("update", { kind: "saved", track, file: `${out}\\${track.artist} - ${track.title}.flac`, size: Math.round((track.duration_ms / 1000) * 112_000), verdict: "info", master: "bit16_exact", exact: true, faded: false, issues: [], echolot: true });
+      emit("echolot", { kind: "song", job: track, result, detail: resultDetail[result] });
     });
   }
   emit("update", { kind: "monitor_volume", volume: 0.42 });
@@ -147,7 +141,7 @@ function start() {
       recorded_ms: recorded,
       level: [Math.min(0.97, level[0] * 2.6 + 0.1 * beat), Math.min(0.97, level[1] * 2.5 + 0.1 * beat)],
       rms: [level[0], level[1]],
-      grid: { bit24: 1, bit16: 1 },
+      grid: { bit24: 1 },
     };
     emit("update", { kind: "status", status });
   }, 50);
@@ -176,7 +170,7 @@ export async function invoke<T>(cmd: string, args: Record<string, unknown> = {})
   return (commands[cmd]?.(args) ?? null) as T;
 }
 
-export async function listen<T>(event: string, handler: (event: { payload: T }) => void): Promise<UnlistenFn> {
+export async function listen<T>(event: string, handler: (event: { payload: T }) => void) {
   const set = handlers.get(event) ?? new Set();
   set.add(handler as Handler);
   handlers.set(event, set);
@@ -184,7 +178,7 @@ export async function listen<T>(event: string, handler: (event: { payload: T }) 
 }
 
 export async function getVersion(): Promise<string> {
-  return "0.4.1";
+  return "0.4.2";
 }
 
 // Once both stores have subscribed.

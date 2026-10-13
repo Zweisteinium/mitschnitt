@@ -6,13 +6,13 @@
 
   const s = $derived(echolot.snapshot);
   const session = $derived(s.session);
-  /** A song is being worked on: Pause and Stop take effect after it. */
+  /** Pause and Stop take effect after the current song. */
   const busy = $derived(s.current !== null);
-  /** Recorded of the current song: counts down the time left live. */
+  /** Counts the time left down live. */
   const recorded = $derived(s.current && listener.status?.phase === "recording" ? listener.status.recorded_ms : 0);
   const doneMs = $derived(session ? Math.min(session.seconds_total * 1000, session.seconds_done * 1000 + recorded) : 0);
   const leftMs = $derived(session ? session.seconds_total * 1000 - doneMs : 0);
-  /** By time; by songs from an Echolot that doesn't send the time. */
+  /** By songs from an Echolot that doesn't send the time. */
   const progress = $derived(!session ? 0 : session.seconds_total > 0 ? doneMs / (session.seconds_total * 1000) : session.total > 0 ? session.done / session.total : 0);
 
   const remaining = (ms: number) => {
@@ -23,7 +23,7 @@
 
   const stateText: Record<string, string> = {
     idle: "Ready",
-    busy: "Waiting - you are using Spotify",
+    busy: "Waiting - Spotify is playing (here or on another device)",
     recording: "Recording for Echolot",
     setup: "Waiting - fix Setup",
   };
@@ -34,7 +34,6 @@
   };
 </script>
 
-<!-- Only while connected; connecting is on Setup. -->
 <Panel label="Echolot" index="04">
   <div class="who small">
     <span class="dot" class:offline={s.connection === "offline"}></span>
@@ -43,7 +42,7 @@
   <div class="account mono muted" title="{s.user}@{s.host}">{s.user}@{s.host}</div>
   {#if s.state === "setup" && s.detail}<div class="hint warn small">{s.detail}</div>{/if}
 
-  {#if session && (session.state === "running" || session.state === "paused" || busy)}
+  {#if session && echolot.active}
     <div class="session">
       <div class="title">{session.title}</div>
       <div class="bar"><span style:width="{progress * 100}%"></span></div>
@@ -56,7 +55,7 @@
         {#if session.seconds_total > 0}<span>{remaining(leftMs)} left</span>{:else if session.minutes_left}<span>{session.minutes_left} min left</span>{/if}
       </div>
       {#if session.state !== "running" && busy}
-        <div class="hint warn small">{session.state === "paused" ? "Pausing" : "Stopping"} after this song…</div>
+        <div class="hint warn small">{session.state === "paused" ? "Pausing" : "Ending"} after this song…</div>
       {:else if session.state === "paused"}
         <div class="hint warn small">{pauseText[session.reason] ?? "Paused"}</div>
       {/if}
@@ -68,10 +67,10 @@
           <button class="btn" onclick={() => echolot.session("pause")} disabled={echolot.busy}>Pause</button>
         {/if}
         {#if session.state !== "stopped"}
-          <button class="btn danger" onclick={() => echolot.session("stop")} disabled={echolot.busy}>Stop</button>
+          <button class="btn danger" onclick={() => echolot.session("stop")} disabled={echolot.busy}>End session</button>
         {/if}
       </div>
-      {#if session.state === "running" && busy}<div class="muted small">Both take effect after this song.</div>{/if}
+      {#if session.state === "running" && busy}<div class="muted small">The current song finishes and is uploaded first.</div>{/if}
     </div>
   {:else if session}
     <div class="muted small last">Last session: {session.title} - {session.state}, {session.filed} added of {session.total}</div>

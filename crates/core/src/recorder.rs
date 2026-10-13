@@ -1,10 +1,5 @@
-//! Working through a queue of songs: Echolot's (connected device) or an exported list (offline fallback).
-//!
-//! A connected device keeps a long-poll loop with Echolot: it reports what it does (idle, busy, recording, setup
-//! problem) and gets one song at a time. For a song it makes sure the player runs, attaches a [`Queue`] to the
-//! engine (started for it, or the one already listening) and reports every outcome. Recordings are uploaded on
-//! their own thread with retries, so the next song can start meanwhile. When the session isn't running any more,
-//! the engine is let go again.
+//! Works through Echolot's queue (long poll, one song at a time) or an exported list. Uploads run on their own thread
+//! so the next song can start meanwhile.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -13,7 +8,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::echolot::{self, Client, DeviceState, Error, Export, Item, SessionInfo, Spotify};
 use crate::engine::{Queue, QueueStatus};
@@ -23,61 +18,54 @@ use crate::settings::Settings;
 use crate::setup::{self, State};
 use crate::{desktop, init_thread, media, sessions};
 
-/// Recordings waiting for Echolot's answer (and an exported list's recordings, for Echolot's upload dialog).
+/// Recordings waiting for Echolot's answer.
 pub const PENDING_DIR: &str = "Echolot";
-/// Recordings Echolot didn't take.
 pub const NOT_TAKEN_DIR: &str = "Not taken";
 
 const LONG_POLL_S: u32 = 25;
+/// Spotify Connect may play on another device while the app here shows "playing".
+const BUSY: &str = "Spotify is playing (here or on another device)";
+const NO_SOUND: &str = "no sound from Spotify on this PC - is it playing on another device (Spotify Connect)?";
 const HEARTBEAT: Duration = Duration::from_secs(10);
 const SETUP_CHECK: Duration = Duration::from_secs(60);
 const PLAYER_START: Duration = Duration::from_secs(30);
-/// Upload retries: growing pauses, giving up after an hour.
 const UPLOAD_RETRY_FIRST: Duration = Duration::from_secs(10);
 const UPLOAD_RETRY_MAX: Duration = Duration::from_secs(300);
 const UPLOAD_GIVE_UP: Duration = Duration::from_secs(3_600);
 
-/// Where the engine lives (the app or the CLI).
+/// The app or the CLI, which own the engine.
 pub trait Host: Send + Sync + 'static {
-    /// Drive `queue`: attach it to the running engine, or start one for it.
+    /// Attaches to the running engine, or starts one.
     fn attach(&self, queue: Queue) -> Result<(), String>;
-    /// Stop driving the player; stop the engine again if it was started for the queue.
     fn detach(&self);
-    /// The current settings (output folder, whether to keep copies).
     fn settings(&self) -> Settings;
     fn update(&self, update: RecorderUpdate);
 }
 
-/// What the recorder shows (the card in the app).
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct Snapshot {
-    /// `connected`, `offline` (Echolot not reachable), `disconnected`, or `file` (an exported list runs).
+    /// `connected`, `offline`, `disconnected`, or `file` (an exported list).
     pub connection: String,
     pub user: String,
     pub host: String,
     pub device: String,
-    /// What this device told Echolot it does.
     pub state: Option<DeviceState>,
     pub detail: String,
     pub session: Option<SessionInfo>,
-    /// The song being worked on.
     pub current: Option<Job>,
-    /// Uploads waiting or running.
     pub uploads: usize,
     pub error: Option<String>,
-    /// Exported list: songs done / total.
+    /// Exported list progress.
     pub done: u32,
     pub total: u32,
 }
 
-/// A few per song: their size doesn't matter.
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RecorderUpdate {
     Snapshot { snapshot: Snapshot },
-    /// One song finished: Echolot's answer (`filed`, `not_better`, `rejected`) or the reason it wasn't recorded.
-    /// `moved`: the uploaded file and where it went then (`None`: deleted).
+    /// `moved`: the uploaded file and where it went (`None`: deleted).
     Song {
         job: Job,
         result: String,
@@ -87,7 +75,6 @@ pub enum RecorderUpdate {
     },
 }
 
-/// Shared between the loop and the commands (pause/resume/stop, disconnect).
 pub struct Recorder {
     pub client: Option<Client>,
     snapshot: Arc<Mutex<Snapshot>>,
@@ -99,12 +86,10 @@ impl Recorder {
         self.snapshot.lock().map(|s| s.clone()).unwrap_or_default()
     }
 
-    /// End the loop (it lets the engine go).
     pub fn stop(&self) {
         self.stop.store(true, Ordering::Relaxed);
     }
 
-    /// Pause, resume or stop Echolot's session.
     pub fn session(&self, action: &str, host: &dyn Host) -> Result<(), String> {
         let client = self.client.as_ref().ok_or("not connected")?;
         let session = client.session(action).map_err(|e| e.to_string())?;
@@ -129,19 +114,17 @@ fn publish(snapshot: &Mutex<Snapshot>, host: &dyn Host, change: impl FnOnce(&mut
     host.update(RecorderUpdate::Snapshot { snapshot });
 }
 
-/// Start the player when it isn't running (opening its scheme launches it) and wait for its process.
 pub fn ensure_player(profile: &Profile) -> Result<(), String> {
     let running = || sessions::find_app(profile.exe, &sessions::processes()).is_some();
     if running() {
         return Ok(());
     }
-    // Its window ends up minimized, without taking the focus.
     desktop::open_link_in_background(&format!("{}:", profile.id), profile.exe)?;
     let deadline = Instant::now() + PLAYER_START;
     while Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(500));
         if running() {
-            // Let it finish starting up before songs are opened in it.
+            // Links opened while it still starts up get lost.
             std::thread::sleep(Duration::from_secs(3));
             return Ok(());
         }
@@ -160,12 +143,10 @@ fn spotify_state(profile: &Profile, status: Option<&QueueStatus>) -> Spotify {
     }
 }
 
-/// The first red Setup check, if any (Echolot then waits: `state: setup`).
 fn setup_problem(profile: &Profile) -> Option<String> {
     setup::health(profile).into_iter().find(|c| c.state == State::Bad).map(|c| format!("{}: {}", c.title, c.detail))
 }
 
-/// The engine side of a queue: what the recorder keeps while it drives the player.
 struct Attached {
     jobs: Sender<Job>,
     done: Receiver<(Job, Outcome)>,
@@ -181,7 +162,7 @@ fn attach(host: &dyn Host, profile: &Profile, out_dir: &Path) -> Result<Attached
     Ok(Attached { jobs, done, status })
 }
 
-/// Move a file to `target` (folders created when needed), as "name (2).flac" etc. when that exists.
+/// As "name (2).flac" etc. when `target` exists.
 fn move_to(file: &Path, target: &Path) -> Option<PathBuf> {
     std::fs::create_dir_all(target.parent()?).ok()?;
     let stem = target.file_stem()?.to_string_lossy().into_owned();
@@ -196,7 +177,45 @@ fn move_to(file: &Path, target: &Path) -> Option<PathBuf> {
     moved.then_some(path)
 }
 
-/// Keep working through Echolot's queue on this connected device until stopped or disconnected.
+/// `<file>.json` next to a recording until Echolot answered, so a crash doesn't lose the upload.
+#[derive(Serialize, Deserialize)]
+struct Sidecar {
+    item: Item,
+    note: Option<String>,
+}
+
+fn sidecar(file: &Path) -> PathBuf {
+    let mut name = file.as_os_str().to_owned();
+    name.push(".json");
+    PathBuf::from(name)
+}
+
+fn leftover_uploads(pending_dir: &Path) -> Vec<Upload> {
+    let mut found = Vec::new();
+    let mut dirs = vec![pending_dir.to_owned()];
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                dirs.push(path);
+                continue;
+            }
+            let Some(file) = path.to_str().and_then(|p| p.strip_suffix(".json")).map(PathBuf::from) else { continue };
+            let sidecar: Option<Sidecar> = std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str(&t).ok());
+            match sidecar {
+                Some(Sidecar { item, note }) if file.exists() => {
+                    let keep_as = file.strip_prefix(pending_dir).map(Path::to_owned).unwrap_or_default();
+                    found.push(Upload { job: item.job(), item, file, keep_as, note });
+                }
+                _ => {
+                    let _ = std::fs::remove_file(&path);
+                }
+            }
+        }
+    }
+    found
+}
+
 pub fn connect(client: Client, saved: echolot::store::Saved, profile: Profile, out_dir: PathBuf, host: Arc<dyn Host>) -> Arc<Recorder> {
     let snapshot = Arc::new(Mutex::new(Snapshot {
         connection: "connected".into(),
@@ -218,12 +237,11 @@ pub fn connect(client: Client, saved: echolot::store::Saved, profile: Profile, o
     recorder
 }
 
-/// An upload for the uploader thread.
 struct Upload {
     item: Item,
     job: Job,
     file: PathBuf,
-    /// Where it goes when kept: the same path relative to the output folder as to the waiting folder.
+    /// Relative to the output folder when kept.
     keep_as: PathBuf,
     note: Option<String>,
 }
@@ -232,7 +250,6 @@ fn echolot_loop(client: &Client, profile: &Profile, out_dir: &Path, shared_host:
     let (host, snapshot): (&dyn Host, &Mutex<Snapshot>) = (&**shared_host, shared_snapshot);
     let pending_dir = out_dir.join(PENDING_DIR);
     let not_taken = out_dir.join(NOT_TAKEN_DIR);
-    // Who this device is (and whether the token still works).
     match client.me() {
         Ok(me) => publish(snapshot, host, |s| {
             s.user = me.user;
@@ -248,15 +265,19 @@ fn echolot_loop(client: &Client, profile: &Profile, out_dir: &Path, shared_host:
     let uploads = uploader(client.clone(), not_taken.clone(), shared_snapshot.clone(), shared_host.clone());
     let mut attached: Option<Attached> = None;
     let mut items: HashMap<u64, Item> = HashMap::new();
-    // The song handed to the engine and not finished yet.
     let mut in_flight: Option<u64> = None;
     let mut heartbeat = Instant::now();
     let mut setup = (Instant::now() - SETUP_CHECK, None::<String>);
     let mut backoff = Duration::from_secs(5);
     let mut paused_for_sound = false;
+    // The first poll tells Echolot to release what a crashed run had leased.
+    let mut fresh = true;
+    for upload in leftover_uploads(&pending_dir) {
+        let _ = uploads.send(upload);
+    }
 
     while !stop.load(Ordering::Relaxed) {
-        // 1. Report what finished. An engine that went away (listening stopped by hand) ends the song too.
+        // 1. Report what finished.
         let mut finished = Vec::new();
         if let Some(a) = &attached {
             loop {
@@ -270,7 +291,7 @@ fn echolot_loop(client: &Client, profile: &Profile, out_dir: &Path, shared_host:
                 }
             }
         }
-        // A song the engine never got to (it stopped by hand right after it was handed over).
+        // Listening was stopped by hand.
         if attached.is_none()
             && let Some(job) = in_flight.and_then(|id| items.get(&id)).map(Item::job)
         {
@@ -284,6 +305,10 @@ fn echolot_loop(client: &Client, profile: &Profile, out_dir: &Path, shared_host:
             match outcome {
                 Outcome::Recorded { file, note } => {
                     let keep_as = file.strip_prefix(&pending_dir).map(Path::to_owned).unwrap_or_else(|_| file.file_name().unwrap_or_default().into());
+                    // Survives a close or crash before the upload (see `leftover_uploads`).
+                    if let Ok(json) = serde_json::to_string(&Sidecar { item: item.clone(), note: note.clone() }) {
+                        let _ = std::fs::write(sidecar(&file), json);
+                    }
                     let _ = uploads.send(Upload { item, job, file, keep_as, note });
                 }
                 other => {
@@ -314,7 +339,7 @@ fn echolot_loop(client: &Client, profile: &Profile, out_dir: &Path, shared_host:
                     (Some(_), _) => "starting".into(),
                     _ => String::new(),
                 };
-                match client.poll(DeviceState::Recording, &detail, spotify_state(profile, status.as_ref()), in_flight, 0) {
+                match client.poll(DeviceState::Recording, &detail, spotify_state(profile, status.as_ref()), in_flight, 0, false) {
                     Ok(poll) => publish(snapshot, host, |s| {
                         s.connection = "connected".into();
                         s.session = poll.session;
@@ -339,7 +364,7 @@ fn echolot_loop(client: &Client, profile: &Profile, out_dir: &Path, shared_host:
         let spotify = spotify_state(profile, status.as_ref());
         let (state, detail) = match (&setup.1, spotify) {
             (Some(problem), _) => (DeviceState::Setup, problem.clone()),
-            (None, Spotify::Playing) => (DeviceState::Busy, String::new()),
+            (None, Spotify::Playing) => (DeviceState::Busy, BUSY.into()),
             (None, _) => (DeviceState::Idle, String::new()),
         };
         publish(snapshot, host, |s| {
@@ -348,8 +373,9 @@ fn echolot_loop(client: &Client, profile: &Profile, out_dir: &Path, shared_host:
             s.current = None;
         });
         heartbeat = Instant::now();
-        match client.poll(state, &detail, spotify, None, LONG_POLL_S) {
+        match client.poll(state, &detail, spotify, None, LONG_POLL_S, fresh) {
             Ok(poll) => {
+                fresh = false;
                 backoff = Duration::from_secs(5);
                 let session_running = poll.session.as_ref().is_some_and(SessionInfo::running);
                 if session_running {
@@ -431,7 +457,6 @@ fn clock(ms: u64) -> String {
     format!("{}:{:02}", ms / 60_000, (ms / 1000) % 60)
 }
 
-/// The contract's result name and detail for an outcome without a file.
 fn result_of(outcome: &Outcome) -> (&'static str, String) {
     match outcome {
         Outcome::Recorded { .. } => ("filed", String::new()),
@@ -440,11 +465,12 @@ fn result_of(outcome: &Outcome) -> (&'static str, String) {
         Outcome::TookOver { detail } => ("took_over", detail.clone()),
         Outcome::Stalled { detail } => ("stalled", detail.clone()),
         Outcome::Failed { detail } => ("failed", detail.clone()),
-        Outcome::NoSound => ("failed", "no sound on this PC (playing on another device?)".into()),
+        // Not the song's fault: it goes back without costing a try.
+        Outcome::NoSound => ("took_over", NO_SOUND.into()),
     }
 }
 
-/// Uploads recordings one by one; retries network and server errors for up to an hour.
+/// Retries network and server errors for up to an hour.
 fn uploader(client: Client, not_taken: PathBuf, snapshot: Arc<Mutex<Snapshot>>, host: Arc<dyn Host>) -> Sender<Upload> {
     let (tx, rx) = mpsc::channel::<Upload>();
     std::thread::Builder::new()
@@ -466,7 +492,6 @@ fn uploader(client: Client, not_taken: PathBuf, snapshot: Arc<Mutex<Snapshot>>, 
                 };
                 let (result, detail, to) = match answer {
                     Ok(filed) => {
-                        // Rejected: kept for a look. Otherwise kept in the library, or deleted, as the settings say.
                         let settings = host.settings();
                         let to = if filed.result == "rejected" {
                             move_to(&upload.file, &not_taken.join(&upload.keep_as))
@@ -491,6 +516,7 @@ fn uploader(client: Client, not_taken: PathBuf, snapshot: Arc<Mutex<Snapshot>>, 
                         ("failed".into(), format!("upload: {e}"), to)
                     }
                 };
+                let _ = std::fs::remove_file(sidecar(&upload.file));
                 host.update(RecorderUpdate::Song { job: upload.job, result, detail, moved: Some((upload.file, to)) });
                 publish(&snapshot, &*host, |s| s.uploads = s.uploads.saturating_sub(1));
             }
@@ -499,8 +525,7 @@ fn uploader(client: Client, not_taken: PathBuf, snapshot: Arc<Mutex<Snapshot>>, 
     tx
 }
 
-/// Work through an exported list without a connection. The recordings stay in `<out_dir>/Echolot`, tagged with
-/// their Spotify id and ISRC, for Echolot's upload dialog. A take-over or no sound ends the run.
+/// Without a connection: the recordings stay in the waiting folder for Echolot's upload dialog.
 pub fn run_list(export: Export, profile: Profile, out_dir: PathBuf, host: Arc<dyn Host>) -> Arc<Recorder> {
     let jobs = export.jobs();
     let snapshot = Arc::new(Mutex::new(Snapshot { connection: "file".into(), detail: export.title.clone(), total: jobs.len() as u32, ..Snapshot::default() }));
@@ -562,4 +587,28 @@ pub fn run_list(export: Export, profile: Profile, out_dir: PathBuf, host: Arc<dy
         })
         .expect("queue thread");
     recorder
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn uploads_left_by_a_crash_are_found_again() {
+        let dir = std::env::temp_dir().join(format!("mitschnitt-leftover-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("Artist")).unwrap();
+        let item: Item = serde_json::from_str(r#"{"id": 7, "uri": "spotify:track:x", "artist": "Artist", "title": "Song", "duration_ms": 1000, "upload": "/up/7", "result": "/res/7"}"#).unwrap();
+        let file = dir.join("Artist").join("Song.flac");
+        std::fs::write(&file, b"flac").unwrap();
+        std::fs::write(sidecar(&file), serde_json::to_string(&Sidecar { item: item.clone(), note: Some("faded".into()) }).unwrap()).unwrap();
+        std::fs::write(dir.join("Gone.flac.json"), "{}").unwrap();
+        std::fs::write(dir.join("Other.flac"), b"flac").unwrap();
+
+        let found = leftover_uploads(&dir);
+        assert_eq!(found.len(), 1);
+        assert_eq!((found[0].item.id, found[0].note.as_deref(), found[0].keep_as.clone()), (7, Some("faded"), PathBuf::from("Artist").join("Song.flac")));
+        assert!(!dir.join("Gone.flac.json").exists() && dir.join("Other.flac").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

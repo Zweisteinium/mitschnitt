@@ -28,7 +28,6 @@ pub fn is_running(pid: u32) -> bool {
     std::path::Path::new(&format!("/proc/{pid}")).exists()
 }
 
-/// The processes of an app, for matching its streams.
 #[derive(Default)]
 pub struct App {
     tree: HashSet<u32>,

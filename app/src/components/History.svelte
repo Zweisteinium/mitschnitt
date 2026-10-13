@@ -4,28 +4,28 @@
   import { session, type Entry } from "../lib/session.svelte";
   import Panel from "./Panel.svelte";
 
-  type Tone = "ok" | "warn" | "bad" | "muted";
+  type Tone = "ok" | "fine" | "warn" | "bad" | "muted";
 
   const time = (d: Date) => d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   const full = (d: Date) => d.toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
-  /** Today: the time; earlier: the day. */
   const when = (d: Date) => (d.toDateString() === new Date().toDateString() ? time(d) : d.toLocaleDateString([], { day: "numeric", month: "short" }));
 
-  function quality(verdict: Severity, master: Master, exact: boolean): { tone: Tone; tag: string; text: string } {
+  /** OK: fine, but not proven to the last sample (the player's fade-in, or no proof). */
+  function quality(verdict: Severity, master: Master, exact: boolean, faded: boolean): { tone: Tone; tag: string; text: string } {
     if (verdict === "corrupt") return { tone: "bad", tag: "bad", text: "Corrupt" };
+    if (faded) return { tone: "fine", tag: "ok", text: "Player fade-in at the start · rest bit-exact" };
     if (verdict === "altered") return { tone: "warn", tag: "alt", text: "Not fully original" };
     const bits = master === "bit16_exact" ? "16-bit master" : "24-bit master";
-    return { tone: "ok", tag: "ok", text: exact ? `Bit-exact · ${bits}` : `Clean · ${bits}` };
+    return exact ? { tone: "ok", tag: "exact", text: `Bit-exact · ${bits}` } : { tone: "fine", tag: "ok", text: `Clean · ${bits}` };
   }
 
   function summary(e: Entry): { tone: Tone; tag: string; text: string } {
     if (e.outcome === "exists") return { tone: "muted", tag: "have", text: "Already recorded" };
     if (e.outcome !== "saved") return e.outcome === "dropped" ? { tone: "muted", tag: "skip", text: e.message } : { tone: "bad", tag: "fail", text: e.message };
-    const q = quality(e.verdict, e.master, e.exact);
+    const q = quality(e.verdict, e.master, e.exact, e.faded);
     return e.file === null ? { ...q, text: `${q.text} · removed` } : q;
   }
 
-  /** Length and size side by side read as what they are; the time of day stands alone on the right. */
   const facts = (durationMs: number, size: number) => `${clock(durationMs)} · ${megabytes(size)}`;
 
   function origin(r: HistoryRecord): string {
@@ -39,7 +39,7 @@
   let records = $state<HistoryRecord[] | null>(null);
   let shown = $state(PAGE);
 
-  /** Earlier runs only: this run's files are in the list above. */
+  /** This run's files are in the list above. */
   async function load() {
     try {
       records = (await api.history()).filter((r) => r.at < session.startedAt);
@@ -98,10 +98,10 @@
     {:else}
       <ul class="rows">
         {#each records.slice(0, shown) as r (r.at + r.file)}
-          {@const q = quality(r.verdict, r.master, r.exact)}
+          {@const q = quality(r.verdict, r.master, r.exact, r.faded)}
           {@const at = new Date(r.at)}
           <li>
-            <span class="tag mono {q.tone}">{q.tag}</span>
+            <span class="tag mono {q.tone}" title={q.text}>{q.tag}</span>
             <div class="main">
               <div class="name">{r.track.artist} – {r.track.title}</div>
               <div class="detail muted">
@@ -137,7 +137,7 @@
 
   .rows > li {
     display: grid;
-    grid-template-columns: 38px 1fr auto 34px;
+    grid-template-columns: 46px 1fr auto 34px;
     gap: 12px;
     align-items: start;
     padding: 10px 0;
@@ -157,8 +157,8 @@
     border: 1px solid currentColor;
   }
 
-  .tag.muted {
-    color: var(--muted);
+  .fine {
+    color: color-mix(in srgb, var(--ok) 55%, var(--muted));
   }
 
   .main {

@@ -1,7 +1,7 @@
 import { api, type Check, type Master, type Platform, type Settings, type Severity, type Source, type SourceInfo, type Status, type Track, type Update } from "./api";
 
-export type Outcome =
-  | { outcome: "saved"; file: string | null; size: number; verdict: Severity; master: Master; exact: boolean; issues: string[]; echolot: boolean }
+type Outcome =
+  | { outcome: "saved"; file: string | null; size: number; verdict: Severity; master: Master; exact: boolean; faded: boolean; issues: string[]; echolot: boolean }
   | { outcome: "exists"; file: string }
   | { outcome: "dropped" | "failed"; message: string };
 
@@ -9,7 +9,6 @@ export type Entry = { id: number; at: Date; track: Track } & Outcome;
 
 export type Tab = "listen" | "setup" | "settings";
 
-/** App state: sources, the running listener, its results, settings and setup health. */
 class Session {
   tab = $state<Tab>("listen");
   sources = $state<Source[]>([]);
@@ -25,15 +24,14 @@ class Session {
   notice = $state<string | null>(null);
   error = $state<string | null>(null);
   busy = $state(false);
-  /** "Stop after this track" was requested. */
+  /** "Stop after track" was requested. */
   stopping = $state(false);
-  /** When a media key was last swallowed to protect the recording (shown briefly). */
+  /** When a media key was last swallowed (shown briefly). */
   keyBlockedAt = $state<number | null>(null);
-  /** The monitor muted itself because the output device changed. */
   monitorMuted = $state(false);
-  /** Monitor volume = Mitschnitt's Windows mixer entry; null until the monitor reports it. */
+  /** Null until the monitor reports it. */
   monitorVolume = $state<number | null>(null);
-  /** When the app started: older files are history, newer ones are in this session's list. */
+  /** Files older than this are history, newer ones are in this run's list. */
   readonly startedAt = Date.now();
   #nextId = 0;
   #polling = false;
@@ -42,7 +40,6 @@ class Session {
     return this.source !== null;
   }
 
-  /** Problems that block a clean recording (shown as a hint on the Listen tab). */
   get problems(): number {
     return this.checks.filter((c) => c.state === "bad").length;
   }
@@ -58,15 +55,12 @@ class Session {
     setInterval(() => void this.#poll(), 1000);
   }
 
-  /** Keeps the source list current while it is shown. Cheap, and the same for every player and platform. */
   async #poll() {
     if (this.#polling || this.listening || this.tab !== "listen" || document.hidden) return;
     this.#polling = true;
     try {
       this.#setSources(await api.sources());
-    } catch {
-      // the next poll tries again
-    }
+    } catch {}
     this.#polling = false;
   }
 
@@ -95,10 +89,11 @@ class Session {
   }
 
   async start() {
-    if (!this.selected) return;
+    const app = this.selected;
+    if (!app) return;
     this.busy = true;
     await this.#try(async () => {
-      this.source = await api.start(this.selected!);
+      this.source = await api.start(app);
     });
     this.busy = false;
   }
@@ -123,9 +118,8 @@ class Session {
     await this.#try(() => api.stopAfterTrack());
   }
 
-  /** Persist settings (call after changing a field). */
   async save() {
-    if (this.settings) await this.#try(() => api.saveSettings($state.snapshot(this.settings!)));
+    await this.#try(() => api.saveSettings($state.snapshot(this.settings!)));
   }
 
   async #try(action: () => Promise<void>) {
@@ -143,7 +137,7 @@ class Session {
         this.status = u.status;
         break;
       case "saved":
-        this.#log(u.track, { outcome: "saved", file: u.file, size: u.size, verdict: u.verdict, master: u.master, exact: u.exact, issues: u.issues, echolot: u.echolot });
+        this.#log(u.track, { outcome: "saved", file: u.file, size: u.size, verdict: u.verdict, master: u.master, exact: u.exact, faded: u.faded, issues: u.issues, echolot: u.echolot });
         break;
       case "key_blocked": {
         const at = Date.now();

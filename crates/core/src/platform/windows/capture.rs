@@ -1,5 +1,4 @@
-//! Per-process capture via WASAPI process loopback: 32-bit float packets of one process tree,
-//! independent of other apps, the device volume and the output device.
+//! WASAPI process loopback: one process tree, independent of other apps, the device volume and the output device.
 
 use std::ptr::{addr_of, null_mut};
 use std::sync::Arc;
@@ -14,27 +13,26 @@ use windows::Win32::Media::Audio::{
     AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS, ActivateAudioInterfaceAsync, IActivateAudioInterfaceAsyncOperation,
     IActivateAudioInterfaceCompletionHandler, IActivateAudioInterfaceCompletionHandler_Impl, IAudioCaptureClient,
     IAudioClient, PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE, VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK,
-    WAVEFORMATEX, WAVEFORMATEXTENSIBLE, WAVEFORMATEXTENSIBLE_0,
+    WAVEFORMATEX,
 };
 use windows::Win32::Media::Multimedia::KSDATAFORMAT_SUBTYPE_IEEE_FLOAT;
 use windows::Win32::System::Com::StructuredStorage::PROPVARIANT;
-use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx, IAgileObject, IAgileObject_Impl};
+use windows::Win32::System::Com::{IAgileObject, IAgileObject_Impl};
 use windows::Win32::System::Threading::{CreateEventW, SetEvent, WaitForSingleObject};
 use windows::Win32::System::Variant::VT_BLOB;
 use windows::core::{Error, HRESULT, IUnknown, Interface, Ref, Result};
 use windows_core::implement;
 
+use super::devices::{com_init, wave_format};
 use crate::capture::{CaptureEvent, Packet};
 
-/// A running capture thread; stops when dropped.
 pub struct Capture {
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
 }
 
 impl Capture {
-    /// Capture the process tree of `pid` as `channels` x 32-bit float at `rate` (use the engine rate of the
-    /// device the app plays on, so Windows doesn't resample a second time).
+    /// `rate`: the engine rate of the device the app plays on, so Windows doesn't resample a second time.
     pub fn start(pid: u32, rate: u32, channels: u16, mut sink: impl FnMut(CaptureEvent) + Send + 'static) -> std::result::Result<Self, String> {
         let stop = Arc::new(AtomicBool::new(false));
         let flag = stop.clone();
@@ -42,8 +40,7 @@ impl Capture {
         let thread = std::thread::Builder::new()
             .name("capture".into())
             .spawn(move || {
-                // SAFETY: plain COM initialisation of this thread.
-                let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+                com_init();
                 match Stream::open(pid, rate, channels) {
                     Err(e) => {
                         let _ = ready_tx.send(Err(format!("could not open the capture: {e}")));
@@ -80,21 +77,7 @@ struct Stream {
 
 impl Stream {
     fn open(pid: u32, rate: u32, channels: u16) -> Result<Stream> {
-        let block = channels * 4;
-        let format = WAVEFORMATEXTENSIBLE {
-            Format: WAVEFORMATEX {
-                wFormatTag: 0xFFFE, // WAVE_FORMAT_EXTENSIBLE
-                nChannels: channels,
-                nSamplesPerSec: rate,
-                nAvgBytesPerSec: rate * block as u32,
-                nBlockAlign: block,
-                wBitsPerSample: 32,
-                cbSize: 22,
-            },
-            Samples: WAVEFORMATEXTENSIBLE_0 { wValidBitsPerSample: 32 },
-            dwChannelMask: if channels == 1 { 0x4 } else { 0x3 },
-            SubFormat: KSDATAFORMAT_SUBTYPE_IEEE_FLOAT,
-        };
+        let format = wave_format(rate, channels, 32, KSDATAFORMAT_SUBTYPE_IEEE_FLOAT);
         // SAFETY: COM calls on interfaces we own; `format` outlives `Initialize`, which copies it.
         unsafe {
             let client = activate(pid)?;
@@ -150,7 +133,7 @@ impl Drop for Stream {
     }
 }
 
-/// Signals an event when the asynchronous activation is done. Must be agile (called on any thread).
+/// Signals when the activation is done. Must be agile: it is called on any thread.
 #[implement(IActivateAudioInterfaceCompletionHandler, IAgileObject)]
 struct Completion(HANDLE);
 

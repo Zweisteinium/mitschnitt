@@ -1,5 +1,4 @@
-//! Setup assistant: health checks of everything that affects a bit-exact recording, one-click fixes where the
-//! platform allows them.
+//! Health checks of everything that affects a bit-exact recording, with one-click fixes where possible.
 
 use std::path::PathBuf;
 
@@ -13,7 +12,7 @@ pub enum State {
     Ok,
     Warn,
     Bad,
-    /// Can't be detected - the user has to check it.
+    /// Can't be detected; the user has to check it.
     Check,
 }
 
@@ -23,7 +22,6 @@ pub struct Check {
     pub title: &'static str,
     pub state: State,
     pub detail: String,
-    /// One-click fix, see [`fix`].
     pub fix: Option<&'static str>,
 }
 
@@ -31,7 +29,7 @@ pub(crate) fn check(id: &'static str, title: &'static str, state: State, detail:
     Check { id, title, state, detail: detail.into(), fix }
 }
 
-/// What Spotify's settings file reveals (read-only; keys are undocumented and may move between versions).
+/// Spotify's prefs file; its keys are undocumented and may change between versions.
 pub(crate) fn spotify_checks() -> Vec<Check> {
     let mut out = Vec::new();
     let prefs = spotify_prefs().and_then(|p| std::fs::read_to_string(p).ok()).unwrap_or_default();

@@ -1,5 +1,4 @@
-//! Writing a finished recording according to the settings: file name from the template, format, bit depth.
-//! Lossless files are read back and compared before they get their final name.
+//! Writing a finished recording according to the settings.
 
 use std::path::{Path, PathBuf};
 
@@ -9,13 +8,12 @@ use crate::settings::{Format, Settings};
 
 const EXTENSIONS: [&str; 3] = ["flac", "wav", "mp3"];
 
-/// An existing recording of this track (same name, any format), if any.
+/// A recording of this track with the same name, in any format.
 pub fn existing(tags: &Tags, settings: &Settings) -> Option<PathBuf> {
     let base = settings.out_dir.join(file_stem(&settings.template, tags));
     EXTENSIONS.iter().map(|ext| base.with_extension(ext)).find(|p| p.exists())
 }
 
-/// Write `audio` (24-bit) with `tags`; returns the final path.
 pub fn write(audio: &Audio, tags: &Tags, settings: &Settings) -> Result<PathBuf, String> {
     let ext = match settings.format {
         Format::Flac => "flac",
@@ -36,7 +34,7 @@ pub fn write(audio: &Audio, tags: &Tags, settings: &Settings) -> Result<PathBuf,
     Ok(path)
 }
 
-/// 320 kbit/s CBR from the full-resolution samples, ID3v2.4 tags with cover.
+/// From the full-resolution samples.
 fn write_mp3(path: &Path, audio: &Audio, tags: &Tags) -> Result<(), String> {
     use mp3lame_encoder::{Bitrate, Builder, FlushNoGap, InterleavedPcm, Quality};
     if audio.channels != 2 {
@@ -52,7 +50,8 @@ fn write_mp3(path: &Path, audio: &Audio, tags: &Tags) -> Result<(), String> {
 
     let scale = 1.0 / (1u64 << (audio.bits - 1)) as f32;
     let pcm: Vec<f32> = audio.samples.iter().map(|s| *s as f32 * scale).collect();
-    let mut data = Vec::with_capacity(pcm.len() * 5 / 8 + 7200);
+    // encode_to_vec only fills spare capacity; LAME's worst case is 1.25 x samples + 7200 bytes.
+    let mut data = Vec::new();
     for chunk in pcm.chunks(2 * 44_100) {
         data.reserve(chunk.len() * 5 / 8 + 7200);
         encoder.encode_to_vec(InterleavedPcm(chunk), &mut data).map_err(|e| err(&e))?;
@@ -60,12 +59,16 @@ fn write_mp3(path: &Path, audio: &Audio, tags: &Tags) -> Result<(), String> {
     data.reserve(7200);
     encoder.flush_to_vec::<FlushNoGap>(&mut data).map_err(|e| err(&e))?;
 
-    let part = path.with_extension("mp3.part");
-    let result = (|| {
-        std::fs::write(&part, &data).map_err(|e| format!("write {}: {e}", part.display()))?;
-        id3_tags(tags).write_to_path(&part, id3::Version::Id3v24).map_err(|e| format!("tags: {e}"))?;
-        std::fs::rename(&part, path).map_err(|e| format!("rename: {e}"))
-    })();
+    via_part(path, "mp3.part", |part| {
+        std::fs::write(part, &data).map_err(|e| format!("write {}: {e}", part.display()))?;
+        id3_tags(tags).write_to_path(part, id3::Version::Id3v24).map_err(|e| format!("tags: {e}"))
+    })
+}
+
+/// `write` creates the file under a temporary extension; it is renamed to `path` on success, removed otherwise.
+pub(crate) fn via_part(path: &Path, ext: &str, write: impl FnOnce(&Path) -> Result<(), String>) -> Result<(), String> {
+    let part = path.with_extension(ext);
+    let result = write(&part).and_then(|()| std::fs::rename(&part, path).map_err(|e| format!("rename: {e}")));
     if result.is_err() {
         let _ = std::fs::remove_file(&part);
     }
@@ -98,12 +101,12 @@ fn id3_tags(tags: &Tags) -> id3::Tag {
     tag
 }
 
-/// Every sample on the 16-bit grid: the 24-bit capture holds a 16-bit master exactly.
+/// The 24-bit capture holds a 16-bit master exactly.
 pub fn is_16bit(audio: &Audio) -> bool {
     audio.bits <= 16 || audio.samples.iter().all(|s| s % (1 << (audio.bits - 16)) == 0)
 }
 
-/// Reduce to 16 bit (round to nearest; exact when [`is_16bit`]).
+/// Rounds to nearest; exact when [`is_16bit`].
 fn to_16bit(audio: &Audio) -> Audio {
     let shift = audio.bits.saturating_sub(16);
     let half = if shift > 0 { 1i64 << (shift - 1) } else { 0 };
@@ -118,27 +121,21 @@ fn write_wav(path: &Path, audio: &Audio) -> Result<(), String> {
         bits_per_sample: audio.bits as u16,
         sample_format: hound::SampleFormat::Int,
     };
-    let part = path.with_extension("wav.part");
-    let result = (|| {
-        let mut writer = hound::WavWriter::create(&part, spec).map_err(|e| format!("wav: {e}"))?;
+    via_part(path, "wav.part", |part| {
+        let mut writer = hound::WavWriter::create(part, spec).map_err(|e| format!("wav: {e}"))?;
         for s in &audio.samples {
             writer.write_sample(*s).map_err(|e| format!("wav: {e}"))?;
         }
         writer.finalize().map_err(|e| format!("wav: {e}"))?;
-        let back: Result<Vec<i32>, _> = hound::WavReader::open(&part).map_err(|e| format!("verify: {e}"))?.samples::<i32>().collect();
+        let back: Result<Vec<i32>, _> = hound::WavReader::open(part).map_err(|e| format!("verify: {e}"))?.samples::<i32>().collect();
         if back.map_err(|e| format!("verify: {e}"))? != audio.samples {
             return Err("verify: written WAV differs from the recording".to_owned());
         }
-        std::fs::rename(&part, path).map_err(|e| format!("rename: {e}"))
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&part);
-    }
-    result
+        Ok(())
+    })
 }
 
-/// File stem from the template. Only `/` in the *template* creates folders; values are filled per part and
-/// sanitised, so "AC/DC" stays one name.
+/// Only `/` in the template creates folders, so "AC/DC" stays one name.
 pub fn file_stem(template: &str, tags: &Tags) -> PathBuf {
     let parts: Vec<String> = template
         .split(['/', '\\'])

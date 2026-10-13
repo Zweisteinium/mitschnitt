@@ -20,7 +20,7 @@ impl Audio {
         (1u64 << (self.bits - 1)) as f64
     }
 
-    /// Largest absolute value of a frame (all channels), as a fraction of full scale.
+    /// Fraction of full scale.
     pub fn frame_peak(&self, i: usize) -> f64 {
         self.frame(i).iter().map(|s| (*s as i64).abs()).max().unwrap_or(0) as f64 / self.full_scale()
     }
@@ -29,7 +29,7 @@ impl Audio {
         self.samples.iter().map(|s| (*s as i64).abs()).max().unwrap_or(0) as f64 / self.full_scale()
     }
 
-    /// Whether every sample of the frame lies on the 16-bit grid (i.e. it could come from a 16-bit master).
+    /// Could come from a 16-bit master.
     pub fn frame_on_grid16(&self, i: usize) -> bool {
         if self.bits <= 16 {
             return true;

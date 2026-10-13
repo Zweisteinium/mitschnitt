@@ -1,8 +1,5 @@
-//! Echolot, a self-hosted music library: connecting this PC as a recorder for it, and its API.
-//!
-//! Connecting is an OAuth-style sign-in for desktop apps: Mitschnitt opens Echolot's approval page with a PKCE
-//! challenge, Echolot sends the browser back to `mitschnitt://connected?code=…&state=…`, and the code plus the
-//! verifier buy a long-lived token, kept in the system's credential store. Every call then carries the token.
+//! Echolot API. Connecting is a PKCE sign-in: the approval page sends the browser back to
+//! `mitschnitt://connected?code=…&state=…`, and code plus verifier buy a long-lived token (kept in the credential store).
 
 use std::io::Read;
 use std::path::Path;
@@ -15,7 +12,6 @@ use sha2::{Digest, Sha256};
 
 use crate::runner::Job;
 
-/// Where Echolot sends the browser after the approval.
 pub const REDIRECT: &str = "mitschnitt://connected";
 
 pub fn app() -> String {
@@ -26,7 +22,6 @@ pub fn platform() -> &'static str {
     std::env::consts::OS
 }
 
-/// The PC's name, shown in Echolot (the device can be renamed there).
 pub fn pc_name() -> String {
     ["COMPUTERNAME", "HOSTNAME"]
         .iter()
@@ -41,7 +36,6 @@ pub fn normalize_url(url: &str) -> String {
     if url.contains("://") { url.to_owned() } else { format!("https://{url}") }
 }
 
-/// The host part of a base url, for "anna@echolot.example.org".
 pub fn host(base: &str) -> &str {
     base.split("://").nth(1).unwrap_or(base).split('/').next().unwrap_or(base)
 }
@@ -90,8 +84,7 @@ impl SessionInfo {
     }
 }
 
-/// A song Echolot wants recorded (leased to this device until `lease_until`).
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Item {
     pub id: u64,
     pub uri: String,
@@ -148,7 +141,6 @@ pub struct Connected {
     pub user: String,
 }
 
-/// Echolot's answer to an uploaded recording.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Filed {
     /// `filed`, `not_better` or `rejected`.
@@ -159,16 +151,12 @@ pub struct Filed {
     pub session: Option<SessionInfo>,
 }
 
-/// What Mitschnitt does right now, for the heartbeat.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DeviceState {
-    /// Ready for a song.
     Idle,
-    /// The user plays something himself.
     Busy,
     Recording,
-    /// A setup check fails (`detail` says which).
     Setup,
 }
 
@@ -182,21 +170,17 @@ pub enum Spotify {
 
 #[derive(Debug)]
 pub enum Error {
-    /// The token is revoked or unknown: the device was disconnected in Echolot.
+    /// Disconnected in Echolot.
     Unauthorized,
-    /// The item isn't leased to this device (any more).
+    /// The item is no longer leased to this device.
     Conflict(String),
-    /// No session (for pause/resume/stop).
     NotFound(String),
     TooLarge,
-    /// Another HTTP status with Echolot's `detail`.
     Status(u16, String),
-    /// Network trouble or a server error: worth retrying.
     Network(String),
 }
 
 impl Error {
-    /// Retrying later may help (network, 5xx).
     pub fn transient(&self) -> bool {
         matches!(self, Error::Network(_)) || matches!(self, Error::Status(s, _) if *s >= 500)
     }
@@ -240,7 +224,6 @@ fn parse<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, Error> {
     serde_json::from_value(value).map_err(|e| Error::Status(200, format!("unexpected answer: {e}")))
 }
 
-/// A connected device: Echolot's address and this device's token.
 #[derive(Clone)]
 pub struct Client {
     pub base: String,
@@ -262,15 +245,18 @@ impl Client {
     }
 
     /// Heartbeat and request for work. Answers at once when there is work, otherwise after `wait` seconds.
-    pub fn poll(&self, state: DeviceState, detail: &str, spotify: Spotify, item: Option<u64>, wait: u32) -> Result<Poll, Error> {
+    /// `fresh`: the first poll after Mitschnitt started; songs still leased to this device are given back.
+    pub fn poll(&self, state: DeviceState, detail: &str, spotify: Spotify, item: Option<u64>, wait: u32, fresh: bool) -> Result<Poll, Error> {
         let mut body = json!({ "state": state, "detail": detail, "spotify": spotify, "app": app() });
         if let Some(id) = item {
             body["item"] = json!(id);
         }
+        if fresh {
+            body["fresh"] = json!(true);
+        }
         parse(self.post(&format!("/api/recorder/poll?wait={wait}"), &body, Duration::from_secs(wait as u64 + 60))?)
     }
 
-    /// Upload the recording of an item (multipart field `file`, optional text field `note`).
     pub fn upload(&self, item: &Item, file: &Path, note: Option<&str>) -> Result<Filed, Error> {
         let mut data = Vec::new();
         std::fs::File::open(file).and_then(|mut f| f.read_to_end(&mut data)).map_err(|e| Error::Network(format!("read {}: {e}", file.display())))?;
@@ -289,13 +275,11 @@ impl Client {
         parse(check(request.send(&body[..]))?)
     }
 
-    /// A song without a file: `lossy_only`, `wrong_song`, `took_over`, `stalled` or `failed`.
     pub fn result(&self, item: &Item, result: &str, detail: &str) -> Result<Option<SessionInfo>, Error> {
         let value = self.post(&item.result, &json!({ "result": result, "detail": detail }), Duration::from_secs(60))?;
         Ok(serde_json::from_value(value["session"].clone()).ok())
     }
 
-    /// `pause`, `resume` or `stop` the session.
     pub fn session(&self, action: &str) -> Result<Option<SessionInfo>, Error> {
         let value = self.post("/api/recorder/session", &json!({ "action": action }), Duration::from_secs(60))?;
         Ok(serde_json::from_value(value["session"].clone()).ok())
@@ -306,14 +290,12 @@ impl Client {
         parse(check(agent(Duration::from_secs(30)).get(&self.url("/api/recorder/me")).header("Authorization", &auth).call())?)
     }
 
-    /// Disconnect: the token stops working at once.
     pub fn disconnect(&self) -> Result<(), Error> {
         let auth = format!("Bearer {}", self.token);
         check(agent(Duration::from_secs(30)).delete(&self.url("/api/recorder/me")).header("Authorization", &auth).call()).map(|_| ())
     }
 }
 
-/// A pending sign-in: what goes to the browser, and what is kept to claim the code.
 #[derive(Debug, Clone)]
 pub struct Pairing {
     pub base: String,
@@ -326,7 +308,6 @@ impl Pairing {
         Pairing { base: normalize_url(base), verifier: random_token(48), state: random_token(16) }
     }
 
-    /// Echolot's approval page.
     pub fn url(&self, name: &str) -> String {
         let q = |s: &str| encode(s);
         format!(
@@ -340,7 +321,6 @@ impl Pairing {
         )
     }
 
-    /// Trade the code from `mitschnitt://connected?code=…` for the device token.
     pub fn claim(&self, code: &str, name: &str) -> Result<Connected, Error> {
         let body = json!({ "code": code.trim(), "verifier": self.verifier, "name": name, "app": app(), "platform": platform() });
         parse(check(agent(Duration::from_secs(30)).post(&format!("{}/api/recorder/connect", self.base)).send_json(&body))?)
@@ -352,14 +332,12 @@ pub fn challenge(verifier: &str) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()))
 }
 
-/// URL-safe random text (`bytes` random bytes, base64url).
 fn random_token(bytes: usize) -> String {
     let mut buf = vec![0u8; bytes];
     getrandom::fill(&mut buf).expect("system random source");
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(buf)
 }
 
-/// Percent-encoding for query values.
 pub fn encode(s: &str) -> String {
     s.bytes()
         .map(|b| match b {
@@ -391,7 +369,6 @@ fn decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// A `mitschnitt://` link, as the OS hands it to the app.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Link {
     /// `mitschnitt://connect?url=<base>`: start connecting to that Echolot.
@@ -411,7 +388,6 @@ pub fn parse_link(link: &str) -> Option<Link> {
     }
 }
 
-/// The saved connection: Echolot's address in the settings folder, the token in the credential store.
 pub mod store {
     use std::path::PathBuf;
 
@@ -497,7 +473,6 @@ pub mod store {
     }
 }
 
-/// Echolot's export of songs to record (the offline fallback).
 #[derive(Debug, Clone, Deserialize)]
 pub struct Export {
     #[serde(default)]

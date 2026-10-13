@@ -1,5 +1,4 @@
-//! Echolot in the app: connecting (with the `mitschnitt://` deep link), the recorder loop, and the commands for
-//! the card. The recorder shares the app's engine: it attaches to a running one or starts one for its songs.
+//! The recorder shares the app's engine: it attaches to a running one or starts one for its songs.
 
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
@@ -13,15 +12,12 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::{App, lock};
 
-/// Echolot's part of the app state.
 #[derive(Default)]
 pub struct Echolot {
     recorder: Mutex<Option<Arc<Recorder>>>,
-    /// A sign-in waiting for the browser.
     pairing: Mutex<Option<Pairing>>,
 }
 
-/// The engine slot of the app, for the recorder.
 struct AppHost {
     handle: AppHandle,
 }
@@ -78,7 +74,6 @@ fn out_dir(handle: &AppHandle) -> Result<std::path::PathBuf, String> {
     Ok(lock(&handle.state::<App>().settings)?.out_dir.clone())
 }
 
-/// Start working for the saved connection (on start and after connecting).
 pub fn resume(handle: &AppHandle) -> Result<(), String> {
     let Some((saved, token)) = store::load() else { return Ok(()) };
     let state = handle.state::<Echolot>();
@@ -91,7 +86,6 @@ pub fn resume(handle: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// A `mitschnitt://` link opened Mitschnitt.
 pub fn open_link(handle: &AppHandle, link: &str) {
     if let Some(window) = handle.get_webview_window("main") {
         let _ = window.unminimize();
@@ -117,7 +111,7 @@ pub fn open_link(handle: &AppHandle, link: &str) {
     }
 }
 
-/// Trade the code for the token; `state` must match the pending sign-in (not checked for a pasted code).
+/// `state` is not checked for a pasted code.
 fn claim(handle: &AppHandle, code: &str, state: Option<&str>) -> Result<(), String> {
     let pairing = lock(&handle.state::<Echolot>().pairing)?.clone().ok_or("No sign-in is waiting - press Connect again.")?;
     if state.is_some_and(|s| s != pairing.state) {
@@ -139,9 +133,7 @@ fn claim(handle: &AppHandle, code: &str, state: Option<&str>) -> Result<(), Stri
 #[derive(serde::Serialize)]
 pub struct CardState {
     snapshot: Snapshot,
-    /// The address last connected to (empty the first time).
     url: String,
-    /// A sign-in is waiting for the browser.
     pairing: bool,
 }
 
@@ -152,7 +144,6 @@ pub fn echolot_state(state: State<'_, Echolot>, app: State<'_, App>) -> Result<C
     Ok(CardState { snapshot, url, pairing: lock(&state.pairing)?.is_some() })
 }
 
-/// Open Echolot's approval page for this PC.
 #[tauri::command]
 pub fn echolot_connect(url: String, state: State<'_, Echolot>) -> Result<(), String> {
     let pairing = Pairing::new(&url);
@@ -161,7 +152,7 @@ pub fn echolot_connect(url: String, state: State<'_, Echolot>) -> Result<(), Str
     Ok(())
 }
 
-/// The code from Echolot's page, when the link didn't open Mitschnitt.
+/// The code from Echolot's page, when the link didn't open Mitschnitt (a pasted link works too).
 #[tauri::command]
 pub async fn echolot_code(code: String, handle: AppHandle) -> Result<(), String> {
     let code = match echolot::parse_link(&code) {
@@ -194,7 +185,6 @@ pub async fn echolot_disconnect(handle: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// Pause, resume or stop Echolot's session.
 #[tauri::command]
 pub async fn echolot_session(action: String, handle: AppHandle) -> Result<(), String> {
     let recorder = lock(&handle.state::<Echolot>().recorder)?.clone().ok_or("not connected")?;

@@ -21,7 +21,7 @@
   onMount(() => {
     session.init();
     echolot.init();
-    getVersion().then((v) => (version = v)).catch(() => {});
+    getVersion().then((v) => (version = v));
   });
 </script>
 

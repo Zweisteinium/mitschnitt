@@ -5,7 +5,7 @@
 </script>
 
 <Panel label="Source" index="01">
-  {#if session.listening && session.source}
+  {#if session.source}
     <div class="active">
       <div class="name">{session.source.app}</div>
       <div class="muted">{session.source.device}</div>
@@ -15,18 +15,19 @@
         {#if session.platform?.monitor}<span>{session.settings?.monitor ? "monitoring" : "silent"}</span>{/if}
       </div>
     </div>
-    <div class="stops">
-      <button class="btn wide" onclick={async () => {
-          await echolot.pauseForStop();
-          await session.stopAfterTrack();
-        }} disabled={session.busy || session.stopping || session.status?.phase !== "recording"}>
-        {session.stopping ? "Stopping after track…" : "Stop after track"}
-      </button>
+    <!-- During an Echolot session its card has the after-song controls. -->
+    <div class="stops" class:single={echolot.active}>
+      {#if !echolot.active}
+        <button class="btn wide" onclick={() => session.stopAfterTrack()} disabled={session.busy || session.stopping || session.status?.phase !== "recording"}>
+          {session.stopping ? "Stopping after track…" : "Stop after track"}
+        </button>
+      {/if}
       <button class="btn danger wide" onclick={async () => {
           await echolot.pauseForStop();
           await session.stop();
         }}
-        disabled={session.busy}>Stop</button>
+        disabled={session.busy}
+        title={echolot.active ? "Drops the song being recorded and pauses the Echolot session" : undefined}>{echolot.active ? "Stop now" : "Stop"}</button>
     </div>
   {:else}
     <div class="list" role="radiogroup">
@@ -90,9 +91,6 @@
   .what {
     grid-column: 1;
     font-size: 12px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
   }
 
   .live {
@@ -157,5 +155,9 @@
     display: grid;
     grid-template-columns: 1fr auto;
     gap: 8px;
+  }
+
+  .stops.single {
+    grid-template-columns: 1fr;
   }
 </style>

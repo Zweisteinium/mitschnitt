@@ -4,12 +4,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 pub use crate::platform::os::monitor::{Monitor, SUPPORTED};
 
-/// Shared between the monitor thread and its owner.
 #[derive(Default)]
 pub struct MonitorState {
     /// Muted because the default output device changed.
     pub muted: AtomicBool,
-    /// Accept the current default device as home and unmute.
+    /// Accept the current default device as home.
     pub(crate) rehome: AtomicBool,
 }
 

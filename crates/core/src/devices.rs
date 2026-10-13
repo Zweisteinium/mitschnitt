@@ -1,5 +1,3 @@
-//! Output devices.
-
 pub use crate::platform::os::devices::{default_endpoint, hold_rate, layout, release_rate, render_endpoints};
 
 #[derive(Debug, Clone, serde::Serialize)]

@@ -1,5 +1,5 @@
-//! Processes and app volumes. Apps render audio from child processes, so everything targets the app's root
-//! process together with its descendants.
+//! Processes and app volumes. Apps render audio from child processes, so everything targets the app's whole
+//! process tree.
 
 use std::collections::HashSet;
 
@@ -16,8 +16,7 @@ fn normalize(name: &str) -> String {
     name.to_lowercase().trim_end_matches(".exe").to_owned()
 }
 
-/// The topmost process whose executable matches `query` (e.g. "spotify" -> Spotify.exe). Apps render audio
-/// from child processes, so capture targets this root with its whole tree.
+/// The topmost process whose executable matches `query` (e.g. "spotify" -> Spotify.exe).
 pub fn find_app(query: &str, procs: &[Process]) -> Option<Process> {
     let q = normalize(query);
     let matches: Vec<&Process> = procs.iter().filter(|p| normalize(&p.name).contains(&q)).collect();
@@ -25,7 +24,6 @@ pub fn find_app(query: &str, procs: &[Process]) -> Option<Process> {
     matches.into_iter().filter(|p| !pids.contains(&p.parent)).min_by_key(|p| p.pid).cloned()
 }
 
-/// `root` and all its descendants.
 pub fn tree(root: u32, procs: &[Process]) -> HashSet<u32> {
     let mut set = HashSet::from([root]);
     loop {

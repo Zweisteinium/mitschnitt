@@ -1,5 +1,5 @@
-//! Processes and audio sessions: find an app's process tree and the device it plays on, and read or set
-//! its volume-mixer value (plus the "Listen to this device" stream of a virtual cable).
+//! Processes and audio sessions: an app's device and volume-mixer entries, and the cable's "Listen to this
+//! device" stream.
 
 use std::collections::HashSet;
 
@@ -57,21 +57,20 @@ fn for_each_session(mut f: impl FnMut(&IMMDevice, &IAudioSessionControl2)) -> wi
     Ok(())
 }
 
-/// Volume-mixer controls of the process tree's sessions (all devices).
+/// On all devices.
 pub fn app_volumes(tree: &HashSet<u32>) -> Vec<ISimpleAudioVolume> {
     let mut out = Vec::new();
     let _ = for_each_session(|_, control| {
         // SAFETY: querying our own session control.
-        if unsafe { control.GetProcessId() }.is_ok_and(|pid| tree.contains(&pid)) {
-            if let Ok(volume) = control.cast::<ISimpleAudioVolume>() {
-                out.push(volume);
-            }
+        if unsafe { control.GetProcessId() }.is_ok_and(|pid| tree.contains(&pid))
+            && let Ok(volume) = control.cast::<ISimpleAudioVolume>()
+        {
+            out.push(volume);
         }
     });
     out
 }
 
-/// "Listen to this device" streams of the VB-Cable output (what you hear while the app plays into the cable).
 pub fn listen_volumes() -> Vec<ISimpleAudioVolume> {
     let mut out = Vec::new();
     let _ = for_each_session(|_, control| {
@@ -83,16 +82,16 @@ pub fn listen_volumes() -> Vec<ISimpleAudioVolume> {
                 s
             })
         };
-        if name.is_ok_and(|n| n.contains("CABLE Output")) {
-            if let Ok(volume) = control.cast::<ISimpleAudioVolume>() {
-                out.push(volume);
-            }
+        if name.is_ok_and(|n| n.contains("CABLE Output"))
+            && let Ok(volume) = control.cast::<ISimpleAudioVolume>()
+        {
+            out.push(volume);
         }
     });
     out
 }
 
-/// The output device the process tree plays on (an active session wins over an idle one).
+/// An active session wins over an idle one.
 pub fn app_endpoint(tree: &HashSet<u32>) -> Option<Endpoint> {
     let (mut active, mut idle) = (None, None);
     let _ = for_each_session(|device, control| {
@@ -108,8 +107,8 @@ pub fn app_endpoint(tree: &HashSet<u32>) -> Option<Endpoint> {
     active.or(idle).and_then(|d| describe(&d).ok())
 }
 
-/// The volume-mixer controls of an app, looked up afresh on every call - a restarted app gets new sessions,
-/// and controls obtained earlier would silently point at the dead ones.
+/// Looked up afresh on every call: a restarted app gets new sessions, and older controls silently point at the
+/// dead ones.
 pub fn app_volumes_by_name(app: &str) -> Vec<ISimpleAudioVolume> {
     let procs = processes();
     find_app(app, &procs).map(|root| app_volumes(&tree(root.pid, &procs))).unwrap_or_default()

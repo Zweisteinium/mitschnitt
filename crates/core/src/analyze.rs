@@ -1,11 +1,6 @@
-//! Forensic checks on a finished recording, using only the file itself.
-//!
-//! Learned the hard way (see the Python prototype):
-//! - Windows' audio engine limits each stream near 0 dBFS *before* the loopback tap (ceiling ~-0.12 dBFS).
-//!   A peak pile-up there is a hint, not proof - many masters are mastered to -0.1 dBFS. Proof is a 16-bit
-//!   master that leaves the 16-bit grid exactly in its loud passages.
-//! - A player underrun shows up as exact digital silence with loud audio on both sides.
-//! - Sharp "jumps" are usually just kicks; real capture glitches sit on the 10 ms packet grid.
+//! Forensic checks on a finished file. Measured: Windows limits each stream just below 0 dBFS before the loopback tap
+//! (ceiling ~-0.12 dBFS), so a pile-up there is only a hint (masters are often limited to -0.1 dBFS); a player
+//! underrun is exact digital silence between loud audio.
 
 use crate::audio::{Audio, db};
 use crate::timestamp;
@@ -36,27 +31,23 @@ pub struct Report {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Master {
-    /// Every sample sits on the 16-bit grid: a 16-bit master, bit-exact.
     Bit16Exact,
-    /// Mostly on the grid: a 16-bit master that was altered in places.
+    /// Mostly on the 16-bit grid: a 16-bit master altered in places.
     Bit16Partly,
-    /// More than 16 bits of content: a 24-bit master - or processed/lossy-decoded audio. Which one can't be
-    /// proven from the file alone (see the lossy hint).
+    /// A 24-bit master, or processed audio: the file alone can't tell.
     Bit24,
 }
 
 const LIMITER_LO: f64 = 0.977_237_220_955_810_7; // -0.20 dBFS
 const LIMITER_HI: f64 = 0.990_831_944_892_768_9; // -0.08 dBFS
-/// Windows' limiter output never exceeds ~-0.12 dBFS (measured); anything above -0.115 dBFS can't have come
-/// through it. Masters limited to -0.10 dBFS - a common mastering ceiling - sit above it.
+/// Nothing above this came through Windows' limiter.
 const WINDOWS_CEILING: f64 = 0.986_848_891_640_427_5; // -0.115 dBFS
 
 pub fn analyze(a: &Audio) -> Report {
     analyze_with(a, false)
 }
 
-/// `exact_source`: the capture proved every sample arrived untouched (see `passive`), so whatever is in the
-/// file - clipping included - is in the master itself.
+/// `exact_source`: the capture proved the audio untouched, so whatever the file shows is in the master itself.
 pub fn analyze_with(a: &Audio, exact_source: bool) -> Report {
     let mut issues = Vec::new();
     let n = a.frames();
@@ -70,7 +61,7 @@ pub fn analyze_with(a: &Audio, exact_source: bool) -> Report {
         issues.push(issue(Severity::Corrupt, format!("length {} is not a whole-millisecond track length (stopped early?)", ts(n))));
     }
 
-    // Dropouts: >= 1 ms exact digital silence (all channels) with audible signal right before and after.
+    // Dropouts: >= 1 ms of digital silence between loud audio.
     for (s, e) in runs(n, |i| a.frame(i).iter().all(|s| *s == 0)) {
         if e - s >= a.rate as usize / 1000 && s > 0 && e < n {
             let edge = a.rate as usize / 200;
@@ -83,8 +74,6 @@ pub fn analyze_with(a: &Audio, exact_source: bool) -> Report {
         }
     }
 
-    // Start: leading digital zeros are legitimate (masters may begin with silence, which a full recording keeps);
-    // very quiet samples are real audio. Only a file without any audio is broken.
     match (0..n).find(|&i| a.frame(i).iter().any(|s| *s != 0)) {
         None => issues.push(issue(Severity::Corrupt, "no audio at all".into())),
         Some(i) if i > a.rate as usize / 1000 => {
@@ -93,12 +82,11 @@ pub fn analyze_with(a: &Audio, exact_source: bool) -> Report {
         Some(_) => {}
     }
 
-    // Lossy origin hint: perceptual codecs cut everything above ~19-20 kHz, lossless masters rarely do.
-    if let Some(ratio) = high_band_ratio(a) && ratio < 1e-10 {
+    // Lossy codecs cut everything above ~20 kHz.
+    if !exact_source && let Some(ratio) = high_band_ratio(a) && ratio < 1e-10 {
         issues.push(issue(Severity::Info, format!("no content above 20 kHz ({:.0} dB) - possibly from a lossy source", 10.0 * ratio.max(1e-30).log10())));
     }
 
-    // 16-bit grid map: where (if anywhere) is a mostly-16-bit file off the grid?
     let off: Vec<usize> = (0..n).filter(|&i| !a.frame_on_grid16(i)).collect();
     let on_fraction = 1.0 - off.len() as f64 / n.max(1) as f64;
     let master = if off.is_empty() {
@@ -108,26 +96,23 @@ pub fn analyze_with(a: &Audio, exact_source: bool) -> Report {
     } else {
         Master::Bit24
     };
-    if master == Master::Bit16Partly {
+    if master == Master::Bit16Partly && !exact_source {
         let stretches = group(&off, a.rate as usize / 20);
-        // A fade starts at (or within a few samples of) the first sample: its very first values may be exact zeros.
-        if stretches.len() == 1 && stretches[0].0 < a.rate as usize / 200 && stretches[0].1 < 2 * a.rate as usize {
-            let ms = stretches[0].1 as f64 * 1000.0 / a.rate as f64;
-            issues.push(issue(Severity::Altered, format!("fade-in at the start: first {ms:.1} ms not original (rest bit-exact 16-bit)")));
-        } else {
-            issues.push(issue(Severity::Altered, format!("not original in {} stretch(es) of an otherwise bit-exact 16-bit file: {}", stretches.len(), list(&stretches, a.rate, 8))));
-        }
+        let text = match stretches[..] {
+            // Spotify fades a started track in over exactly 10 ms.
+            [(_, last)] if last < a.rate as usize / 100 => format!("fade-in at the start: first {:.1} ms not original (rest bit-exact 16-bit)", (last + 1) as f64 * 1000.0 / a.rate as f64),
+            _ => format!("not original in {} stretch(es) of an otherwise bit-exact 16-bit file: {}", stretches.len(), list(&stretches, a.rate, 8)),
+        };
+        issues.push(issue(Severity::Altered, text));
     }
 
-    // Windows limiter signature: samples piling up just below its ceiling, none above it. A bit-exact 16-bit
-    // file or a proven-untouched capture can't have been limited (it would have left the grid).
+    // Samples piling up just below the limiter's ceiling, none above it.
     let peak = a.peak();
     let near: Vec<usize> = (0..n).filter(|&i| a.frame_peak(i) >= LIMITER_LO).collect();
     let above_ceiling = near.iter().any(|&i| a.frame_peak(i) > WINDOWS_CEILING);
     let possible = master != Master::Bit16Exact && !exact_source && !above_ceiling;
     if possible && (LIMITER_LO..=LIMITER_HI).contains(&peak) && near.len() >= 20 {
         let passages = group(&near, a.rate as usize / 2);
-        // With a 16-bit master that leaves the grid in exactly these passages it's proven; otherwise a hint.
         let proven = master == Master::Bit16Partly;
         issues.push(issue(
             if proven { Severity::Altered } else { Severity::Info },
@@ -142,7 +127,7 @@ pub fn analyze_with(a: &Audio, exact_source: bool) -> Report {
         ));
     }
 
-    // Clipping: >= 3 consecutive samples at exactly the file's peak (flat tops).
+    // Clipping: >= 3 consecutive samples at exactly the peak.
     if peak > 0.9 {
         let peak_int = a.samples.iter().map(|s| (*s as i64).abs()).max().unwrap_or(0);
         let mut flats = 0;
@@ -156,7 +141,6 @@ pub fn analyze_with(a: &Audio, exact_source: bool) -> Report {
             }
         }
         if let Some(f) = first {
-            // A bit-exact or proven-untouched file can't have been clipped on the way: the master is clipped.
             if master == Master::Bit16Exact || exact_source {
                 issues.push(issue(Severity::Info, format!("clipped in the master: {flats} flat tops at {:.2} dBFS, first at {} (file is exact)", db(peak), ts(f))));
             } else {
@@ -173,8 +157,7 @@ fn issue(severity: Severity, text: String) -> Issue {
     Issue { severity, text }
 }
 
-/// Energy above 20 kHz relative to the total (mono sum), via a 4th-order Butterworth high-pass.
-/// `None` when the rate has no room above 20 kHz or the file is (nearly) silent.
+/// Energy above 20 kHz relative to the total (4th-order Butterworth high-pass); `None` for (nearly) silent files.
 fn high_band_ratio(a: &Audio) -> Option<f64> {
     if a.rate < 44_100 {
         return None;
@@ -217,7 +200,7 @@ impl Biquad {
     }
 }
 
-/// Half-open runs [start, end) of frames where `pred` holds.
+/// Half-open runs of frames where `pred` holds.
 fn runs(n: usize, pred: impl Fn(usize) -> bool) -> Vec<(usize, usize)> {
     let mut out = Vec::new();
     let mut start = None;
@@ -320,6 +303,25 @@ mod tests {
         let r = analyze(&a);
         assert_eq!(r.master, Master::Bit16Partly);
         assert!(r.issues.iter().any(|i| i.text.contains("0:02.000-0:02.100")), "{:?}", r.issues);
+    }
+
+    #[test]
+    fn a_proven_untouched_capture_is_never_altered_by_the_file_check() {
+        // Off the 16-bit grid in places and clipped: in the master, as the capture proved.
+        let mut a = music(4.0, 0.5);
+        for v in &mut a.samples[2 * RATE as usize * 2..(2 * RATE as usize + 4410) * 2] {
+            scale(v, 0.9);
+        }
+        for i in 0..441 {
+            scale(&mut a.samples[2 * i], i as f64 / 441.0);
+        }
+        for v in &mut a.samples[RATE as usize * 2..RATE as usize * 2 + 10] {
+            *v = 32_767 << 8;
+        }
+        assert_eq!(analyze(&a).verdict, Severity::Altered);
+        let r = analyze_with(&a, true);
+        assert_eq!(r.verdict, Severity::Info, "{:?}", r.issues);
+        assert!(r.issues.iter().any(|i| i.text.starts_with("clipped in the master")), "{:?}", r.issues);
     }
 
     #[test]

@@ -91,15 +91,17 @@ fn main() -> ExitCode {
     }
 }
 
+fn fail(e: impl std::fmt::Display) -> ExitCode {
+    eprintln!("error: {e}");
+    ExitCode::FAILURE
+}
+
 #[cfg(windows)]
 fn keys(secs: u64) -> ExitCode {
     use mitschnitt_core::platform::windows::keys::{KeyGuard, key_name};
     let guard = match KeyGuard::start() {
         Ok(g) => g,
-        Err(e) => {
-            eprintln!("error: {e}");
-            return ExitCode::FAILURE;
-        }
+        Err(e) => return fail(e),
     };
     guard.log(true);
     println!("Watching media keys for {secs} s (nothing is blocked). Press keys, use headset buttons, take earbuds out...");
@@ -113,14 +115,8 @@ fn keys(secs: u64) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-
 #[cfg(not(windows))]
 fn keys(_secs: u64) -> ExitCode {
-    windows_only()
-}
-
-#[cfg(not(windows))]
-fn windows_only() -> ExitCode {
     eprintln!("only available on Windows");
     ExitCode::FAILURE
 }
@@ -142,8 +138,7 @@ fn listen(app: String, dry: bool, trace: Option<PathBuf>) -> ExitCode {
     if let Err(e) = ctrlc::set_handler(move || {
         let _ = stop.send(None);
     }) {
-        eprintln!("error: {e}");
-        return ExitCode::FAILURE;
+        return fail(e);
     }
     // Unsupported apps work too, for experiments: the exact24 line shows whether an app is worth a profile.
     let profile = profile::get(&app).cloned().unwrap_or_else(|| Profile::adhoc(&app));
@@ -151,10 +146,7 @@ fn listen(app: String, dry: bool, trace: Option<PathBuf>) -> ExitCode {
         let _ = tx.send(Some(u));
     }) {
         Ok(started) => started,
-        Err(e) => {
-            eprintln!("error: {e}");
-            return ExitCode::FAILURE;
-        }
+        Err(e) => return fail(e),
     };
     let gain = mitschnitt_core::engine::GAIN * 100.0;
     println!("Listening to {} on {} ({} Hz), app volume {gain} %. Ctrl+C stops.", info.app, info.device, info.rate);
@@ -235,10 +227,7 @@ fn now(app: &str) -> ExitCode {
             eprintln!("{} shows no media session", profile.name);
             ExitCode::FAILURE
         }
-        Err(e) => {
-            eprintln!("error: {e}");
-            ExitCode::FAILURE
-        }
+        Err(e) => fail(e),
     }
 }
 
@@ -269,10 +258,7 @@ fn devices() -> ExitCode {
             }
             ExitCode::SUCCESS
         }
-        Err(e) => {
-            eprintln!("error: {e}");
-            ExitCode::FAILURE
-        }
+        Err(e) => fail(e),
     }
 }
 
@@ -441,10 +427,7 @@ mod queue {
         mitschnitt_core::init_thread();
         let export = match Export::load(file) {
             Ok(e) => e,
-            Err(e) => {
-                eprintln!("error: {e}");
-                return ExitCode::FAILURE;
-            }
+            Err(e) => return super::fail(e),
         };
         let host = host();
         let out = host.settings.out_dir.clone();
@@ -495,10 +478,7 @@ mod queue {
         };
         match result {
             Ok(()) => ExitCode::SUCCESS,
-            Err(e) => {
-                eprintln!("error: {e}");
-                ExitCode::FAILURE
-            }
+            Err(e) => super::fail(e),
         }
     }
 
