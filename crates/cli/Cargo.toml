@@ -11,6 +11,5 @@ path = "src/main.rs"
 
 [dependencies]
 clap = { version = "4.6.7", features = ["derive"] }
-claxon = "0.4.3"
 ctrlc = "3.5"
 mitschnitt-core = { path = "../core" }

@@ -292,7 +292,7 @@ fn check(paths: &[PathBuf]) -> ExitCode {
     if worst >= Severity::Corrupt { ExitCode::FAILURE } else { ExitCode::SUCCESS }
 }
 
-fn check_one(path: &Path) -> Result<Severity, claxon::Error> {
+fn check_one(path: &Path) -> Result<Severity, String> {
     let audio = mitschnitt_core::flac::read(path)?;
     let r = analyze::analyze(&audio);
     let verdict = match r.verdict {

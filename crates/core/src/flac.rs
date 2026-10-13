@@ -1,11 +1,10 @@
-//! FLAC files: reading into [`Audio`], and writing a recording as a verified 24-bit FLAC.
+//! FLAC files: reading into [`Audio`], and writing a recording as a verified FLAC.
 
 use std::path::Path;
 
-use flacenc::component::{BitRepr, Stream};
-use flacenc::config::Encoder;
-use flacenc::error::{Verified, Verify};
-use flacenc::source::{Context, Fill, FrameBuf};
+use flac_codec::decode::FlacSampleReader;
+use flac_codec::encode::{FlacSampleWriter, Options};
+use flac_codec::metadata::{Metadata, Picture, PictureType};
 
 use crate::audio::Audio;
 
@@ -28,44 +27,36 @@ pub struct Cover {
     pub data: Vec<u8>,
 }
 
-pub fn read(path: &Path) -> Result<Audio, claxon::Error> {
-    let mut reader = claxon::FlacReader::open(path)?;
-    let info = reader.streaminfo();
-    let mut samples = Vec::with_capacity(info.samples.unwrap_or(0) as usize * info.channels as usize);
-    for s in reader.samples() {
-        samples.push(s?);
-    }
-    Ok(Audio { rate: info.sample_rate, channels: info.channels as usize, bits: info.bits_per_sample, samples })
+pub fn read(path: &Path) -> Result<Audio, String> {
+    let mut reader = FlacSampleReader::open(path).map_err(|e| e.to_string())?;
+    let mut samples = Vec::new();
+    reader.read_to_end(&mut samples).map_err(|e| e.to_string())?;
+    Ok(Audio { rate: reader.sample_rate(), channels: reader.channel_count().into(), bits: reader.bits_per_sample(), samples })
 }
 
 /// The file is decoded again and compared; only an identical file gets its final name.
 pub fn write(path: &Path, audio: &Audio, tags: &Tags) -> Result<(), String> {
-    let stream = encode(audio)?;
-    let mut sink = flacenc::bitsink::ByteSink::new();
-    stream.write(&mut sink).map_err(|e| format!("serialize: {e:?}"))?;
+    let mut options = Options::best().overwrite();
+    let fields = [("TITLE", &tags.title), ("ARTIST", &tags.artist), ("ALBUM", &tags.album), ("ALBUMARTIST", &tags.album_artist)];
+    for (key, value) in fields.into_iter().chain(tags.extra.iter().map(|(k, v)| (k.as_str(), v))) {
+        if !value.is_empty() {
+            options = options.tag(key, value);
+        }
+    }
+    if tags.track_number > 0 {
+        options = options.tag("TRACKNUMBER", tags.track_number);
+    }
+    options = options.tag("ENCODER", "Mitschnitt");
+    // An image it can't measure would cost the whole recording: then the file goes without a cover.
+    if let Some(picture) = tags.cover.as_ref().and_then(|c| Picture::new(PictureType::FrontCover, "", c.data.clone()).ok()) {
+        options = options.picture(picture);
+    }
 
     crate::output::via_part(path, "flac.part", |part| {
-        std::fs::write(part, sink.as_slice()).map_err(|e| format!("write {}: {e}", part.display()))?;
-        let mut tag = metaflac::Tag::read_from_path(part).map_err(|e| format!("tags: {e}"))?;
-        for (key, value) in [("TITLE", &tags.title), ("ARTIST", &tags.artist), ("ALBUM", &tags.album), ("ALBUMARTIST", &tags.album_artist)] {
-            if !value.is_empty() {
-                tag.set_vorbis(key, vec![value.as_str()]);
-            }
-        }
-        if tags.track_number > 0 {
-            tag.set_vorbis("TRACKNUMBER", vec![tags.track_number.to_string()]);
-        }
-        if let Some(cover) = &tags.cover {
-            tag.add_picture(cover.mime, metaflac::block::PictureType::CoverFront, cover.data.clone());
-        }
-        for (key, value) in &tags.extra {
-            if !value.is_empty() {
-                tag.set_vorbis(key.as_str(), vec![value.as_str()]);
-            }
-        }
-        tag.set_vorbis("ENCODER", vec!["Mitschnitt"]);
-        tag.save().map_err(|e| format!("tags: {e}"))?;
-
+        let err = |e: flac_codec::Error| format!("encode: {e}");
+        let mut writer = FlacSampleWriter::create(part, options, audio.rate, audio.bits, audio.channels as u8, Some(audio.samples.len() as u64)).map_err(err)?;
+        writer.write(&audio.samples).map_err(err)?;
+        writer.finalize().map_err(err)?;
         let back = read(part).map_err(|e| format!("verify: {e}"))?;
         if back.samples != audio.samples || back.rate != audio.rate || back.channels != audio.channels {
             return Err("verify: decoded file differs from the recording".to_owned());
@@ -74,91 +65,38 @@ pub fn write(path: &Path, audio: &Audio, tags: &Tags) -> Result<(), String> {
     })
 }
 
-/// Encode frame by frame. flacenc's Rice cost estimate overflows on loud 24-bit audio, so it can pick a fixed
-/// predictor that costs several times the raw samples: every frame is checked and re-encoded with fewer
-/// tools (no fixed predictor, then verbatim) until it is no larger than the raw samples.
-fn encode(audio: &Audio) -> Result<Stream, String> {
-    let err = |e: &dyn std::fmt::Debug| format!("encode: {e:?}");
-    let configs = [(true, true), (false, true), (false, false)].map(|(fixed, lpc)| {
-        let mut config = Encoder::default();
-        config.subframe_coding.use_fixed = fixed;
-        config.subframe_coding.use_lpc = lpc;
-        config.into_verified().map_err(|(_, e)| format!("encoder config: {e:?}"))
-    });
-    let configs: Vec<Verified<Encoder>> = configs.into_iter().collect::<Result<_, _>>()?;
-    let (channels, bits, block) = (audio.channels, audio.bits as usize, configs[0].block_size);
-
-    let mut stream = Stream::new(audio.rate as usize, channels, bits).map_err(|e| err(&e))?;
-    let mut buf = (FrameBuf::with_size(channels, block).map_err(|e| err(&e))?, Context::new(bits, channels));
-    for chunk in audio.samples.chunks(block * channels) {
-        buf.fill_interleaved(chunk).map_err(|e| err(&e))?;
-        let number = buf.1.current_frame_number().ok_or("encode: frame number")?;
-        // Raw samples plus room for the side channel's extra bit and the frame and subframe headers.
-        let limit = chunk.len() * (bits + 1) + 256;
-        let mut frame = None;
-        for config in &configs {
-            let candidate = flacenc::encode_fixed_size_frame(config, &buf.0, number, stream.stream_info()).map_err(|e| err(&e))?;
-            let fits = candidate.count_bits() <= limit;
-            frame = Some(candidate);
-            if fits {
-                break;
-            }
-        }
-        stream.add_frame(frame.ok_or("encode: no frame")?);
-    }
-    // A shorter last frame still belongs to a fixed-blocksize stream (min = max, as libFLAC writes it).
-    stream.stream_info_mut().set_block_sizes(block, block).map_err(|e| err(&e))?;
-    stream.stream_info_mut().set_md5_digest(&buf.1.md5_digest());
-    stream.stream_info_mut().set_total_samples(audio.frames());
-    Ok(stream)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use flac_codec::metadata::{VorbisComment, blocks_of};
 
     #[test]
     fn write_then_read_is_bit_identical_and_tagged() {
         let samples: Vec<i32> = (0..44_100 * 2).map(|i| ((i * 7919) % 16_000_000) - 8_000_000).collect();
         let audio = Audio { rate: 44_100, channels: 2, bits: 24, samples };
         let path = std::env::temp_dir().join(format!("mitschnitt-test-{}.flac", std::process::id()));
-        let tags = Tags { title: "Title".into(), artist: "Artist".into(), track_number: 7, cover: Some(Cover { mime: "image/jpeg", data: vec![0xFF, 0xD8, 1, 2] }), extra: vec![("ISRC".into(), "DEUM72401234".into())], ..Tags::default() };
+        // The smallest JPEG header that names its size.
+        let jpeg = vec![0xFF, 0xD8, 0xFF, 0xC0, 0, 17, 8, 0, 64, 0, 64, 3, 1, 0x11, 0, 2, 0x11, 1, 3, 0x11, 1];
+        let tags = Tags { title: "Title".into(), artist: "Ärtist".into(), track_number: 7, cover: Some(Cover { mime: "image/jpeg", data: jpeg }), extra: vec![("ISRC".into(), "DEUM72401234".into())], ..Tags::default() };
         write(&path, &audio, &tags).unwrap();
-        let back = read(&path).unwrap();
-        assert_eq!(back.samples, audio.samples);
-        let tag = metaflac::Tag::read_from_path(&path).unwrap();
-        assert_eq!(tag.get_vorbis("ARTIST").unwrap().next(), Some("Artist"));
-        assert_eq!(tag.get_vorbis("TRACKNUMBER").unwrap().next(), Some("7"));
-        assert_eq!(tag.get_vorbis("ISRC").unwrap().next(), Some("DEUM72401234"));
-        assert_eq!(tag.pictures().count(), 1);
+        assert_eq!(read(&path).unwrap().samples, audio.samples);
+        let comment = flac_codec::metadata::block::<_, VorbisComment>(&path).unwrap().unwrap();
+        assert_eq!([comment.get("ARTIST"), comment.get("TRACKNUMBER"), comment.get("ISRC")], [Some("Ärtist"), Some("7"), Some("DEUM72401234")]);
+        let covers: Vec<Picture> = blocks_of(&path).collect::<Result<_, _>>().unwrap();
+        assert_eq!(covers.iter().map(|p| (p.width, p.media_type.as_str())).collect::<Vec<_>>(), [(64, "image/jpeg")]);
         std::fs::remove_file(&path).unwrap();
     }
 
     #[test]
-    fn loud_24bit_audio_stays_compact_and_seekable() {
-        // Loud, slightly lowpassed noise: flacenc alone writes it at 2.6 times the raw size.
-        let mut x: u32 = 1;
-        let mut noise = || {
-            x ^= x << 13;
-            x ^= x >> 17;
-            x ^= x << 5;
-            (x >> 8) as f64 / (1u32 << 23) as f64 - 1.0
-        };
-        let mut v = 0.0;
-        let samples: Vec<i32> = (0..44_100 * 2)
-            .map(|i| {
-                v = 0.9 * v + 0.8 * noise() + 0.06 * (i as f64 * 0.015).sin();
-                (v.clamp(-1.0, 1.0) * 8_388_607.0) as i32
-            })
-            .collect();
-        let audio = Audio { rate: 44_100, channels: 2, bits: 24, samples };
-        let path = std::env::temp_dir().join(format!("mitschnitt-loud-{}.flac", std::process::id()));
-        write(&path, &audio, &Tags::default()).unwrap();
-        let bytes = std::fs::read(&path).unwrap();
+    fn sixteen_bit_audio_in_a_24_bit_file_costs_no_more_than_16_bit() {
+        // A recording with the player's fade-in is 24-bit, the rest 16-bit audio: flacenc stored the 8 empty bits.
+        let samples: Vec<i32> = (0..44_100 * 2).map(|i| (((i as f64 * 0.01).sin() * 20_000.0) as i32 + (i * 7919 % 64)) << 8).collect();
+        let path = std::env::temp_dir().join(format!("mitschnitt-wasted-{}.flac", std::process::id()));
+        write(&path, &Audio { rate: 44_100, channels: 2, bits: 24, samples: samples.clone() }, &Tags::default()).unwrap();
+        let wide = std::fs::metadata(&path).unwrap().len();
+        write(&path, &Audio { rate: 44_100, channels: 2, bits: 16, samples: samples.iter().map(|s| s >> 8).collect() }, &Tags::default()).unwrap();
+        let narrow = std::fs::metadata(&path).unwrap().len();
         std::fs::remove_file(&path).unwrap();
-        let raw = audio.samples.len() * 3;
-        assert!(bytes.len() <= raw + raw / 50, "{} bytes for {raw} bytes of PCM", bytes.len());
-        // STREAMINFO: equal min and max block size mark a fixed-blocksize stream (frame numbers, seekable).
-        assert_eq!(bytes[8..10], bytes[10..12]);
+        assert!(wide <= narrow + narrow / 50, "24-bit {wide} bytes, 16-bit {narrow} bytes");
     }
 }
