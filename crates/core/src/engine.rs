@@ -305,8 +305,6 @@ struct Session {
     passive: Passive,
     monitor: Option<Monitor>,
     queue: Option<QueueRun>,
-    /// A device change can glitch every stream for a moment.
-    layout: String,
     tx: Sender<Msg>,
     _capture: Capture,
 }
@@ -383,7 +381,6 @@ impl Session {
             passive: Passive::new(endpoint.sample_rate, CHANNELS as usize, GAIN),
             monitor,
             queue: None,
-            layout: devices::layout(),
             tx,
             _capture: capture,
         })
@@ -525,15 +522,6 @@ impl Session {
                                 self.restore.unmute_listen = true;
                                 self.restore.save();
                             }
-                        }
-                    }
-                    // Devices coming or going can cut the audio for a moment: a queue's song is played again.
-                    let layout = devices::layout();
-                    if layout != self.layout {
-                        self.layout = layout;
-                        if self.queue.is_some() {
-                            let events = self.passive.interrupt(Reason::DeviceChanged);
-                            self.dispatch(events, settings, notify);
                         }
                     }
                     let controls = sessions::app_volumes_by_name(self.profile.exe);

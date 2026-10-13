@@ -302,7 +302,7 @@ impl Runner {
                 let detail = reason.message().to_owned();
                 let outcome = match reason {
                     Reason::Paused | Reason::Seeked | Reason::TrackChanged | Reason::VolumeChanged => Outcome::TookOver { detail },
-                    Reason::Underrun | Reason::Glitch | Reason::Stopped | Reason::MidTrack | Reason::NoCleanStart | Reason::DeviceChanged => Outcome::Stalled { detail },
+                    Reason::Underrun | Reason::Glitch | Reason::Stopped | Reason::MidTrack | Reason::NoCleanStart => Outcome::Stalled { detail },
                 };
                 // After a take-over the player is the user's.
                 let pause = !matches!(outcome, Outcome::TookOver { .. });

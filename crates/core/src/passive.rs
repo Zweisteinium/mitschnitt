@@ -57,7 +57,6 @@ pub enum Reason {
     Stopped,
     MidTrack,
     NoCleanStart,
-    DeviceChanged,
 }
 
 impl Reason {
@@ -72,7 +71,6 @@ impl Reason {
             Reason::Stopped => "Stopped",
             Reason::MidTrack => "Joined mid-track",
             Reason::NoCleanStart => "No silence before the track (gapless) - exact start unknown",
-            Reason::DeviceChanged => "Audio devices changed during the track",
         }
     }
 }

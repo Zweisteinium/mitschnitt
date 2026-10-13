@@ -1,4 +1,4 @@
-pub use crate::platform::os::devices::{default_endpoint, hold_rate, layout, release_rate, render_endpoints};
+pub use crate::platform::os::devices::{default_endpoint, hold_rate, release_rate, render_endpoints};
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Endpoint {
