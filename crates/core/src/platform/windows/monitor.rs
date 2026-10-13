@@ -8,7 +8,6 @@ use std::collections::VecDeque;
 use std::ptr::addr_of;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
-use std::thread::JoinHandle;
 use std::time::Duration;
 
 use windows::Win32::Foundation::{CloseHandle, E_FAIL, HANDLE};
@@ -35,7 +34,6 @@ pub struct Monitor {
     volume: Arc<AtomicU32>,
     state: Arc<MonitorState>,
     stop: Arc<AtomicBool>,
-    thread: Option<JoinHandle<()>>,
     channels: usize,
     max_samples: usize,
     target_samples: usize,
@@ -49,31 +47,32 @@ impl Monitor {
         let stop = Arc::new(AtomicBool::new(false));
         let state = Arc::new(MonitorState::default());
         let (q, v, s, st) = (queue.clone(), volume.clone(), stop.clone(), state.clone());
-        let thread = std::thread::Builder::new()
+        let _ = std::thread::Builder::new()
             .name("monitor".into())
             .spawn(move || {
                 com_init();
                 let mut home: Option<String> = None;
                 while !s.load(Ordering::Relaxed) {
+                    if home.is_some() {
+                        settle(&s);
+                    }
                     if let Ok(out) = Output::open(rate, channels) {
                         if st.rehome.swap(false, Ordering::Relaxed) || home.is_none() {
                             home = Some(out.device.clone());
                         }
                         st.muted.store(home.as_deref() != Some(out.device.as_str()), Ordering::Relaxed);
                         let _ = out.run(&q, &v, 1.0 / gain, &s, &st);
-                        continue; // the default device changed: reopen right away
+                        continue;
                     }
                     std::thread::sleep(Duration::from_millis(500));
                 }
-            })
-            .ok();
+            });
         let per_ms = rate as usize * channels as usize / 1000;
         Some(Monitor {
             queue,
             volume,
             state,
             stop,
-            thread,
             channels: channels as usize,
             max_samples: MAX_QUEUE_MS * per_ms,
             target_samples: TARGET_QUEUE_MS * per_ms,
@@ -103,11 +102,24 @@ impl Monitor {
     }
 }
 
+/// Not joined: a thread caught in the audio stack's deadlock (see [`settle`]) would hang the engine's stop.
 impl Drop for Monitor {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
-        if let Some(t) = self.thread.take() {
-            let _ = t.join();
+    }
+}
+
+/// Bluetooth outputs appear and vanish again while (dis)connecting. Opening one that vanished during
+/// `GetService` deadlocked inside Windows' audio stack (seen in a dump after switching Bluetooth on): wait until the
+/// default output stayed the same for a second.
+fn settle(stop: &AtomicBool) {
+    let mut last = default_id().ok();
+    let mut since = std::time::Instant::now();
+    while since.elapsed() < Duration::from_secs(1) && !stop.load(Ordering::Relaxed) {
+        std::thread::sleep(Duration::from_millis(100));
+        let now = default_id().ok();
+        if now != last {
+            (last, since) = (now, std::time::Instant::now());
         }
     }
 }
