@@ -154,7 +154,7 @@
     color: var(--cyan);
   }
 
-  @media (max-width: 860px) {
+  @media (max-width: 840px) {
     .grid {
       grid-template-columns: 1fr;
     }

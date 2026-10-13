@@ -79,7 +79,7 @@
           <input type="checkbox" checked={s.protect_media_keys} onchange={(e) => set("protect_media_keys", e.currentTarget.checked)} />
           <span>
             <span class="title">Protect recordings from media keys</span>
-            <span class="note muted">While a track is recording, play/pause, stop, next and previous from keyboards, headsets and earbuds (including in-ear detection) are ignored. Only Spotify's own pause button interrupts it.</span>
+            <span class="note muted">While recording, media keys, headset buttons and earbud in-ear detection are ignored. Only Spotify's own pause button interrupts.</span>
           </span>
         </label>
       {/if}
@@ -87,21 +87,21 @@
         <input type="checkbox" checked={s.skip_existing} onchange={(e) => set("skip_existing", e.currentTarget.checked)} />
         <span>
           <span class="title">Skip tracks you already have</span>
-          <span class="note muted">Don't save a track again when a file with its name exists in the output folder (any format).</span>
+          <span class="note muted">Don't record a track again when its file already exists (any format).</span>
         </span>
       </label>
       <label class="toggle">
         <input type="checkbox" checked={s.keep_flagged} onchange={(e) => set("keep_flagged", e.currentTarget.checked)} />
         <span>
           <span class="title">Keep flagged files</span>
-          <span class="note muted">Keep recordings the check marks as altered or corrupt (they are listed either way).</span>
+          <span class="note muted">Keep recordings marked as altered or corrupt. They are listed either way.</span>
         </span>
       </label>
       <label class="toggle">
         <input type="checkbox" checked={s.keep_echolot_copies} onchange={(e) => set("keep_echolot_copies", e.currentTarget.checked)} />
         <span>
           <span class="title">Keep a copy of Echolot recordings</span>
-          <span class="note muted">After Echolot took a recording, keep it in the output folder too. Off: it is deleted once Echolot has it. Recordings Echolot rejects are kept in "Not taken" either way.</span>
+          <span class="note muted">Also keep what Echolot took in the output folder. Rejected ones always stay in "Not taken".</span>
         </span>
       </label>
       <p class="muted rate">Changes apply the next time you start listening{session.platform?.monitor ? "; the monitor volume applies immediately" : ""}.</p>
@@ -225,7 +225,7 @@
     font-weight: 600;
   }
 
-  @media (max-width: 860px) {
+  @media (max-width: 840px) {
     .grid {
       grid-template-columns: 1fr;
     }

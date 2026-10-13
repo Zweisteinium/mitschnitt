@@ -73,9 +73,9 @@
 
 <style>
   .shell {
-    max-width: 1040px;
+    max-width: 1440px;
     margin: 0 auto;
-    padding: 18px 24px 40px;
+    padding: 18px clamp(16px, 3vw, 40px) 40px;
   }
 
   header {
@@ -181,7 +181,7 @@
 
   .listen {
     display: grid;
-    grid-template-columns: minmax(270px, 320px) 1fr;
+    grid-template-columns: clamp(380px, 36%, 440px) minmax(0, 1fr);
     gap: 16px;
     align-items: start;
   }
@@ -212,7 +212,7 @@
     line-height: 1;
   }
 
-  @media (max-width: 820px) {
+  @media (max-width: 840px) {
     .listen {
       grid-template-columns: 1fr;
     }

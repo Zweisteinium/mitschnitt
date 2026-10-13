@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { num } from "../lib/api";
   import { echolot } from "../lib/echolot.svelte";
   import { session } from "../lib/session.svelte";
   import Panel from "./Panel.svelte";
@@ -8,9 +9,9 @@
   {#if session.source}
     <div class="active">
       <div class="name">{session.source.app}</div>
-      <div class="muted">{session.source.device}</div>
+      <div class="device muted">{session.source.device}</div>
       <div class="tags mono">
-        <span class:ok={session.source.rate === 44100} class:warn={session.source.rate !== 44100}>{(session.source.rate / 1000).toFixed(1)} kHz</span>
+        <span class:ok={session.source.rate === 44100} class:warn={session.source.rate !== 44100}>{num(session.source.rate / 1000)} kHz</span>
         {#if session.platform}<span>gain {session.platform.gain * 100} %</span>{/if}
         {#if session.platform?.monitor}<span>{session.settings?.monitor ? "monitoring" : "silent"}</span>{/if}
       </div>
@@ -113,17 +114,27 @@
     font-size: 18px;
   }
 
+  /* Long device names break into balanced lines instead of leaving one word behind. */
+  .device {
+    text-wrap: balance;
+  }
+
+  /* Two or three facts share the card's width in equal cells. */
   .tags {
-    display: flex;
+    display: grid;
+    grid-auto-columns: 1fr;
+    grid-auto-flow: column;
     gap: 6px;
-    margin-top: 8px;
+    margin-top: 10px;
     font-size: 11px;
+    text-align: center;
   }
 
   .tags span {
-    padding: 1px 7px;
+    padding: 2px 6px;
     border: 1px solid var(--faint);
     color: var(--muted);
+    white-space: nowrap;
   }
 
   .tags .ok {

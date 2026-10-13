@@ -13,7 +13,7 @@
   /** OK: fine, but not proven to the last sample (the player's fade-in, or no proof). */
   function quality(verdict: Severity, master: Master, exact: boolean, faded: boolean): { tone: Tone; tag: string; text: string } {
     if (verdict === "corrupt") return { tone: "bad", tag: "bad", text: "Corrupt" };
-    if (faded) return { tone: "ok", tag: "fine", text: "10 ms player fade-in at the start · rest bit-exact" };
+    if (faded) return { tone: "ok", tag: "fine", text: "10 ms fade-in · rest bit-exact" };
     if (verdict === "altered") return { tone: "warn", tag: "alt", text: "Not fully original" };
     const bits = master === "bit16_exact" ? "16-bit master" : "24-bit master";
     return exact ? { tone: "ok", tag: "exact", text: `Bit-exact · ${bits}` } : { tone: "ok", tag: "fine", text: `Clean · ${bits}` };
@@ -169,11 +169,13 @@
   }
 
   .detail {
+    display: flex;
+    flex-wrap: wrap;
+    column-gap: 10px;
     font-size: 12px;
   }
 
   .facts {
-    margin-left: 10px;
     font-size: 11px;
     color: var(--muted);
     white-space: nowrap;

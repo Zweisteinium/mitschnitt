@@ -102,8 +102,13 @@ export const api = {
 };
 
 /** File size as Explorer counts it (1 MB = 1024 KB). */
+/** One decimal at most, none when it is 0: 24 MB, 22.8 MB, 44.1 kHz, 48 kHz. */
+export function num(x: number): string {
+  return String(Math.round(x * 10) / 10);
+}
+
 export function megabytes(bytes: number): string {
-  return `${(bytes / 1048576).toFixed(1)} MB`;
+  return `${num(bytes / 1048576)} MB`;
 }
 
 export function clock(ms: number): string {

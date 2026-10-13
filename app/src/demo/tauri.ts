@@ -64,12 +64,16 @@ const session: EcholotSession = {
   seconds_total: 2_820,
   seconds_done: 880,
 };
+/** `?linux`: the Linux look, with a long PipeWire device name and Spotify busy for Echolot. */
+const linux = new URLSearchParams(location.search).has("linux");
+const listening = { app: "Spotify", device: linux ? "Starship/Matisse HD Audio Controller Analog Stereo" : "CABLE Input (VB-Audio Virtual Cable)", rate: 44_100 };
+
 let snapshot: RecorderSnapshot = {
   connection: "connected",
   user: "anna",
   host: "echolot.example.org",
   device: "STUDIO-PC",
-  state: "recording",
+  state: linux ? "busy" : "recording",
   detail: "",
   session,
   current: rick,
@@ -112,7 +116,7 @@ const earlierSongs: [number, Track, Saved, string, string][] = [
 ];
 
 function start() {
-  emit("listening", { app: "Spotify", device: "CABLE Input (VB-Audio Virtual Cable)", rate: 44_100 });
+  emit("listening", listening);
   for (const [ago, track, saved, result, detail] of earlierSongs) {
     earlier(ago, () => {
       const kept = saved.verdict === "info" || saved.faded;
@@ -150,7 +154,7 @@ function setSession(state: EcholotSession["state"]) {
 
 const commands: Record<string, (args: Record<string, unknown>) => unknown> = {
   sources: () => [{ id: "spotify", name: "Spotify", running: true, playing: true, title: rick.title, artist: rick.artist }],
-  platform: () => ({ os: "windows", monitor: true, media_keys: true, gain: 0.5 }),
+  platform: () => (linux ? { os: "linux", monitor: false, media_keys: false, gain: 1 } : { os: "windows", monitor: true, media_keys: true, gain: 0.5 }),
   get_settings: () => settings,
   save_settings: (a) => Object.assign(settings, a.settings),
   health: () => checks,
@@ -158,7 +162,7 @@ const commands: Record<string, (args: Record<string, unknown>) => unknown> = {
   echolot_state: () => ({ snapshot, url: settings.echolot_url, pairing: false }),
   echolot_session: (a) => setSession(a.action === "pause" ? "paused" : a.action === "stop" ? "stopped" : "running"),
   set_monitor_volume: (a) => emit("update", { kind: "monitor_volume", volume: a.volume }),
-  start: () => ({ app: "Spotify", device: "CABLE Input (VB-Audio Virtual Cable)", rate: 44_100 }),
+  start: () => listening,
   stop: () => emit("update", { kind: "stopped", error: null }),
 };
 

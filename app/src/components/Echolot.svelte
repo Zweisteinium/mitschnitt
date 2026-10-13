@@ -23,19 +23,19 @@
 
   const stateText: Record<string, string> = {
     idle: "Ready",
-    busy: "Waiting - Spotify is playing (here or on another device)",
-    recording: "Recording for Echolot",
-    setup: "Waiting - fix Setup",
+    busy: "Spotify is busy",
+    recording: "Recording",
+    setup: "Fix Setup",
   };
   const pauseText: Record<string, string> = {
     took_over: "You took over Spotify",
     by_user: "Paused",
-    setup: "Paused - fix Setup",
+    setup: "Paused – fix Setup",
   };
 </script>
 
 <Panel label="Echolot" index="04">
-  <div class="who small">
+  <div class="who small" title={s.state === "busy" ? "Waiting while Spotify plays something else, here or on another device" : undefined}>
     <span class="dot" class:offline={s.connection === "offline"}></span>
     {s.connection === "offline" ? "Offline" : "Connected"}{#if s.state}<span class="muted"> · {stateText[s.state] ?? s.state}</span>{/if}
   </div>
@@ -70,10 +70,10 @@
           <button class="btn danger" onclick={() => echolot.session("stop")} disabled={echolot.busy}>End session</button>
         {/if}
       </div>
-      {#if session.state === "running" && busy}<div class="muted small">The current song finishes and is uploaded first.</div>{/if}
+      {#if session.state === "running" && busy}<div class="muted small">Takes effect after this song.</div>{/if}
     </div>
   {:else if session}
-    <div class="muted small last">Last session: {session.title} - {session.state}, {session.filed} added of {session.total}</div>
+    <div class="muted small last">Last session: {session.title} – {session.state}, {session.filed} added of {session.total}</div>
   {/if}
   {#if s.uploads > 0}<div class="muted small">Uploading {s.uploads}…</div>{/if}
 
@@ -96,6 +96,7 @@
     display: flex;
     align-items: center;
     gap: 8px;
+    white-space: nowrap;
   }
 
   .account {
