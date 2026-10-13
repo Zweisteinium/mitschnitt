@@ -64,6 +64,11 @@ pub fn find(profile: &Profile) -> Result<Option<Session>, String> {
     player_of(profile, &players()?).map(Session::open).transpose()
 }
 
+fn call<B: serde::Serialize + zbus::zvariant::DynamicType>(player: &str, method: &str, body: &B) -> Result<(), String> {
+    let player_iface = Some("org.mpris.MediaPlayer2.Player");
+    super::bus()?.call_method(Some(player), "/org/mpris/MediaPlayer2", player_iface, method, body).map(|_| ()).map_err(|e| e.to_string())
+}
+
 pub struct Watcher {
     session: Session,
     track: Option<Track>,
@@ -94,24 +99,14 @@ impl Watcher {
     }
 
     pub fn control(&self, control: Control) -> Result<(), String> {
-        let destination = self.session.0.inner().destination().to_string();
-        let player = |method: &str, args: Option<i64>| {
-            let bus = super::bus()?;
-            let (path, iface) = ("/org/mpris/MediaPlayer2", Some("org.mpris.MediaPlayer2.Player"));
-            match args {
-                Some(offset) => bus.call_method(Some(destination.as_str()), path, iface, method, &offset),
-                None => bus.call_method(Some(destination.as_str()), path, iface, method, &()),
-            }
-            .map(|_| ())
-            .map_err(|e| e.to_string())
-        };
+        let player = self.session.0.inner().destination().as_str();
         match control {
-            Control::Play => player("Play", None),
-            Control::Pause => player("Pause", None),
-            Control::Next => player("Next", None),
-            Control::Previous => player("Previous", None),
+            Control::Play => call(player, "Play", &()),
+            Control::Pause => call(player, "Pause", &()),
+            Control::Next => call(player, "Next", &()),
+            Control::Previous => call(player, "Previous", &()),
             // MPRIS clamps a seek before the start to 0.
-            Control::Restart => player("Seek", Some(-1_000_000_000_000)),
+            Control::Restart => call(player, "Seek", &-1_000_000_000_000_i64),
         }
     }
 

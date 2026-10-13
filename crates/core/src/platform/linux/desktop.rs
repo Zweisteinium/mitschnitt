@@ -25,7 +25,8 @@ pub fn open_link(link: &str) -> Result<(), String> {
     xdg_open(link.as_ref())
 }
 
-/// Open a link for an app that runs in the background (focus handling is Windows only for now).
+/// Open a link for an app that runs in the background. Not over MPRIS: Spotify's `OpenUri` starts the song, then
+/// restarts it from 0:00 about 0.3 s later (measured with 1.2.96), which puts the start into the recording twice.
 pub fn open_link_in_background(link: &str, _exe: &str) -> Result<(), String> {
     open_link(link)
 }

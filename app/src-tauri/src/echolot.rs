@@ -113,9 +113,9 @@ pub fn open_link(handle: &AppHandle, link: &str) {
 
 /// `state` is not checked for a pasted code.
 fn claim(handle: &AppHandle, code: &str, state: Option<&str>) -> Result<(), String> {
-    let pairing = lock(&handle.state::<Echolot>().pairing)?.clone().ok_or("No sign-in is waiting - press Connect again.")?;
+    let pairing = lock(&handle.state::<Echolot>().pairing)?.clone().ok_or("No sign-in is waiting – press Connect again.")?;
     if state.is_some_and(|s| s != pairing.state) {
-        return Err("That link belongs to another sign-in - press Connect again.".into());
+        return Err("That link belongs to another sign-in – press Connect again.".into());
     }
     let connected = pairing.claim(code, &echolot::pc_name()).map_err(|e| e.to_string())?;
     let saved = store::Saved { base: pairing.base.clone(), user: connected.user, recorder: connected.recorder };

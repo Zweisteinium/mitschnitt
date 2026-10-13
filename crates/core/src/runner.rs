@@ -269,7 +269,7 @@ impl Runner {
                 vec![action]
             }
             None => {
-                let detail = format!("\"{} - {}\" played instead, also after going back and forward", wrong.artist, wrong.title);
+                let detail = format!("\"{} – {}\" played instead, also after going back and forward", wrong.artist, wrong.title);
                 self.finish(job, Outcome::WrongSong { detail }, now, true)
             }
         }

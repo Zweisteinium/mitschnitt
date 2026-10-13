@@ -65,12 +65,12 @@ impl Reason {
             Reason::Paused => "Paused",
             Reason::TrackChanged => "Track changed before its end",
             Reason::Seeked => "Seeked within the track",
-            Reason::Underrun => "The player stalled (buffering) - dropout",
+            Reason::Underrun => "The player stalled (buffering) – dropout",
             Reason::Glitch => "Capture glitch",
             Reason::VolumeChanged => "App volume changed",
             Reason::Stopped => "Stopped",
             Reason::MidTrack => "Joined mid-track",
-            Reason::NoCleanStart => "No silence before the track (gapless) - exact start unknown",
+            Reason::NoCleanStart => "No silence before the track (gapless) – exact start unknown",
         }
     }
 }

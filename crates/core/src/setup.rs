@@ -46,26 +46,30 @@ pub(crate) fn spotify_checks() -> Vec<Check> {
     });
     out.push(match value("audio.normalize_v2").as_deref() {
         Some("false") => check("normalize", "Normalize volume", State::Ok, "Off", None),
-        _ => check("normalize", "Normalize volume", State::Bad, "Turn off \"Normalize volume\" - it changes the level of every track.", None),
+        _ => check("normalize", "Normalize volume", State::Bad, "Turn off \"Normalize volume\" – it changes the level of every track.", None),
     });
     if let Some(device) = value("audio.device_selected").and_then(|v| serde_json::from_str::<String>(&v).ok()) {
         let exclusive = serde_json::from_str::<serde_json::Value>(&device).ok().and_then(|d| d["excl"].as_bool()).unwrap_or(false);
         out.push(if exclusive {
-            check("exclusive", "Exclusive mode", State::Bad, "On - Spotify bypasses the Windows mixer, nothing can be captured. Turn it off.", None)
+            check("exclusive", "Exclusive mode", State::Bad, "On – Spotify bypasses the Windows mixer, nothing can be captured. Turn it off.", None)
         } else {
             check("exclusive", "Exclusive mode", State::Ok, "Off", None)
         });
     }
     // Spotify only writes settings that differ from their default (off).
     out.push(match value("audio.equalizer_v2").as_deref() {
-        Some("true") => check("equalizer", "Equalizer", State::Bad, "On - it changes every sample. In Spotify: Settings → Playback → Equalizer.", None),
+        Some("true") => check("equalizer", "Equalizer", State::Bad, "On – it changes every sample. In Spotify: Settings → Playback → Equalizer.", None),
         _ => check("equalizer", "Equalizer", State::Ok, "Off", None),
     });
     out.push(match value("audio.crossfade_v2").as_deref() {
-        Some("true") => check("crossfade", "Crossfade", State::Bad, "On - track ends and starts get mixed. In Spotify: Settings → Playback → Crossfade.", None),
+        Some("true") => check("crossfade", "Crossfade", State::Bad, "On – track ends and starts get mixed. In Spotify: Settings → Playback → Crossfade.", None),
         _ => check("crossfade", "Crossfade", State::Ok, "Off", None),
     });
-    out.push(check("automix", "Automix", State::Check, "Can't be read from Spotify - make sure Automix is off. Mitschnitt also detects altered audio in every file.", None));
+    // On by default: only "off" is written (measured with 1.2.96).
+    out.push(match value("audio.automix").as_deref() {
+        Some("false") => check("automix", "Automix", State::Ok, "Off", None),
+        _ => check("automix", "Automix", State::Warn, "On – it can blend song transitions. In Spotify: Settings → Playback → Automix.", None),
+    });
     out
 }
 

@@ -157,6 +157,9 @@ fn run(
     let _ = ready.send(Ok(()));
     conn.mainloop.run();
     let _ = stream.disconnect();
+    // The node listeners hold `links` and `conn`: without breaking that cycle the connection outlives the thread,
+    // and the server keeps a dead capture node that stalls the app's playback.
+    links.borrow_mut().watched.clear();
     Ok(())
 }
 
@@ -291,6 +294,8 @@ mod tests {
         let _ = player.wait();
         drop((capture, sink));
         let _ = std::fs::remove_file(&wav);
+        let ours = format!("mitschnitt-capture-{}", std::process::id());
+        assert!(Conn::new().unwrap().objects().iter().all(|o| o.get("node.name") != Some(ours.as_str())), "capture node left behind");
 
         let got = got.lock().unwrap();
         let scaled = |s: &i16| *s as f32 / 32768.0;

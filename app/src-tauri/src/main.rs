@@ -157,8 +157,7 @@ fn main() {
         .manage(App { engine: Mutex::new(None), settings: Mutex::new(settings), for_queue: AtomicBool::new(false) })
         .manage(echolot::Echolot::default())
         .setup(|app| {
-            // Portable exe and dev builds register the scheme themselves (the installer does it too).
-            #[cfg(windows)]
+            // Portable exe, AppImage and dev builds register the scheme themselves (the installer does it too).
             let _ = app.deep_link().register_all();
             let handle = app.handle().clone();
             app.deep_link().on_open_url(move |event| {

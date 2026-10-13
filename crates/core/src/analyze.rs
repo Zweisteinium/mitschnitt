@@ -84,7 +84,7 @@ pub fn analyze_with(a: &Audio, exact_source: bool) -> Report {
 
     // Lossy codecs cut everything above ~20 kHz.
     if !exact_source && let Some(ratio) = high_band_ratio(a) && ratio < 1e-10 {
-        issues.push(issue(Severity::Info, format!("no content above 20 kHz ({:.0} dB) - possibly from a lossy source", 10.0 * ratio.max(1e-30).log10())));
+        issues.push(issue(Severity::Info, format!("no content above 20 kHz ({:.0} dB) – possibly from a lossy source", 10.0 * ratio.max(1e-30).log10())));
     }
 
     let off: Vec<usize> = (0..n).filter(|&i| !a.frame_on_grid16(i)).collect();

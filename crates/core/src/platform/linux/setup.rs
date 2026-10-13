@@ -22,7 +22,7 @@ pub fn health(profile: &Profile) -> Vec<Check> {
 
     match (&app, app.as_ref().and_then(|a| a.sink(&graph))) {
         (None, _) => out.push(check("route", "App output", State::Check, format!("{name} is not running"), None)),
-        (Some(_), _) if streams.is_empty() => out.push(check("route", "App output", State::Check, format!("{name} has no audio stream yet - it opens one when playback starts"), None)),
+        (Some(_), _) if streams.is_empty() => out.push(check("route", "App output", State::Check, format!("{name} opens its audio stream once it plays"), None)),
         (Some(_), None) => out.push(check("route", "App output", State::Warn, format!("{name}'s stream is not connected to an output"), None)),
         (Some(_), Some(sink)) => {
             let device = describe(&conn, &graph, sink);
@@ -34,7 +34,7 @@ pub fn health(profile: &Profile) -> Vec<Check> {
     let volumes: Vec<f32> = streams.iter().filter_map(|s| conn.volume(*s).ok()).flat_map(|v| v.effective()).collect();
     let percent = |v: f32| format!("{:.0} %", v * 100.0);
     if let Some(off) = volumes.iter().find(|v| **v != GAIN) {
-        let detail = format!("{} - Mitschnitt holds it at exactly {} while listening; use the system volume for loudness.", percent(*off), percent(GAIN));
+        let detail = format!("{} – held at {} while listening, use the system volume instead", percent(*off), percent(GAIN));
         out.push(check("volume", "App volume", State::Warn, detail, None));
     } else if !volumes.is_empty() {
         out.push(check("volume", "App volume", State::Ok, percent(GAIN), None));
@@ -42,7 +42,7 @@ pub fn health(profile: &Profile) -> Vec<Check> {
 
     out.push(match media::find(profile) {
         Ok(Some(_)) => check("media", "Media session", State::Ok, format!("{name} reports track and position"), None),
-        Ok(None) => check("media", "Media session", State::Check, format!("No media session of {name} - start it first"), None),
+        Ok(None) => check("media", "Media session", State::Check, format!("{name} shows no media session – start it first"), None),
         Err(e) => check("media", "Media session", State::Bad, e, None),
     });
     if profile.id == "spotify" {
@@ -58,7 +58,7 @@ fn rate_check(profile: &Profile, app_rate: Option<u32>) -> Check {
         Some(rate) if rate != profile.rate => {
             check("rate", "Sample rate", State::Bad, format!("{} delivers {} kHz instead of {} kHz", profile.name, khz(rate), khz(profile.rate)), None)
         }
-        _ => check("rate", "Sample rate", State::Ok, format!("{} kHz - PipeWire runs at it while listening", khz(profile.rate)), None),
+        _ => check("rate", "Sample rate", State::Ok, format!("{} kHz while listening", khz(profile.rate)), None),
     }
 }
 

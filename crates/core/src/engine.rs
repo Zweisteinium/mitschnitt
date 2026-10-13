@@ -315,7 +315,7 @@ impl Session {
         let profile = &config.profile;
         let session = media::find(profile).map_err(|e| e.to_string())?;
         if session.is_none() && !queued {
-            return Err(format!("{} shows no playback yet - start playback in the app first.", profile.name));
+            return Err(format!("{} shows no playback yet – start playback in the app first.", profile.name));
         }
         let procs = sessions::processes();
         let root = sessions::find_app(profile.exe, &procs).ok_or_else(|| format!("{} is not running.", profile.name))?;
@@ -501,9 +501,10 @@ impl Session {
                         self.dispatch(events, settings, notify);
                         self.drive(now, &media);
                     }
-                    Some(Err(e)) => {
-                        error = Some(format!("media session lost: {e}"));
-                        break;
+                    // Gone for a moment, or with the app (on Linux its session goes first; the check below says so).
+                    Some(Err(_)) => {
+                        self.watcher = None;
+                        self.find_at = now;
                     }
                     None => self.drive(now, &crate::passive::Media::default()),
                 }

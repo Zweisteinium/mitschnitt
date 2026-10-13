@@ -58,7 +58,7 @@ For lossless recordings you need Spotify Premium with the streaming quality set 
 | Recording, live check, labels, formats and tags | ✓ | ✓ |
 | Auto setup | ✓ | Spotify settings only |
 | Media key protection | ✓ | – |
-| Song lists with Echolot | ✓ | – |
+| Song lists with Echolot | ✓ | ✓ |
 
 ## How it works
 
@@ -97,7 +97,8 @@ and it becomes a recorder for the songs Echolot is still missing. Echolot hands 
 starts it in Spotify, checks that the right song plays, records it and uploads it. Only EXACT and FINE recordings
 go up. A damaged one is played again, a lossy one is left out.
 
-You can keep using your PC meanwhile. When Spotify grabs the focus for a new song, Mitschnitt gives it back.
+You can keep using your PC meanwhile. On Windows, when Spotify grabs the focus for a new song, Mitschnitt gives it
+back. On Linux the desktop decides whether Spotify may come to the front.
 
 ## Coming from Spytify?
 

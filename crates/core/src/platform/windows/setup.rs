@@ -42,9 +42,9 @@ pub fn health(profile: &Profile) -> Vec<Check> {
     if let Some(cable) = cable {
         let khz = profile.rate as f64 / 1000.0;
         out.push(if cable.sample_rate == profile.rate {
-            check("cable_rate", "Cable sample rate", State::Ok, format!("{khz} kHz - {}'s rate, no resampling", profile.name), None)
+            check("cable_rate", "Cable sample rate", State::Ok, format!("{khz} kHz – {}'s rate, no resampling", profile.name), None)
         } else {
-            check("cable_rate", "Cable sample rate", State::Bad, format!("{} Hz - {} ({khz} kHz) would be resampled", cable.sample_rate, profile.name), Some("cable_rate"))
+            check("cable_rate", "Cable sample rate", State::Bad, format!("{} Hz – {} ({khz} kHz) would be resampled", cable.sample_rate, profile.name), Some("cable_rate"))
         });
     }
 
@@ -57,10 +57,10 @@ pub fn health(profile: &Profile) -> Vec<Check> {
                 "route",
                 "App output",
                 State::Bad,
-                format!("{} plays on \"{name}\" (effects and resampling alter it). Route it to the cable - or by hand: {}", profile.name, profile.output_hint),
+                format!("{} plays on \"{name}\" (effects and resampling alter it). Route it to the cable – or by hand: {}", profile.name, profile.output_hint),
                 cable.map(|_| "route_cable"),
             ),
-            None => check("route", "App output", State::Check, format!("{} has no audio stream yet - play something once", profile.name), None),
+            None => check("route", "App output", State::Check, format!("{} has no audio stream yet – play something once", profile.name), None),
         });
     } else {
         out.push(check("route", "App output", State::Check, format!("{} is not running", profile.name), None));
@@ -70,7 +70,7 @@ pub fn health(profile: &Profile) -> Vec<Check> {
         out.extend(spotify_checks());
     }
     if !sessions::listen_volumes().is_empty() {
-        out.push(check("listen", "\"Listen to this device\"", State::Ok, "Active - Mitschnitt mutes it while listening and monitors itself", None));
+        out.push(check("listen", "\"Listen to this device\"", State::Ok, "Active – Mitschnitt mutes it while listening and monitors itself", None));
     }
     out
 }
@@ -170,7 +170,7 @@ fn install_cable(rate: u32) -> Result<String, String> {
     if render_endpoints().unwrap_or_default().iter().any(|e| e.name.starts_with(CABLE)) {
         set_cable_rate(rate).map(|m| format!("VB-Cable installed. {m}"))
     } else {
-        Err(format!("the installer finished (code {code}) but no cable is visible yet - a restart of Windows may be needed"))
+        Err(format!("the installer finished (code {code}) but no cable is visible yet – a restart of Windows may be needed"))
     }
 }
 

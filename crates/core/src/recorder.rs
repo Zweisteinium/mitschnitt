@@ -25,7 +25,7 @@ pub const NOT_TAKEN_DIR: &str = "Not taken";
 const LONG_POLL_S: u32 = 25;
 /// Spotify Connect may play on another device while the app here shows "playing".
 const BUSY: &str = "Spotify is playing (here or on another device)";
-const NO_SOUND: &str = "no sound from Spotify on this PC - is it playing on another device (Spotify Connect)?";
+const NO_SOUND: &str = "no sound from Spotify on this PC – is it playing on another device (Spotify Connect)?";
 const HEARTBEAT: Duration = Duration::from_secs(10);
 const SETUP_CHECK: Duration = Duration::from_secs(60);
 const PLAYER_START: Duration = Duration::from_secs(30);
