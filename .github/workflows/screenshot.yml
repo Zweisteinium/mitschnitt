@@ -1,0 +1,36 @@
+name: Screenshot
+
+# The README image, rendered from the demo UI for every release.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  screenshot:
+    # Windows: the app's fonts (Segoe UI, Cascadia Mono) and Edge are there.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - run: npm ci
+        working-directory: app
+      - run: npm run screenshot
+        working-directory: app
+      - name: Commit if changed
+        shell: bash
+        run: |
+          git diff --quiet docs/screenshot.png && exit 0
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Updated screenshot" docs/screenshot.png
+          git push

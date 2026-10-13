@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "vite",
     "demo": "vite --mode demo",
+    "screenshot": "node scripts/screenshot.mjs",
     "build": "vite build",
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "tauri": "tauri"

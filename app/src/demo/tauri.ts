@@ -49,20 +49,20 @@ const checks: Check[] = [
   { id: "autoplay", title: "Autoplay off", state: "ok", detail: "Nothing starts by itself after a song", fix: null },
 ];
 
-// What Echolot sent so far: 9 of 24 songs answered.
+// What Echolot sent so far: 4 of 12 songs answered.
 const session: EcholotSession = {
-  title: "80s Classics · Not lossless",
+  title: "Internet Legends · Not lossless",
   state: "running",
   reason: "",
-  total: 24,
-  done: 9,
-  filed: 7,
-  not_better: 1,
+  total: 12,
+  done: 4,
+  filed: 2,
+  not_better: 0,
   skipped: 1,
-  failed: 0,
-  minutes_left: 59,
-  seconds_total: 5_712,
-  seconds_done: 2_131,
+  failed: 1,
+  minutes_left: 31,
+  seconds_total: 2_820,
+  seconds_done: 880,
 };
 let snapshot: RecorderSnapshot = {
   connection: "connected",
@@ -101,46 +101,42 @@ const history: HistoryRecord[] = [
   record(6, "New Order", "Blue Monday", [7, 29], 16, "filed"),
 ];
 
-// This run so far, oldest first: [minutes ago, track, Echolot's answer].
-const earlierSongs: [number, Track, string][] = [
-  [18, { title: "Take On Me", artist: "a-ha", album: "Hunting High and Low", duration_ms: 225_280 }, "filed"],
-  [14, { title: "Kids in America", artist: "Kim Wilde", album: "Kim Wilde", duration_ms: 206_000 }, "filed"],
-  [10, { title: "Don't You (Forget About Me)", artist: "Simple Minds", album: "Don't You (Forget About Me)", duration_ms: 261_000 }, "not_better"],
-  [5, { title: "Smalltown Boy", artist: "Bronski Beat", album: "The Age of Consent", duration_ms: 302_000 }, "filed"],
+// This run so far, oldest first: one of each label. Rick's first try had a dropout, so he plays again now.
+type Saved = { verdict: "info" | "altered" | "corrupt"; master: "bit16_exact" | "bit16_partly" | "bit24"; exact: boolean; faded: boolean; issues: string[] };
+const exact: Saved = { verdict: "info", master: "bit16_exact", exact: true, faded: false, issues: [] };
+const earlierSongs: [number, Track, Saved, string, string][] = [
+  [16, { title: "Sandstorm", artist: "Darude", album: "Before the Storm", duration_ms: 225_000 }, exact, "filed", "added to the library"],
+  [12, { title: "Castle in the Sky", artist: "DJ Satomi", album: "Castle in the Sky", duration_ms: 201_000 }, { ...exact, verdict: "altered", master: "bit16_partly", exact: false, faded: true }, "filed", "added to the library"],
+  [8, { title: "MAYDAY", artist: "TheFatRat", album: "MAYDAY", duration_ms: 221_000 }, { ...exact, verdict: "altered", master: "bit16_partly", exact: false, issues: ["not original in 41 % of the audio: a lossy stream"] }, "lossy_only", "no lossless stream"],
+  [4, rick, { ...exact, verdict: "corrupt", issues: ["dropout 1:12.405 - 1:12.437 (31.5 ms of digital silence inside loud audio)"] }, "stalled", "damaged, played again"],
 ];
-
-const resultDetail: Record<string, string> = { filed: "added to the library", not_better: "the library copy is as good" };
 
 function start() {
   emit("listening", { app: "Spotify", device: "CABLE Input (VB-Audio Virtual Cable)", rate: 44_100 });
-  for (const [ago, track, result] of earlierSongs) {
+  for (const [ago, track, saved, result, detail] of earlierSongs) {
     earlier(ago, () => {
-      emit("update", { kind: "saved", track, file: `${out}\\${track.artist} - ${track.title}.flac`, size: Math.round((track.duration_ms / 1000) * 112_000), verdict: "info", master: "bit16_exact", exact: true, faded: false, issues: [], echolot: true });
-      emit("echolot", { kind: "song", job: track, result, detail: resultDetail[result] });
+      const kept = saved.verdict === "info" || saved.faded;
+      emit("update", { kind: "saved", track, file: `${out}\\${kept ? "" : "Not taken\\"}${track.artist} - ${track.title}.flac`, size: Math.round((track.duration_ms / 1000) * 112_000), ...saved, echolot: true });
+      emit("echolot", { kind: "song", job: track, result, detail });
     });
   }
   emit("update", { kind: "monitor_volume", volume: 0.42 });
   emit("echolot", { kind: "snapshot", snapshot });
 
-  // The song plays on: 1:27 in, levels of a loud pop master.
+  // Rick plays on, 1:27 in. Loud: the meters near 90 %, the peak marks near 95 %, the channels a little apart.
   let recorded = 87_000;
   let last = performance.now();
-  const smooth = [0.25, 0.25];
   setInterval(() => {
     const now = performance.now();
     recorded = (recorded + (now - last)) % rick.duration_ms;
     last = now;
-    const beat = Math.pow(Math.max(0, Math.sin((recorded / 60_000) * 113 * Math.PI)), 6);
-    const level = [0, 1].map((c) => {
-      smooth[c] += (0.18 + 0.1 * beat + 0.05 * Math.random() - smooth[c]) * 0.35;
-      return smooth[c];
-    });
+    const wobble = () => 1 + 0.02 * (Math.random() - 0.5);
     const status: Status = {
       phase: "recording",
       track: rick,
       recorded_ms: recorded,
-      level: [Math.min(0.97, level[0] * 2.6 + 0.1 * beat), Math.min(0.97, level[1] * 2.5 + 0.1 * beat)],
-      rms: [level[0], level[1]],
+      level: [0.8 * wobble(), 0.75 * wobble()],
+      rms: [0.63 * wobble(), 0.6 * wobble()],
       grid: { bit24: 1 },
     };
     emit("update", { kind: "status", status });
@@ -196,6 +192,6 @@ setTimeout(async () => {
 // `?shot`: for a headless screenshot, whose clock runs ahead of CSS transitions (they would stay at their start).
 if (new URLSearchParams(location.search).has("shot")) {
   const style = document.createElement("style");
-  style.textContent = "*, *::before, *::after { transition: none !important; animation: none !important; }";
+  style.textContent = "*, *::before, *::after { transition: none !important; animation: none !important; } html { scrollbar-gutter: auto !important; }";
   document.head.append(style);
 }
