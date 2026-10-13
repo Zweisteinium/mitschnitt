@@ -34,6 +34,9 @@
   <div class="state {phase}">
     <span class="dot"></span>
     <span class="mono">{labels[phase]}</span>
+    {#if session.listening && session.keyBlockedAt}
+      <span class="chip mono" title="The recording continues. To pause, use Spotify's own pause button.">Media key blocked</span>
+    {/if}
   </div>
 
   {#if track}
@@ -55,9 +58,6 @@
   {/if}
 
   {#if session.listening}
-    {#if session.keyBlockedAt}
-      <div class="notice mono">Media key blocked – the recording continues. To pause, use Spotify's own pause button.</div>
-    {/if}
     {#if session.monitorMuted}
       <div class="notice warn mono">
         <span>Monitor muted – the output device changed.</span>
@@ -184,6 +184,18 @@
     border-color: rgba(251, 191, 36, 0.45);
     background: rgba(251, 191, 36, 0.06);
     color: var(--warn);
+  }
+
+  .chip {
+    margin-left: auto;
+    padding: 1px 7px;
+    font-size: 10px;
+    line-height: 14px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--cyan);
+    border: 1px solid rgba(34, 211, 238, 0.45);
+    background: rgba(34, 211, 238, 0.08);
   }
 
   .link {
