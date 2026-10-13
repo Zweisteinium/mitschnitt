@@ -11,7 +11,7 @@ const EXTENSIONS: [&str; 3] = ["flac", "wav", "mp3"];
 /// A recording of this track with the same name, in any format.
 pub fn existing(tags: &Tags, settings: &Settings) -> Option<PathBuf> {
     let base = settings.out_dir.join(file_stem(&settings.template, tags));
-    EXTENSIONS.iter().map(|ext| base.with_extension(ext)).find(|p| p.exists())
+    EXTENSIONS.iter().map(|ext| with_ext(&base, ext)).find(|p| p.exists())
 }
 
 pub fn write(audio: &Audio, tags: &Tags, settings: &Settings) -> Result<PathBuf, String> {
@@ -152,14 +152,20 @@ fn sanitize(part: &str) -> String {
 
 fn unique_path(dir: &Path, stem: &Path, ext: &str) -> PathBuf {
     let base = dir.join(stem);
-    let mut path = base.with_extension(ext);
+    let mut path = with_ext(&base, ext);
     let mut n = 2;
     while path.exists() {
-        let name = format!("{} ({n})", base.file_name().unwrap_or_default().to_string_lossy());
-        path = base.with_file_name(name).with_extension(ext);
+        path = with_ext(&PathBuf::from(format!("{} ({n})", base.display())), ext);
         n += 1;
     }
     path
+}
+
+/// Appended, not `with_extension`: that took "Abr. - Hell's River" for a name with the extension " - Hell's River".
+fn with_ext(base: &Path, ext: &str) -> PathBuf {
+    let mut name = base.as_os_str().to_owned();
+    name.push(format!(".{ext}"));
+    name.into()
 }
 
 #[cfg(test)]
@@ -194,6 +200,17 @@ mod tests {
         let back: Vec<i32> = hound::WavReader::open(&path).unwrap().samples::<i32>().map(Result::unwrap).collect();
         assert_eq!(back, audio.samples);
         assert_eq!(existing(&track(), &settings), Some(path));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_dot_in_the_name_is_kept() {
+        let dir = std::env::temp_dir().join(format!("mitschnitt-dot-{}", std::process::id()));
+        let settings = Settings { out_dir: dir.clone(), format: Format::Wav, ..Settings::default() };
+        let tags = Tags { title: "Hell's River".into(), artist: "Abr.".into(), ..Tags::default() };
+        let audio = Audio { rate: 44_100, channels: 2, bits: 16, samples: vec![0; 4] };
+        let names: Vec<_> = (0..2).map(|_| write(&audio, &tags, &settings).unwrap().file_name().unwrap().to_owned()).collect();
+        assert_eq!(names, ["Abr. - Hell's River.wav", "Abr. - Hell's River (2).wav"]);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
