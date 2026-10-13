@@ -3,70 +3,122 @@
   Mitschnitt
 </h1>
 
-<p align="center">Keeps what you listen to, exactly as it arrived, and proves it sample by sample.</p>
+<p align="center">Records what your music app plays, bit for bit, and checks that the file really is the original.</p>
 
 <p align="center"><img src="docs/screenshot.png" width="820" alt="Mitschnitt recording a track"></p>
 
-Mitschnitt runs next to your music app while you listen. Every track you play from the start is saved as its
-own file, from the first sample to the last, without gaps, trimming or level changes. Afterwards Mitschnitt
-checks the file and tells you whether it really is the original.
+Mitschnitt runs next to your music app. Play a track from the start and it lands in its own file, from the first
+sample to the last. Then Mitschnitt checks the file and tells you whether the capture worked flawlessly.
 
-## What it does
+I built it because "lossless" is easy to claim and hard to check. Most recorders take whatever comes out of the
+sound card and hope for the best. Mitschnitt takes the app's own stream before Windows or PipeWire touch it, and
+the check tells you when something did get in the way, like a lossy stream, an equalizer or a dropout.
 
-Files are 16 or 24 bit FLAC with the very samples the app played. WAV works too, and so does MP3, which is
-encoded from the verified recording.
+It's a hobby project that I use every day. Windows works well, Linux mostly does. Expect the odd rough edge, and
+if you find one, [open an issue](https://github.com/Zweisteinium/mitschnitt/issues).
 
-Every sample is checked the moment it arrives. A lossless stream passes at 100 %. Lossy streams, volume
-normalization, an equalizer or resampling don't, and you see that live while the track plays.
+## Download
 
-A track is kept whole or not at all. If you pause, skip, seek, or the player stalls while buffering, that track
-is dropped, so you never end up with a file that has a hole in it.
+Get the latest version from [Releases](https://github.com/Zweisteinium/mitschnitt/releases/latest):
 
-Each finished file is read back, compared and checked for dropouts, limiting, fades and clipping. Title, artist,
-album, track number and cover are filled in, file names follow your own template, and tracks you already have
-are skipped.
+- **Windows 10/11:** `…_x64-setup.exe` (installer, no admin rights) or `…_x64_portable.exe` (single file).
+  Needs [VB-Cable](https://vb-audio.com/Cable/), donationware by VB-Audio, which the Setup tab downloads from their
+  site and installs. The builds are not code-signed, so SmartScreen asks once: More info → Run anyway.
+- **Linux:** `…_amd64.AppImage`. Needs PipeWire and glibc 2.36 or newer, so Debian 12, Ubuntu 22.10, Fedora 37,
+  Mint 22, Arch or anything newer.
+- **macOS:** planned, low priority.
 
-Mitschnitt can also work through a list of songs on its own. It starts each one in Spotify, checks that the right
-song plays, records it and pauses Spotify at the end. The list comes from Echolot, a self-hosted music library that
-takes the recordings straight into the right songs (in the terminal, also from a list exported from it). You can keep using your PC
-meanwhile: when Spotify grabs the focus for a new song, Mitschnitt hands it back. This works on Windows for now.
+For lossless recordings you need Spotify Premium with the streaming quality set to Lossless (up to 24 bit /
+44.1 kHz).
 
-On Windows, a recording can't be interrupted by media keys, headset buttons or earbuds taking themselves off.
-Only the player's own pause button stops it. This uses a keyboard hook that looks at media keys and nothing
-else, plus a media session of its own.
+## Features
 
-## Platforms
+- **Bit-exact.** Only the app's own stream is recorded, before the system mixes it with anything else. Nothing is
+  resampled, normalized or turned up or down.
+- **Live check.** Every sample is checked as it arrives. A lossless stream shows 100 %. A lossy stream, an
+  equalizer or resampling shows up while the track is still playing.
+- **Whole tracks.** A track is recorded from the point where its sound starts to the exact length the player
+  reports. A pause, skip, seek, buffering stall or dropout is detected and reported, so a broken recording never
+  passes as a complete one.
+- **Labels.** Every file gets EXACT, FINE (only Spotify's 10 ms fade-in at the start differs), ALT or BAD, with
+  the reason. The written file is decoded again and compared with the recording before it gets its name.
+- **Formats and tags.** FLAC in 16 or 24 bit, as the source was, WAV, or MP3 encoded from the verified recording.
+  Title, artist, album, track number and cover are filled in, names follow your own template, and tracks you
+  already have are skipped.
+- **Auto setup.** The Setup tab checks Spotify's settings (quality, normalization, equalizer, crossfade, automix)
+  and tells you what to switch. On Windows it also installs VB-Cable, matches its sample rate and routes Spotify
+  into it, one click each. The goal is a setup without any manual steps.
+- **Media key protection.** While a track records, media keys, headset buttons and Bluetooth earbuds that pause
+  when you take them out are held back, so they can't ruin the recording. The player's own pause button still
+  works. The keyboard hook behind this looks at media keys and nothing else.
+- **Song lists.** Together with [Echolot](#echolot), Mitschnitt records a whole list of songs on its own.
 
-| Platform | Status |
-|---|---|
-| Windows 10/11 | Stable. Spotify is verified bit-exact. |
-| Linux | Experimental and under active development. |
-| macOS | Planned, low priority. |
-
-**Windows** needs [VB-Cable](https://vb-audio.com/Cable/), donationware by VB-Audio. The Setup tab downloads it
-from their site and installs it. It is not bundled with Mitschnitt.
-
-**Linux** needs PipeWire as the sound server and glibc 2.36 or newer. That covers Debian 12, Ubuntu 22.10,
-Fedora 37, Mint 22, Arch and anything newer. Mitschnitt ships as an AppImage. The media key protection is not
-available on Linux yet.
-
-Spotify is the only supported app so far. An app only gets a profile once its output has been proven untouched.
+|  | Windows | Linux |
+|---|:---:|:---:|
+| Recording, live check, labels, formats and tags | ✓ | ✓ |
+| Auto setup | ✓ | Spotify settings only |
+| Media key protection | ✓ | – |
+| Song lists with Echolot | ✓ | – |
 
 ## How it works
 
-On **Windows** the app plays into a silent virtual cable, and Mitschnitt plays it back to you. Only that app's
-own audio is captured, before Windows mixes it with anything else. While Mitschnitt listens, the app's volume
-sits at exactly 50 %. That keeps the Windows peak limiter away from loud masters. Halving a sample is exact, so
-Mitschnitt doubles it again and gets the original back.
+On **Windows** Spotify plays into a silent virtual cable, and Mitschnitt plays it back to you. Only Spotify's own
+audio is captured, before Windows mixes it with anything else. While Mitschnitt listens, Spotify's volume sits at
+exactly 50 %. That keeps the Windows peak limiter away from loud masters. Halving a sample is exact, so Mitschnitt
+doubles it again and gets the original back.
 
-On **Linux** Mitschnitt connects straight to the app's PipeWire stream, before anything else is mixed in. You
-keep listening on your normal speakers or headphones. While Mitschnitt listens, the app's volume is held at
-100 % (use your system volume instead) and PipeWire runs at the app's sample rate, 44.1 kHz for Spotify. Both
-go back to how they were when you stop.
+On **Linux** Mitschnitt connects straight to Spotify's PipeWire stream, before anything else is mixed in, and you
+keep listening on your normal speakers or headphones. While Mitschnitt listens, Spotify's volume is held at 100 %
+(use your system volume instead) and PipeWire runs at 44.1 kHz. Both go back to how they were when you stop.
 
-On both systems a track starts at the edge from silence to sound and ends after exactly the length the player
-reports, to the millisecond. An untouched 16 or 24 bit source arrives as exact 24 bit values, and that is the
-proof Mitschnitt checks for.
+On both systems an untouched 16 or 24 bit source arrives as exact 24 bit values. That is what Mitschnitt checks
+for, sample by sample.
+
+Recording happens in real time, so it is slower than a downloader. In return you get exactly the version Spotify
+plays, not some upload that might be a different edit.
+
+### Check a file yourself
+
+The command line tool (`cargo build --release -p mitschnitt-cli`) runs the same check on any FLAC file, also on
+ones Mitschnitt didn't make:
+
+```
+$ mitschnitt check Music/
+CLEAN    Darude - Sandstorm.flac                3:45.000  peak  -0.10  16-bit, bit-exact
+CORRUPT  Rick Astley - Never Gonna Give You Up  3:33.573  peak  -0.21  16-bit, bit-exact
+           CORRUPT dropout 1:12.405 - 1:12.437 (31.5 ms of digital silence inside loud audio)
+```
+
+## Echolot
+
+[Echolot](https://github.com/Zweisteinium/echolot) is my other project: a self-hosted music library that syncs
+your playlists and likes and keeps only the right songs, in the best quality it can get. Connect Mitschnitt to it
+and it becomes a recorder for the songs Echolot is still missing. Echolot hands out one song at a time, Mitschnitt
+starts it in Spotify, checks that the right song plays, records it and uploads it. Only EXACT and FINE recordings
+go up. A damaged one is played again, a lossy one is left out.
+
+You can keep using your PC meanwhile. When Spotify grabs the focus for a new song, Mitschnitt gives it back.
+
+## Coming from Spytify?
+
+[Spytify](https://github.com/jwallet/spy-spotify) by jwallet has been the go-to Spotify recorder for years and
+showed how well recording instead of downloading can work. Mitschnitt picks up some of its long open issues:
+lossless FLAC and 24 bit instead of MP3, clean starts without the tail of the previous song, glitches and
+dropouts caught instead of saved, and Linux.
+
+## Limits
+
+- Spotify is the only supported app. An app only gets a profile once its output has been proven untouched. If
+  you ask nicely, I'll try Deezer, Apple Music or whatever your heart is after next <3
+- Gapless albums, where one track flows into the next, are skipped. Without silence before a track there is no
+  exact start.
+
+## Your account, your risk
+
+Streaming services don't like being recorded, and an account could get flagged for it. The risk seems small,
+nothing has happened to mine so far, but it's there. Mitschnitt only records what plays on your own computer and
+doesn't bypass any protection, so keep the recordings for your own listening. Using it is your decision, and I
+take no responsibility for what happens to your account or your recordings.
 
 ## Building
 
@@ -87,9 +139,3 @@ platform specific parts in `crates/core/src/platform`. `crates/cli` is a command
 ## License
 
 [GNU AGPL v3](LICENSE)
-
----
-
-<sub>Mitschnitt records audio while it plays on your own computer, in real time. It does not download, decrypt
-or bypass anything. Use it for your personal listening, and respect the terms of the services you use and the
-copyright laws where you live.</sub>
