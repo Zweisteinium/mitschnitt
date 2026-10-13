@@ -136,6 +136,8 @@ pub fn open(target: &str) -> Result<(), String> {
     if target.contains("://") {
         return open_link(target);
     }
-    let arg = if std::path::Path::new(target).is_file() { format!("/select,{target}") } else { target.to_owned() };
-    std::process::Command::new("explorer").arg(arg).spawn().map(|_| ()).map_err(|e| e.to_string())
+    use std::os::windows::process::CommandExt;
+    // Raw: Rust quotes an argument with spaces as a whole, and Explorer ignores a quoted "/select,…".
+    let arg = if std::path::Path::new(target).is_file() { format!("/select,\"{target}\"") } else { format!("\"{target}\"") };
+    std::process::Command::new("explorer").raw_arg(arg).spawn().map(|_| ()).map_err(|e| e.to_string())
 }
