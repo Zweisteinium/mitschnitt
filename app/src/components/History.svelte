@@ -4,7 +4,7 @@
   import { session, type Entry } from "../lib/session.svelte";
   import Panel from "./Panel.svelte";
 
-  type Tone = "ok" | "fine" | "warn" | "bad" | "muted";
+  type Tone = "ok" | "warn" | "bad" | "muted";
 
   const time = (d: Date) => d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   const full = (d: Date) => d.toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
@@ -13,10 +13,10 @@
   /** OK: fine, but not proven to the last sample (the player's fade-in, or no proof). */
   function quality(verdict: Severity, master: Master, exact: boolean, faded: boolean): { tone: Tone; tag: string; text: string } {
     if (verdict === "corrupt") return { tone: "bad", tag: "bad", text: "Corrupt" };
-    if (faded) return { tone: "fine", tag: "ok", text: "Player fade-in at the start · rest bit-exact" };
+    if (faded) return { tone: "ok", tag: "fine", text: "10 ms player fade-in at the start · rest bit-exact" };
     if (verdict === "altered") return { tone: "warn", tag: "alt", text: "Not fully original" };
     const bits = master === "bit16_exact" ? "16-bit master" : "24-bit master";
-    return exact ? { tone: "ok", tag: "exact", text: `Bit-exact · ${bits}` } : { tone: "fine", tag: "ok", text: `Clean · ${bits}` };
+    return exact ? { tone: "ok", tag: "exact", text: `Bit-exact · ${bits}` } : { tone: "ok", tag: "fine", text: `Clean · ${bits}` };
   }
 
   function summary(e: Entry): { tone: Tone; tag: string; text: string } {
@@ -155,10 +155,6 @@
     letter-spacing: 0.1em;
     text-transform: uppercase;
     border: 1px solid currentColor;
-  }
-
-  .fine {
-    color: color-mix(in srgb, var(--ok) 55%, var(--muted));
   }
 
   .main {
