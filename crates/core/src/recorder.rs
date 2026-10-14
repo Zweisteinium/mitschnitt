@@ -25,7 +25,7 @@ pub const NOT_TAKEN_DIR: &str = "Not taken";
 const LONG_POLL_S: u32 = 25;
 /// Spotify Connect may play on another device while the app here shows "playing".
 const BUSY: &str = "Spotify is playing (here or on another device)";
-const NO_SOUND: &str = "no sound from Spotify on this PC – is it playing on another device (Spotify Connect)?";
+const NO_SOUND: &str = "no sound: playing on another device?";
 const HEARTBEAT: Duration = Duration::from_secs(10);
 const SETUP_CHECK: Duration = Duration::from_secs(60);
 const PLAYER_START: Duration = Duration::from_secs(30);
@@ -314,7 +314,7 @@ fn echolot_loop(client: &Client, profile: &Profile, out_dir: &Path, shared_host:
         if attached.is_none()
             && let Some(job) = in_flight.and_then(|id| items.get(&id)).map(Item::job)
         {
-            finished.push((job, Outcome::TookOver { detail: "listening was stopped".into() }));
+            finished.push((job, Outcome::TookOver { detail: "stopped".into() }));
         }
         for (job, outcome) in finished {
             let Some(item) = job.id.and_then(|id| items.remove(&id)) else { continue };
@@ -493,7 +493,7 @@ fn result_of(outcome: &Outcome) -> (&'static str, String) {
         Outcome::Failed { detail } => ("failed", detail.clone()),
         // Not the song's fault: it goes back without costing a try.
         Outcome::NoSound => ("took_over", NO_SOUND.into()),
-        Outcome::Skipped => ("skipped", "skipped by the user".into()),
+        Outcome::Skipped => ("skipped", "skipped by you".into()),
     }
 }
 

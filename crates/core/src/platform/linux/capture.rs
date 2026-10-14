@@ -15,7 +15,7 @@ use pw::types::ObjectType;
 use super::pw::{Conn, Object, dict};
 use super::sessions::App;
 use crate::capture::{CaptureEvent, Packet};
-use crate::passive::FLAG_SILENT;
+use crate::passive::{FLAG_GAP, FLAG_SILENT};
 
 /// PipeWire stops scheduling us while the app renders nothing (Windows keeps sending silent packets).
 /// Longer pauses are reported as silent packets of the same length.
@@ -101,7 +101,7 @@ fn run(
                 let gap = now.saturating_duration_since(last.0).saturating_sub(Duration::from_secs_f64(last.1 as f64 / rate as f64));
                 if gap > GAP {
                     crate::log!("capture: {gap:?} without audio");
-                    emit(Packet { data: Vec::new(), frames: (gap.min(MAX_GAP).as_secs_f64() * rate as f64) as usize, flags: FLAG_SILENT });
+                    emit(Packet { data: Vec::new(), frames: (gap.min(MAX_GAP).as_secs_f64() * rate as f64) as usize, flags: FLAG_SILENT | FLAG_GAP });
                 }
                 last = (now, frames);
                 let bytes = d.data().filter(|_| !empty).and_then(|b| b.get(offset..offset + frames * frame_bytes));

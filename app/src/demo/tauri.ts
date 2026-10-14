@@ -95,6 +95,7 @@ const record = (daysAgo: number, artist: string, title: string, length: [number,
   lossy: null,
   echolot: echolot !== null,
   result: echolot,
+  issues: faded ? ["Spotify's fade-in: first 10 ms"] : [],
   exists,
 });
 const history: HistoryRecord[] = [
@@ -111,9 +112,9 @@ type Saved = { verdict: "info" | "altered" | "corrupt"; master: "bit16_exact" | 
 const exact: Saved = { verdict: "info", master: "bit16_exact", exact: true, faded: false, lossy: null, issues: [] };
 const earlierSongs: [number, Track, Saved, string, string][] = [
   [16, { title: "Sandstorm", artist: "Darude", album: "Before the Storm", duration_ms: 225_000 }, exact, "filed", "added to the library"],
-  [12, { title: "Castle in the Sky", artist: "DJ Satomi", album: "Castle in the Sky", duration_ms: 201_000 }, { ...exact, verdict: "altered", master: "bit16_partly", exact: false, faded: true }, "filed", "added to the library"],
-  [8, { title: "MAYDAY", artist: "TheFatRat", album: "MAYDAY", duration_ms: 221_000 }, { ...exact, lossy: "source", issues: ["~256 kbps / V0 source: the spectrum ends at 20.0 kHz, 50 dB steep"] }, "filed", "added to the library"],
-  [4, rick, { ...exact, verdict: "corrupt", issues: ["dropout 1:12.405 - 1:12.437 (31.5 ms of digital silence inside loud audio)"] }, "stalled", "damaged, played again"],
+  [12, { title: "Castle in the Sky", artist: "DJ Satomi", album: "Castle in the Sky", duration_ms: 201_000 }, { ...exact, verdict: "altered", master: "bit16_partly", exact: false, faded: true, issues: ["Spotify's fade-in: first 10 ms"] }, "filed", "added to the library"],
+  [8, { title: "MAYDAY", artist: "TheFatRat", album: "MAYDAY", duration_ms: 221_000 }, { ...exact, lossy: "source", issues: ["lossy master (~256 kbps / V0): spectrum ends at 20 kHz"] }, "filed", "added to the library"],
+  [4, rick, { ...exact, verdict: "corrupt", issues: ["dropout at 1:12.405 (31.5 ms of silence)"] }, "stalled", "damaged: dropout at 1:12.405 (31.5 ms of silence)"],
 ];
 
 function start() {

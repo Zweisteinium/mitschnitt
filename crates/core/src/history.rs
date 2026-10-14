@@ -33,6 +33,9 @@ pub struct Record {
     /// Echolot's answer to the upload: `filed`, `not_better`, `rejected` or `failed`.
     #[serde(default)]
     pub result: Option<String>,
+    /// The check's findings, most important first (older lines have none).
+    #[serde(default)]
+    pub issues: Vec<String>,
     #[serde(default, skip_deserializing)]
     pub exists: bool,
 }
@@ -122,6 +125,7 @@ mod tests {
             lossy: None,
             echolot,
             result: None,
+            issues: Vec::new(),
             exists: false,
         };
         add(&path, &record("Own", "own.flac", false));

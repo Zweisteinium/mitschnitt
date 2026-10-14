@@ -73,7 +73,7 @@ export type RecorderSnapshot = {
 type RecorderUpdate = { kind: "snapshot"; snapshot: RecorderSnapshot } | { kind: "song"; job: Track; result: string; detail: string; moved: [string, string | null] | null };
 type CardState = { snapshot: RecorderSnapshot; url: string; pairing: boolean };
 /** `at`: Unix ms. `result`: Echolot's answer to the upload. */
-export type HistoryRecord = { at: number; track: Track; file: string; size: number; verdict: Severity; master: Master; exact: boolean; faded: boolean; lossy: Lossy | null; echolot: boolean; result: string | null; exists: boolean };
+export type HistoryRecord = { at: number; track: Track; file: string; size: number; verdict: Severity; master: Master; exact: boolean; faded: boolean; lossy: Lossy | null; echolot: boolean; result: string | null; issues: string[]; exists: boolean };
 
 export const api = {
   sources: () => invoke<Source[]>("sources"),

@@ -49,8 +49,8 @@ async fn start(app: String, handle: AppHandle, state: State<'_, App>) -> Result<
 }
 
 pub(crate) fn notify(handle: &AppHandle, update: Update) {
-    if let Update::Saved { track, file: Some(file), size, verdict, master, exact, faded, lossy, echolot, .. } = &update {
-        let record = Record { at: history::now_ms(), track: track.clone(), file: file.clone(), size: *size, verdict: *verdict, master: *master, exact: *exact, faded: *faded, lossy: *lossy, echolot: *echolot, result: None, exists: true };
+    if let Update::Saved { track, file: Some(file), size, verdict, master, exact, faded, lossy, issues, echolot } = &update {
+        let record = Record { at: history::now_ms(), track: track.clone(), file: file.clone(), size: *size, verdict: *verdict, master: *master, exact: *exact, faded: *faded, lossy: *lossy, echolot: *echolot, result: None, issues: issues.clone(), exists: true };
         history::add(&history::default_path(), &record);
     }
     let _ = handle.emit("update", &update);

@@ -59,7 +59,7 @@ pub fn analyze(a: &Audio) -> Report {
     let mut report = analyze_with(a, false);
     let ms = a.frames() as f64 * 1000.0 / a.rate as f64;
     if (ms - ms.round()).abs() >= 0.012 {
-        let text = format!("length {} is not a whole-millisecond track length (stopped early, or longer than its listed length)", timestamp(a.frames(), a.rate));
+        let text = format!("length {} not a whole millisecond", timestamp(a.frames(), a.rate));
         report.issues.insert(0, issue(Severity::Info, text));
     }
     report
@@ -79,7 +79,12 @@ pub fn analyze_with(a: &Audio, exact_source: bool) -> Report {
     let ts = |i: usize| timestamp(i, a.rate);
 
     if a.rate != 44_100 || a.channels != 2 {
-        issues.push(issue(Severity::Corrupt, format!("format {} Hz / {} ch (expected 44100 Hz stereo)", a.rate, a.channels)));
+        let channels = match a.channels {
+            1 => "mono".into(),
+            2 => "stereo".into(),
+            n => format!("{n} channels"),
+        };
+        issues.push(issue(Severity::Corrupt, format!("wrong format: {} kHz, {channels}", crate::number(a.rate as f64 / 1000.0))));
     }
     // Dropouts: >= 1 ms of digital silence between loud audio.
     for (s, e) in runs(n, |i| a.frame(i).iter().all(|s| *s == 0)) {
@@ -89,15 +94,15 @@ pub fn analyze_with(a: &Audio, exact_source: bool) -> Report {
             let post = (e..(e + edge).min(n)).fold(0.0, |m: f64, i| m.max(a.frame_peak(i)));
             if pre > 0.02 && post > 0.02 {
                 let ms = (e - s) as f64 * 1000.0 / a.rate as f64;
-                issues.push(issue(Severity::Corrupt, format!("dropout {} - {} ({ms:.1} ms of digital silence inside loud audio)", ts(s), ts(e))));
+                issues.push(issue(Severity::Corrupt, format!("dropout at {} ({} of silence)", ts(s), crate::duration(ms))));
             }
         }
     }
 
     match (0..n).find(|&i| a.frame(i).iter().any(|s| *s != 0)) {
-        None => issues.push(issue(Severity::Corrupt, "no audio at all".into())),
+        None => issues.push(issue(Severity::Corrupt, "no audio".into())),
         Some(i) if i > a.rate as usize / 1000 => {
-            issues.push(issue(Severity::Info, format!("begins with {} of digital silence (part of the track)", ts(i))))
+            issues.push(issue(Severity::Info, format!("starts with {} of silence", crate::duration(i as f64 * 1000.0 / a.rate as f64))))
         }
         Some(_) => {}
     }
@@ -106,7 +111,7 @@ pub fn analyze_with(a: &Audio, exact_source: bool) -> Report {
     let lossy_source = crate::spectrum::check(a).and_then(|e| e.lossy.map(|source| (e, source)));
     if let Some((edge, source)) = &lossy_source {
         let khz = edge.cut_hz as f64 / 1000.0;
-        issues.push(issue(Severity::Info, format!("{source} source: the spectrum ends at {khz:.1} kHz, {:.0} dB steep", edge.drop_db)));
+        issues.push(issue(Severity::Info, format!("lossy master ({source}): spectrum ends at {} kHz", crate::number(khz))));
     }
 
     let off: Vec<usize> = (0..n).filter(|&i| !a.frame_on_grid16(i)).collect();
@@ -121,8 +126,9 @@ pub fn analyze_with(a: &Audio, exact_source: bool) -> Report {
     if master == Master::Bit16Partly && !exact_source {
         let stretches = group(&off, a.rate as usize / 20);
         let text = match stretches[..] {
-            [(_, last)] if last < fade_in_frames(a.rate) => format!("fade-in at the start: first {:.1} ms not original (rest bit-exact 16-bit)", (last + 1) as f64 * 1000.0 / a.rate as f64),
-            _ => format!("not original in {} stretch(es) of an otherwise bit-exact 16-bit file: {}", stretches.len(), list(&stretches, a.rate, 8)),
+            [(_, last)] if last < fade_in_frames(a.rate) => format!("fade-in: first {}", crate::duration((last + 1) as f64 * 1000.0 / a.rate as f64)),
+            [_] => format!("altered at {}", list(&stretches, a.rate, 8)),
+            _ => format!("altered in {} places: {}", stretches.len(), list(&stretches, a.rate, 8)),
         };
         issues.push(issue(Severity::Altered, text));
     }
@@ -163,9 +169,9 @@ pub fn analyze_with(a: &Audio, exact_source: bool) -> Report {
         }
         if let Some(f) = first {
             if master == Master::Bit16Exact || exact_source {
-                issues.push(issue(Severity::Info, format!("clipped in the master: {flats} flat tops at {:.2} dBFS, first at {} (file is exact)", db(peak), ts(f))));
+                issues.push(issue(Severity::Info, format!("master clipped: {flats} flat tops at {} dBFS, from {}", crate::number(db(peak)), ts(f))));
             } else {
-                issues.push(issue(Severity::Altered, format!("clipping: {flats} flat tops at {:.2} dBFS, first at {}", db(peak), ts(f))));
+                issues.push(issue(Severity::Altered, format!("clipped: {flats} flat tops at {} dBFS, from {}", crate::number(db(peak)), ts(f))));
             }
         }
     }
@@ -256,7 +262,7 @@ mod tests {
         a.samples[s * 2..e * 2].fill(0);
         let r = analyze(&a);
         assert_eq!(r.verdict, Severity::Corrupt);
-        assert!(r.issues.iter().any(|i| i.text.contains("dropout 0:01.000 - 0:01.500")), "{:?}", r.issues);
+        assert!(r.issues.iter().any(|i| i.text == "dropout at 0:01.000 (500 ms of silence)"), "{:?}", r.issues);
     }
 
     #[test]
@@ -269,7 +275,7 @@ mod tests {
             scale(&mut a.samples[2 * i + 1], g);
         }
         let r = analyze(&a);
-        assert!(r.issues.iter().any(|i| i.text.starts_with("fade-in at the start")), "{:?}", r.issues);
+        assert!(r.issues.iter().any(|i| i.text.starts_with("fade-in")), "{:?}", r.issues);
     }
 
     #[test]
@@ -299,7 +305,7 @@ mod tests {
         assert_eq!(analyze(&a).verdict, Severity::Altered);
         let r = analyze_with(&a, true);
         assert_eq!(r.verdict, Severity::Info, "{:?}", r.issues);
-        assert!(r.issues.iter().any(|i| i.text.starts_with("clipped in the master")), "{:?}", r.issues);
+        assert!(r.issues.iter().any(|i| i.text.starts_with("master clipped")), "{:?}", r.issues);
     }
 
     #[test]
@@ -311,7 +317,7 @@ mod tests {
         let r = analyze(&a);
         assert_eq!(r.master, Master::Bit16Exact);
         assert_eq!(r.verdict, Severity::Info, "{:?}", r.issues);
-        assert!(r.issues.iter().any(|i| i.text.starts_with("clipped in the master")), "{:?}", r.issues);
+        assert!(r.issues.iter().any(|i| i.text.starts_with("master clipped")), "{:?}", r.issues);
     }
 
     /// 24-bit "music" (off the 16-bit grid) with every sample above `ceiling` clipped to it.
@@ -343,6 +349,6 @@ mod tests {
         let mut a = music(1.0, 0.5);
         a.samples.truncate((RATE as usize + 7) * 2 - 14 * 2); // 44093 frames = 999.84 ms
         let r = analyze(&a);
-        assert!(r.issues.iter().any(|i| i.text.contains("whole-millisecond")), "{:?}", r.issues);
+        assert!(r.issues.iter().any(|i| i.text.contains("whole millisecond")), "{:?}", r.issues);
     }
 }

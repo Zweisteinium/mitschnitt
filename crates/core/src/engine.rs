@@ -426,7 +426,7 @@ impl Session {
     }
 
     fn attach(&mut self, queue: Queue) {
-        self.detach(Outcome::Stalled { detail: "replaced by another queue".into() });
+        self.detach(Outcome::Stalled { detail: "replaced by another list".into() });
         self.queue = Some(QueueRun { queue, runner: Runner::new(Instant::now()), quiet: None, stage: "Idle" });
     }
 
@@ -617,7 +617,7 @@ impl Session {
         // Stopped by the user: a take-over. A failure: worth another try.
         self.detach(match &error {
             Some(e) => Outcome::Stalled { detail: e.clone() },
-            None => Outcome::TookOver { detail: "listening was stopped".into() },
+            None => Outcome::TookOver { detail: "stopped".into() },
         });
         self.guard = None;
         self.monitor = None;
@@ -816,15 +816,14 @@ fn check(samples: Vec<i32>, (off_grid, off_span, end_proven): Proof, rate: u32, 
     if !exact && lossless {
         let text = match fade {
             Some((_, last)) => {
-                let text = format!("faded in by the player: the first {:.1} ms are not original, everything after is bit-exact", (last + 1) as f64 * 1000.0 / rate as f64);
+                let text = format!("Spotify's fade-in: first {}", crate::duration((last + 1) as f64 * 1000.0 / rate as f64));
                 faded = Some(text.clone());
                 text
             }
-            _ if stream => format!("lossy stream: {:.1} % of the audio did not arrive as exact 24-bit values (or an equalizer, normalization or crossfade changed it)", share * 100.0),
+            _ if stream => format!("lossy stream: {} % not bit-exact (or an equalizer, normalization, crossfade)", crate::number(share * 100.0)),
             _ => {
-                let at = |frame: usize| crate::timestamp(frame, rate);
-                let (first, last) = off_span.unwrap_or_default();
-                format!("{off_grid} samples between {} and {} are not original, everything else is bit-exact", at(first), at(last))
+                let (first, _) = off_span.unwrap_or_default();
+                format!("{off_grid} samples altered at {}", crate::timestamp(first, rate))
             }
         };
         report.issues.insert(0, analyze::Issue { severity: Severity::Altered, text });
@@ -832,7 +831,7 @@ fn check(samples: Vec<i32>, (off_grid, off_span, end_proven): Proof, rate: u32, 
     }
     let unproven_end = PROVES_END && !end_proven;
     if unproven_end {
-        let text = "end not verified: no pause followed the song where it should end (the next song followed without one, or Spotify was skipped)";
+        let text = "end not verified: no pause after the song";
         report.issues.insert(0, analyze::Issue { severity: Severity::Altered, text: text.into() });
         report.verdict = report.verdict.max(Severity::Altered);
     }
@@ -889,7 +888,7 @@ fn finish_job(track: Track, tags: Tags, samples: Vec<i32>, proof: Proof, rate: u
     let checked = check(samples, proof, rate, lossless);
     if checked.lossy == Some(Lossy::Stream) {
         let detail = checked.report.issues.first().map(|i| i.text.clone()).unwrap_or_default();
-        notify(Update::Failed { track, error: format!("not lossless, not kept: {detail}") });
+        notify(Update::Failed { track, error: format!("lossy, not kept: {detail}") });
         return Written::Lossy { detail };
     }
     // A short altered stretch is a glitch, not the stream: played again like a damaged one.
@@ -899,7 +898,7 @@ fn finish_job(track: Track, tags: Tags, samples: Vec<i32>, proof: Proof, rate: u
         let file = settings.keep_flagged.then(|| Settings { out_dir: settings.out_dir.with_file_name(crate::recorder::NOT_TAKEN_DIR), ..settings.clone() }).and_then(|s| output::write(&checked.audio, &tags, &s).ok());
         let size = file.as_deref().map_or(0, file_size);
         notify(saved(track, file, size, checked, true));
-        return Written::Corrupt { detail: format!("damaged, not uploaded: {detail}") };
+        return Written::Corrupt { detail: format!("damaged: {detail}") };
     }
     match output::write(&checked.audio, &tags, settings) {
         Ok(path) => {

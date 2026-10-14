@@ -10,32 +10,46 @@
   const full = (d: Date) => d.toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
   const when = (d: Date) => (d.toDateString() === new Date().toDateString() ? time(d) : d.toLocaleDateString([], { day: "numeric", month: "short" }));
 
+  /** A finding's gist for the row: up to its details ("end not verified: no pause …" -> "End not verified"). */
+  function headline(issue: string | undefined): string {
+    const gist = (issue ?? "").split(/: | \(/)[0];
+    return gist.charAt(0).toUpperCase() + gist.slice(1);
+  }
+
+  const bitsOf = (master: Master) => (master === "bit16_exact" ? "16-bit master" : "24-bit master");
+
   /** OK: fine, but not proven to the last sample (the player's fade-in, or no proof). */
-  function quality(verdict: Severity, master: Master, exact: boolean, faded: boolean, lossy: Lossy | null, file: string | null): { tone: Tone; tag: string; text: string } {
-    if (verdict === "corrupt") return { tone: "bad", tag: "bad", text: "Corrupt" };
+  function quality(verdict: Severity, master: Master, exact: boolean, faded: boolean, lossy: Lossy | null, file: string | null, issues: string[]): { tone: Tone; tag: string; text: string } {
+    if (verdict === "corrupt") return { tone: "bad", tag: "bad", text: issues.length ? `Damaged · ${headline(issues[0])}` : "Damaged" };
     if (lossy) {
-      const text = lossy === "stream" ? "Streamed lossy only" : "Master made from a lossy file";
-      return { tone: "lossy", tag: "lossy", text: file?.endsWith(".mp3") ? `${text} · saved as MP3` : text };
+      const text = lossy === "stream" ? "Lossy stream" : "Lossy master";
+      return { tone: "lossy", tag: "lossy", text: file?.endsWith(".mp3") ? `${text} · MP3` : text };
     }
-    if (faded) return { tone: "ok", tag: "fine", text: "Fade-in · rest bit-exact" };
-    if (verdict === "altered") return { tone: "warn", tag: "alt", text: "Not fully original" };
-    const bits = master === "bit16_exact" ? "16-bit master" : "24-bit master";
-    return exact ? { tone: "ok", tag: "exact", text: `Bit-exact · ${bits}` } : { tone: "ok", tag: "fine", text: `Clean · ${bits}` };
+    if (faded) return { tone: "ok", tag: "fine", text: "Fade-in, rest bit-exact" };
+    if (verdict === "altered") return { tone: "warn", tag: "alt", text: issues.length ? headline(issues[0]) : "Not fully original" };
+    return exact ? { tone: "ok", tag: "exact", text: `Bit-exact · ${bitsOf(master)}` } : { tone: "ok", tag: "fine", text: `Clean · ${bitsOf(master)}` };
   }
 
   function summary(e: Entry): { tone: Tone; tag: string; text: string } {
-    if (e.outcome === "exists") return { tone: "muted", tag: "have", text: "Already recorded" };
-    if (e.outcome !== "saved") return e.outcome === "dropped" ? { tone: "muted", tag: "skip", text: e.message } : { tone: "bad", tag: "fail", text: e.message };
-    const q = quality(e.verdict, e.master, e.exact, e.faded, e.lossy, e.file);
+    if (e.outcome === "exists") return { tone: "muted", tag: "have", text: "Already have it" };
+    if (e.outcome !== "saved") return e.outcome === "dropped" ? { tone: "muted", tag: "skip", text: headline(e.message) } : { tone: "bad", tag: "fail", text: headline(e.message) };
+    const q = quality(e.verdict, e.master, e.exact, e.faded, e.lossy, e.file, e.issues);
     return e.file === null ? { ...q, text: `${q.text} · removed` } : q;
   }
 
   const facts = (durationMs: number, size: number) => `${clock(durationMs)} · ${megabytes(size)}`;
 
+  /** Everything about a row, for its info card. */
+  function details(e: Entry): string[] {
+    if (e.outcome === "exists") return [e.file];
+    if (e.outcome !== "saved") return [e.message];
+    return [...e.issues, bitsOf(e.master), ...(e.file ? [e.file] : [])];
+  }
+
   function origin(r: HistoryRecord): string {
     if (!r.echolot) return "Manual";
     if (r.result) return `Echolot · ${resultText[r.result] ?? r.result}`;
-    return r.verdict === "info" ? "Echolot · not uploaded" : "Echolot · not uploaded (damaged)";
+    return r.verdict === "info" ? "Echolot · not uploaded" : "Echolot · damaged, not uploaded";
   }
 
   const PAGE = 50;
@@ -56,6 +70,17 @@
     if (open && records === null) void load();
   });
 </script>
+
+{#snippet info(lines: string[])}
+  {#if lines.length}
+    <span class="info" tabindex="0" role="button" aria-label="Details">
+      i
+      <span class="card" role="tooltip">
+        {#each lines as line}<span class="line">{line}</span>{/each}
+      </span>
+    </span>
+  {/if}
+{/snippet}
 
 {#snippet fileActions(file: string)}
   <span class="actions">
@@ -86,12 +111,8 @@
             <div class="detail {s.tone}">
               {s.text}{#if e.outcome === "saved" && e.echolot}{" · for Echolot"}{/if}
               {#if e.outcome === "saved" && e.file}<span class="facts mono">{facts(e.track.duration_ms, e.size)}</span>{/if}
+              {@render info(details(e))}
             </div>
-            {#if e.outcome === "saved" && e.issues.length}
-              <ul class="issues">
-                {#each e.issues as issue}<li>{issue}</li>{/each}
-              </ul>
-            {/if}
           </div>
           <span class="when mono muted" title={full(e.at)}>{time(e.at)}</span>
           {#if (e.outcome === "saved" || e.outcome === "exists") && e.file}
@@ -113,7 +134,7 @@
     {:else}
       <ul class="rows">
         {#each records.slice(0, shown) as r (r.at + r.file)}
-          {@const q = quality(r.verdict, r.master, r.exact, r.faded, r.lossy, r.file)}
+          {@const q = quality(r.verdict, r.master, r.exact, r.faded, r.lossy, r.file, r.issues ?? [])}
           {@const at = new Date(r.at)}
           <li>
             <span class="tag mono {q.tone}" title={q.text}>{q.tag}</span>
@@ -121,6 +142,7 @@
               <div class="name">{r.track.artist} – {r.track.title}</div>
               <div class="detail muted">
                 {origin(r)}<span class="facts mono">{facts(r.track.duration_ms, r.size)}</span>
+                {@render info([...(r.issues ?? []), bitsOf(r.master), r.file])}
               </div>
             </div>
             <span class="when mono muted" title={full(at)}>{when(at)}</span>
@@ -196,9 +218,54 @@
     white-space: nowrap;
   }
 
-  .issues li {
-    font-size: 12px;
+  .info {
+    position: relative;
+    display: inline-grid;
+    place-items: center;
+    width: 14px;
+    height: 14px;
+    border: 1px solid var(--muted);
+    border-radius: 50%;
     color: var(--muted);
+    font: italic 600 9px/1 serif;
+    cursor: help;
+  }
+
+  .info:hover,
+  .info:focus-visible {
+    color: var(--text);
+    border-color: var(--text);
+    outline: none;
+  }
+
+  .card {
+    display: none;
+    position: absolute;
+    z-index: 10;
+    top: 18px;
+    left: -8px;
+    width: max-content;
+    max-width: min(420px, 70vw);
+    padding: 8px 10px;
+    background: var(--panel);
+    border: 1px solid var(--line-strong);
+    box-shadow: 0 4px 16px rgb(0 0 0 / 0.25);
+    color: var(--text);
+    font: 12px/1.45 var(--font);
+    font-style: normal;
+    font-weight: 400;
+    cursor: text;
+    user-select: text;
+  }
+
+  .info:hover .card,
+  .info:focus-within .card {
+    display: grid;
+    gap: 2px;
+  }
+
+  .line {
+    overflow-wrap: anywhere;
   }
 
   .when {

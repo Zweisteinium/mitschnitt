@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 pub const FLAG_GLITCH: u32 = 0x1;
 /// `AUDCLNT_BUFFERFLAGS_SILENT`: the player delivered no audio.
 pub const FLAG_SILENT: u32 = 0x2;
+/// No packets arrived for a while (Linux): unlike silence the player rendered, sound may have been due.
+pub const FLAG_GAP: u32 = 0x4;
 
 const MIN_SILENCE_MS: u64 = 10;
 /// Rendered zeros at the start of the capture prove nothing: the stream warms up with a few ms of zeros even mid-track.
@@ -84,15 +86,15 @@ pub enum Reason {
 impl Reason {
     pub fn message(self) -> &'static str {
         match self {
-            Reason::Paused => "Paused",
-            Reason::TrackChanged => "Track changed before its end",
-            Reason::Seeked => "Seeked within the track",
-            Reason::Underrun => "The player stalled (buffering) – dropout",
-            Reason::Glitch => "Capture glitch",
-            Reason::VolumeChanged => "App volume changed",
-            Reason::Stopped => "Stopped",
-            Reason::MidTrack => "Joined mid-track",
-            Reason::NoCleanStart => "No silence before the track (gapless) – exact start unknown",
+            Reason::Paused => "paused",
+            Reason::TrackChanged => "another song started",
+            Reason::Seeked => "skipped within the song",
+            Reason::Underrun => "Spotify stalled",
+            Reason::Glitch => "capture glitch",
+            Reason::VolumeChanged => "volume changed",
+            Reason::Stopped => "stopped",
+            Reason::MidTrack => "started mid-song",
+            Reason::NoCleanStart => "no clean start (gapless)",
         }
     }
 }
@@ -151,8 +153,9 @@ enum State {
     Idle,
     Waiting { track: Track, until: u64 },
     /// `tail_off`: off-grid frames past `expected`, counted only if the end search keeps them. `gap`: the first frame
-    /// past `expected` where the stream rendered nothing; silence from there on proves no end.
-    Recording { track: Track, expected: usize, samples: Vec<i32>, off_grid: usize, off_span: Option<(usize, usize)>, tail_off: Vec<usize>, gap: Option<usize>, start: u64 },
+    /// past `expected` without packets; silence from there on proves no end. `tail_empty`: per frame past `expected`,
+    /// whether the player rendered it as an empty buffer.
+    Recording { track: Track, expected: usize, samples: Vec<i32>, off_grid: usize, off_span: Option<(usize, usize)>, tail_off: Vec<usize>, tail_empty: Vec<bool>, gap: Option<usize>, start: u64 },
 }
 
 pub struct Passive {
@@ -225,7 +228,8 @@ impl Passive {
         if silent && !self.ending() {
             self.drop_recording(Reason::Underrun, &mut events);
         }
-        if let (true, State::Recording { samples, gap, .. }) = (silent, &mut self.state) {
+        let gap_packet = flags & FLAG_GAP != 0;
+        if let (true, State::Recording { samples, gap, .. }) = (gap_packet, &mut self.state) {
             gap.get_or_insert(samples.len() / self.channels);
         }
 
@@ -291,9 +295,12 @@ impl Passive {
                 }
             }
 
-            if let State::Recording { expected, samples, off_grid, off_span, tail_off, .. } = &mut self.state {
+            if let State::Recording { expected, samples, off_grid, off_span, tail_off, tail_empty, .. } = &mut self.state {
                 samples.extend_from_slice(&self.scratch);
                 let i = samples.len() / ch - 1;
+                if i >= *expected {
+                    tail_empty.push(silent);
+                }
                 if off24 && i < *expected {
                     *off_grid += 1;
                     *off_span = Some(off_span.map_or((i, i), |(a, _)| (a, i)));
@@ -451,7 +458,8 @@ impl Passive {
         self.starts.retain(|s| *s > start);
         events.push(Event::Started(track.clone()));
         let complete = samples.len() >= (expected + self.end_search()) * self.channels;
-        self.state = State::Recording { track, expected, samples, off_grid, off_span, tail_off, gap: None, start };
+        let tail_empty = vec![false; (samples.len() / self.channels).saturating_sub(expected)];
+        self.state = State::Recording { track, expected, samples, off_grid, off_span, tail_off, tail_empty, gap: None, start };
         if complete {
             self.complete(events);
         }
@@ -479,10 +487,17 @@ impl Passive {
     }
 
     fn complete(&mut self, events: &mut Vec<Event>) {
-        if let State::Recording { track, expected, mut samples, mut off_grid, mut off_span, tail_off, gap, .. } = std::mem::replace(&mut self.state, State::Idle) {
-            let (ch, min) = (self.channels, ms_to_frames(END_SILENCE_MS, self.rate));
-            let rendered = gap.unwrap_or(usize::MAX);
-            let silent_from = |f: usize| f + min <= rendered && samples.get(f * ch..(f + min) * ch).is_some_and(|s| s.iter().all(|v| *v == 0));
+        if let State::Recording { track, expected, mut samples, mut off_grid, mut off_span, tail_off, tail_empty, gap, .. } = std::mem::replace(&mut self.state, State::Idle) {
+            let (ch, min, played) = (self.channels, ms_to_frames(END_SILENCE_MS, self.rate), ms_to_frames(MIN_SILENCE_MS, self.rate));
+            let before_gap = gap.unwrap_or(usize::MAX);
+            // Spotify's pause may begin as an empty buffer (11.6 ms seen), but it ends in played zeros: a late buffer
+            // followed by sound does not.
+            let empty = |f: usize| tail_empty.get(f - expected).copied().unwrap_or(false);
+            let silent_from = |f: usize| {
+                f + min <= before_gap
+                    && samples.get(f * ch..(f + min) * ch).is_some_and(|s| s.iter().all(|v| *v == 0))
+                    && (f + min - played..f + min).all(|i| !empty(i))
+            };
             let end = (expected..=expected + ms_to_frames(END_SEARCH_MS, self.rate)).find(|f| silent_from(*f));
             let cut = end.unwrap_or(expected);
             samples.truncate(cut * ch);
@@ -643,10 +658,31 @@ mod tests {
         let mut ev = p.media(playing(&t, 0));
         silence(&mut p, 100, &mut ev);
         feed(&mut p, &raw, &mut ev);
-        silence(&mut p, 300, &mut ev);
+        ev.extend(p.push(&[], ms_to_frames(300, RATE), FLAG_SILENT | FLAG_GAP));
         let (samples, proven) = completed(&ev);
         assert!(!proven);
         assert_eq!(samples.len(), ms_to_frames(1_000, RATE) * 2);
+    }
+
+    /// Seen at the end of two songs: the pause began as 512 frames of empty buffers, then played zeros.
+    #[test]
+    fn a_pause_that_begins_as_an_empty_buffer_proves_the_end() {
+        let t = track(1_000);
+        let (orig, raw) = master(ms_to_frames(1_000, RATE), 18);
+        for (empty_ms, then_sound, proven) in [(12, false, true), (300, false, false), (12, true, false)] {
+            let mut p = Passive::new(RATE, 2, GAIN);
+            let mut ev = p.media(playing(&t, 0));
+            silence(&mut p, 100, &mut ev);
+            feed(&mut p, &raw, &mut ev);
+            silence(&mut p, empty_ms, &mut ev);
+            if then_sound {
+                feed(&mut p, &raw[..ms_to_frames(300, RATE) * 2], &mut ev);
+            }
+            zeros(&mut p, 500, &mut ev);
+            let (samples, end) = completed(&ev);
+            assert_eq!(end, proven, "{empty_ms} ms empty, then sound: {then_sound}");
+            assert_eq!(samples[..], orig[..]);
+        }
     }
 
     #[test]

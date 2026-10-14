@@ -207,7 +207,7 @@ impl Runner {
                 if now.duration_since(*since) < BUSY_TIMEOUT {
                     return Vec::new();
                 }
-                self.finish(job, Outcome::TookOver { detail: "Spotify is in use".into() }, now, false)
+                self.finish(job, Outcome::TookOver { detail: "Spotify was in use".into() }, now, false)
             }
             Stage::Stalled { job, since, detail } => {
                 let other = media.track.as_ref().is_some_and(|t| matches(job, t).is_err());
@@ -245,7 +245,7 @@ impl Runner {
                         self.stage = Stage::Rewind { job, since: now, retried: true, seeked: false };
                         return Vec::new();
                     }
-                    return self.finish(job, Outcome::TookOver { detail: "Paused".into() }, now, false);
+                    return self.finish(job, Outcome::TookOver { detail: Reason::Paused.message().into() }, now, false);
                 }
                 if now.duration_since(*at) < SOUND_TIMEOUT {
                     return Vec::new();
@@ -264,7 +264,7 @@ impl Runner {
                     if let Some(w) = wrong.clone() {
                         return self.correct(job, w, now);
                     }
-                    return self.finish(job, Outcome::Failed { detail: "the player didn't start the song".into() }, now, true);
+                    return self.finish(job, Outcome::Failed { detail: "Spotify didn't start it".into() }, now, true);
                 };
                 if media.position_ms > MAX_START_POSITION_MS && wrong.is_none() && *corrections == 0 {
                     // Beyond the start for longer than a stale position lasts: the player resumed the song somewhere.
@@ -281,7 +281,7 @@ impl Runner {
                         return Vec::new();
                     }
                     let job = job.clone();
-                    return self.finish(job, Outcome::Failed { detail: format!("the song started at {} s instead of 0:00", media.position_ms / 1000) }, now, true);
+                    return self.finish(job, Outcome::Failed { detail: format!("started at {} s", media.position_ms / 1000) }, now, true);
                 }
                 *late = None;
                 if matches(job, track).is_ok() {
@@ -410,10 +410,11 @@ fn base_title(s: &str) -> String {
 pub fn matches(job: &Job, track: &Track) -> Result<(), String> {
     let (a, b) = (norm(&job.title), norm(&track.title));
     if a != b && (base_title(&job.title).is_empty() || base_title(&job.title) != base_title(&track.title)) {
-        return Err(format!("title is \"{}\", expected \"{}\"", track.title, job.title));
+        return Err(format!("wrong song: \"{}\"", track.title));
     }
     if job.duration_ms > 0 && track.duration_ms.abs_diff(job.duration_ms) > LENGTH_TOLERANCE_MS {
-        return Err(format!("length is {} s, expected {} s", track.duration_ms / 1000, job.duration_ms / 1000));
+        let clock = |ms: u64| format!("{}:{:02}", ms / 60_000, ms / 1000 % 60);
+        return Err(format!("length {}, expected {}", clock(track.duration_ms), clock(job.duration_ms)));
     }
     // The app shows a renamed artist before the Web API does ("TheDoDo" -> "Pbb Yea"): the same title and length is
     // the song, a neighbour after an off-by-one differs in both.
@@ -421,7 +422,7 @@ pub fn matches(job: &Job, track: &Track) -> Result<(), String> {
     let shown = norm(&track.artist);
     let artist_ok = std::iter::once(&job.artist).chain(&job.artists).map(|n| norm(n)).any(|n| !n.is_empty() && (shown.contains(&n) || n.contains(&shown)));
     if !artist_ok && !shown.is_empty() && !renamed {
-        return Err(format!("artist is \"{}\", expected \"{}\"", track.artist, job.artist));
+        return Err(format!("wrong artist: {}", track.artist));
     }
     Ok(())
 }
@@ -644,7 +645,7 @@ mod tests {
         r.tick(t + Duration::from_secs(5), &playing(&song, 99_000));
         r.tick(t + Duration::from_secs(7), &playing(&song, 101_000));
         assert!(r.tick(t + Duration::from_secs(18), &playing(&song, 112_000)).contains(&Action::Pause));
-        assert!(matches!(&r.take_done()[0].1, Outcome::Failed { detail } if detail.contains("instead of 0:00")));
+        assert!(matches!(&r.take_done()[0].1, Outcome::Failed { detail } if detail.starts_with("started at ")));
     }
 
     #[test]
