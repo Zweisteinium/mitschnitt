@@ -12,6 +12,7 @@ export const resultText: Record<string, string> = {
   lossy_only: "no lossless",
   wrong_song: "wrong song",
   took_over: "taken over",
+  skipped: "skipped",
   stalled: "failed",
   failed: "failed",
 };
@@ -95,6 +96,10 @@ class Echolot {
 
   async session(action: "pause" | "resume" | "stop") {
     await this.#try(() => api.echolotSession(action));
+  }
+
+  async skip() {
+    await this.#try(() => api.echolotSkip());
   }
 
   /** Mitschnitt's own Stop: a running session pauses first. */

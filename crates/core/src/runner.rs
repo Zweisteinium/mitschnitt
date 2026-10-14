@@ -83,6 +83,7 @@ pub enum Outcome {
     Failed { detail: String },
     /// The right song plays but no sound reaches this PC.
     NoSound,
+    Skipped,
 }
 
 /// What became of a finished recording, reported by its writer.

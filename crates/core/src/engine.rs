@@ -3,7 +3,7 @@
 //! player and only its songs are written.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -50,6 +50,7 @@ pub struct Queue {
     pub done: Sender<(Job, Outcome)>,
     pub status: Arc<Mutex<QueueStatus>>,
     pub out_dir: PathBuf,
+    pub skip: Arc<AtomicBool>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -636,6 +637,13 @@ impl Session {
             }
         }
         let mut actions = run.runner.tick(now, media);
+        if run.queue.skip.swap(false, Ordering::Relaxed) {
+            if run.runner.job().is_some() {
+                actions.extend(run.runner.abort(now, Outcome::Skipped));
+            } else if let Ok(job) = run.queue.jobs.try_recv() {
+                let _ = run.queue.done.send((job, Outcome::Skipped));
+            }
+        }
         if run.runner.ready(now)
             && let Ok(job) = run.queue.jobs.try_recv()
         {
@@ -733,7 +741,7 @@ impl Session {
                     }
                 }
                 Event::Completed { track, samples, off_grid, off_span, end_proven } => {
-                    let extra = self.extra.take().filter(|(t, _)| *t == track).map(|(_, e)| e).unwrap_or_default();
+                    let extra = self.extra.take().filter(|(t, _)| t.same_song(&track)).map(|(_, e)| e).unwrap_or_default();
                     let mut tags = Tags {
                         title: track.title.clone(),
                         artist: track.artist.clone(),

@@ -100,6 +100,7 @@ export const api = {
   echolotCancel: () => invoke<void>("echolot_cancel"),
   echolotDisconnect: () => invoke<void>("echolot_disconnect"),
   echolotSession: (action: "pause" | "resume" | "stop") => invoke<void>("echolot_session", { action }),
+  echolotSkip: () => invoke<void>("echolot_skip"),
   onEcholot: (handler: (u: RecorderUpdate) => void) => listen<RecorderUpdate>("echolot", (e) => handler(e.payload)),
   onEcholotConnect: (handler: (url: string) => void) => listen<string>("echolot-connect", (e) => handler(e.payload)),
   onEcholotError: (handler: (error: string) => void) => listen<string>("echolot-error", (e) => handler(e.payload)),

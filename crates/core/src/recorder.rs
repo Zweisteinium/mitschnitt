@@ -79,6 +79,7 @@ pub struct Recorder {
     profile: Profile,
     snapshot: Arc<Mutex<Snapshot>>,
     stop: Arc<AtomicBool>,
+    skip: Arc<AtomicBool>,
 }
 
 impl Recorder {
@@ -88,6 +89,11 @@ impl Recorder {
 
     pub fn stop(&self) {
         self.stop.store(true, Ordering::Relaxed);
+    }
+
+    pub fn skip(&self) {
+        crate::log!("skip the current song");
+        self.skip.store(true, Ordering::Relaxed);
     }
 
     pub fn session(&self, action: &str, host: &dyn Host) -> Result<(), String> {
@@ -100,7 +106,11 @@ impl Recorder {
                 let _ = media::Watcher::new(player).control(media::Control::Pause);
             }
         }
-        let session = client.session(action).map_err(|e| e.to_string())?;
+        let session = match client.session(action) {
+            // Ended in Echolot meanwhile (seen: at the same second as Mitschnitt's Stop): nothing left to pause or stop.
+            Err(Error::NotFound(_)) if action != "resume" => None,
+            other => other.map_err(|e| e.to_string())?,
+        };
         let snapshot = {
             let mut s = self.snapshot.lock().map_err(|e| e.to_string())?;
             s.session = session;
@@ -161,12 +171,12 @@ struct Attached {
     status: Arc<Mutex<QueueStatus>>,
 }
 
-fn attach(host: &dyn Host, profile: &Profile, out_dir: &Path) -> Result<Attached, String> {
+fn attach(host: &dyn Host, profile: &Profile, out_dir: &Path, skip: &Arc<AtomicBool>) -> Result<Attached, String> {
     ensure_player(profile)?;
     let (jobs, jobs_rx) = mpsc::channel();
     let (done_tx, done) = mpsc::channel();
     let status = Arc::new(Mutex::new(QueueStatus::default()));
-    host.attach(Queue { jobs: jobs_rx, done: done_tx, status: status.clone(), out_dir: out_dir.to_owned() })?;
+    host.attach(Queue { jobs: jobs_rx, done: done_tx, status: status.clone(), out_dir: out_dir.to_owned(), skip: skip.clone() })?;
     Ok(Attached { jobs, done, status })
 }
 
@@ -232,13 +242,13 @@ pub fn connect(client: Client, saved: echolot::store::Saved, profile: Profile, o
         device: saved.recorder.name.clone(),
         ..Snapshot::default()
     }));
-    let stop = Arc::new(AtomicBool::new(false));
-    let recorder = Arc::new(Recorder { client: Some(client.clone()), profile: profile.clone(), snapshot: snapshot.clone(), stop: stop.clone() });
+    let (stop, skip) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)));
+    let recorder = Arc::new(Recorder { client: Some(client.clone()), profile: profile.clone(), snapshot: snapshot.clone(), stop: stop.clone(), skip: skip.clone() });
     std::thread::Builder::new()
         .name("echolot".into())
         .spawn(move || {
             init_thread();
-            echolot_loop(&client, &profile, &out_dir, &host, &snapshot, &stop);
+            echolot_loop(&client, &profile, &out_dir, &host, &snapshot, &stop, &skip);
             host.detach();
         })
         .expect("echolot thread");
@@ -254,7 +264,7 @@ struct Upload {
     note: Option<String>,
 }
 
-fn echolot_loop(client: &Client, profile: &Profile, out_dir: &Path, shared_host: &Arc<dyn Host>, shared_snapshot: &Arc<Mutex<Snapshot>>, stop: &AtomicBool) {
+fn echolot_loop(client: &Client, profile: &Profile, out_dir: &Path, shared_host: &Arc<dyn Host>, shared_snapshot: &Arc<Mutex<Snapshot>>, stop: &AtomicBool, skip: &Arc<AtomicBool>) {
     let (host, snapshot): (&dyn Host, &Mutex<Snapshot>) = (&**shared_host, shared_snapshot);
     let pending_dir = out_dir.join(PENDING_DIR);
     let not_taken = out_dir.join(NOT_TAKEN_DIR);
@@ -403,7 +413,7 @@ fn echolot_loop(client: &Client, profile: &Profile, out_dir: &Path, shared_host:
                 match poll.item {
                     Some(item) if !stop.load(Ordering::Relaxed) => {
                         if attached.is_none() {
-                            match attach(host, profile, &pending_dir) {
+                            match attach(host, profile, &pending_dir, skip) {
                                 Ok(a) => attached = Some(a),
                                 Err(e) => {
                                     // The song goes back to Echolot's queue.
@@ -483,6 +493,7 @@ fn result_of(outcome: &Outcome) -> (&'static str, String) {
         Outcome::Failed { detail } => ("failed", detail.clone()),
         // Not the song's fault: it goes back without costing a try.
         Outcome::NoSound => ("took_over", NO_SOUND.into()),
+        Outcome::Skipped => ("skipped", "skipped by the user".into()),
     }
 }
 
@@ -546,14 +557,14 @@ fn uploader(client: Client, not_taken: PathBuf, snapshot: Arc<Mutex<Snapshot>>, 
 pub fn run_list(export: Export, profile: Profile, out_dir: PathBuf, host: Arc<dyn Host>) -> Arc<Recorder> {
     let jobs = export.jobs();
     let snapshot = Arc::new(Mutex::new(Snapshot { connection: "file".into(), detail: export.title.clone(), total: jobs.len() as u32, ..Snapshot::default() }));
-    let stop = Arc::new(AtomicBool::new(false));
-    let recorder = Arc::new(Recorder { client: None, profile: profile.clone(), snapshot: snapshot.clone(), stop: stop.clone() });
+    let (stop, skip) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)));
+    let recorder = Arc::new(Recorder { client: None, profile: profile.clone(), snapshot: snapshot.clone(), stop: stop.clone(), skip: skip.clone() });
     std::thread::Builder::new()
         .name("queue".into())
         .spawn(move || {
             init_thread();
             let (host, snapshot): (&dyn Host, &Mutex<Snapshot>) = (&*host, &snapshot);
-            let attached = match attach(host, &profile, &out_dir.join(PENDING_DIR)) {
+            let attached = match attach(host, &profile, &out_dir.join(PENDING_DIR), &skip) {
                 Ok(a) => a,
                 Err(e) => {
                     publish(snapshot, host, |s| {

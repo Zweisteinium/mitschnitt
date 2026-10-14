@@ -186,6 +186,12 @@ pub async fn echolot_disconnect(handle: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub fn echolot_skip(state: State<'_, Echolot>) -> Result<(), String> {
+    lock(&state.recorder)?.as_ref().ok_or("not connected")?.skip();
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn echolot_session(action: String, handle: AppHandle) -> Result<(), String> {
     let recorder = lock(&handle.state::<Echolot>().recorder)?.clone().ok_or("not connected")?;
     recorder.session(&action, &*host(&handle))

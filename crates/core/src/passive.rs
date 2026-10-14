@@ -42,7 +42,7 @@ const END_SILENCE_MS: u64 = 200;
 /// song is from another album (digital silence follows), 1.22 to 1.52 s when it follows gaplessly on the same album.
 /// A skip that late looks the same (neither the position nor the audio tells them apart), so a skip in the last 2 s
 /// keeps the new song's first moments: accepted, as a gapless album would otherwise lose every song.
-// TODO(windows): measured on Linux only; check how early SMTC shows the next title on Windows.
+// Windows (SMTC): 1.17 to 1.8 s before the end into a gapless next track (3 measured).
 const EARLY_ANNOUNCE_MS: u64 = 2_000;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -51,6 +51,12 @@ pub struct Track {
     pub artist: String,
     pub album: String,
     pub duration_ms: u64,
+}
+
+impl Track {
+    pub fn same_song(&self, other: &Track) -> bool {
+        (&self.title, &self.artist, &self.album) == (&other.title, &other.artist, &other.album)
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -311,6 +317,15 @@ impl Passive {
 
     pub fn media(&mut self, m: Media) -> Vec<Event> {
         let mut events = Vec::new();
+        // Spotify corrected the length of the playing track 1.5 s in (239000 -> 239370 ms, measured).
+        if let (State::Recording { track, expected, .. }, Some(shown)) = (&mut self.state, &m.track)
+            && shown != track
+            && shown.same_song(track)
+        {
+            crate::log!("length of \"{}\" changed from {} to {} ms", track.title, track.duration_ms, shown.duration_ms);
+            *expected = ms_to_frames(shown.duration_ms, self.rate);
+            *track = shown.clone();
+        }
         match &self.state {
             // A real pause at the end still ends it: the audio stops (silent packets, an underrun).
             State::Recording { track, expected, samples, .. } if frames_to_ms(expected.saturating_sub(samples.len() / self.channels), self.rate) > END_MARGIN_MS => {
@@ -915,5 +930,21 @@ mod tests {
         feed(&mut p, &raw, &mut ev);
         silence(&mut p, 300, &mut ev);
         assert!(ev.iter().any(|e| matches!(e, Event::Completed { .. })), "{ev:?}");
+    }
+
+    #[test]
+    fn a_corrected_length_is_taken_over() {
+        let (short, long) = (track(2_000), track(3_000));
+        let (_, raw) = master(ms_to_frames(3_000, RATE), 5);
+        let mut p = Passive::new(RATE, 2, GAIN);
+        let mut ev = Vec::new();
+        silence(&mut p, 1_200, &mut ev);
+        ev.extend(p.media(playing(&short, 0)));
+        feed(&mut p, &raw[..ms_to_frames(400, RATE) * 2], &mut ev);
+        ev.extend(p.media(playing(&long, 400)));
+        feed(&mut p, &raw[ms_to_frames(400, RATE) * 2..], &mut ev);
+        silence(&mut p, 300, &mut ev);
+        let done = ev.iter().find_map(|e| match e { Event::Completed { track, samples, .. } => Some((track, samples.len())), _ => None });
+        assert_eq!(done, Some((&long, raw.len())), "{ev:?}");
     }
 }

@@ -218,7 +218,8 @@ fn main() {
             echolot::echolot_code,
             echolot::echolot_cancel,
             echolot::echolot_disconnect,
-            echolot::echolot_session
+            echolot::echolot_session,
+            echolot::echolot_skip
         ])
         .build(tauri::generate_context!())
         .expect("error while building Mitschnitt")

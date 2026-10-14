@@ -66,6 +66,9 @@
         {:else if session.state === "running"}
           <button class="btn" onclick={() => echolot.session("pause")} disabled={echolot.busy}>Pause</button>
         {/if}
+        {#if s.current}
+          <button class="btn" onclick={() => echolot.skip()} disabled={echolot.busy}>Skip</button>
+        {/if}
         {#if session.state !== "stopped"}
           <button class="btn danger" onclick={() => echolot.session("stop")} disabled={echolot.busy}>End session</button>
         {/if}
@@ -175,7 +178,8 @@
 
   .buttons {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-auto-columns: 1fr;
+    grid-auto-flow: column;
     gap: 8px;
     margin-top: 4px;
   }
