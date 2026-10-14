@@ -20,6 +20,7 @@ pub mod runner;
 pub mod sessions;
 pub mod settings;
 pub mod setup;
+pub mod spectrum;
 
 pub use platform::os::{desktop, guard, init_thread, power};
 

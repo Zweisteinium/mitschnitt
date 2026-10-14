@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
-use crate::analyze::{self, Master, Report, Severity};
+use crate::analyze::{self, Lossy, Master, Report, Severity};
 use crate::audio::Audio;
 use crate::capture::{Capture, CaptureEvent, Packet};
 use crate::devices::{self, default_endpoint};
@@ -120,8 +120,8 @@ pub enum Update {
     Dropped { track: Track, reason: Reason, message: String },
     Exists { track: Track, file: String },
     /// `file`: `None` when a flagged file was removed. `exact`: every sample arrived untouched. `faded`: all but the
-    /// player's fade-in did.
-    Saved { track: Track, file: Option<String>, size: u64, verdict: Severity, master: Master, exact: bool, faded: bool, issues: Vec<String>, echolot: bool },
+    /// player's fade-in did. `lossy`: saved as MP3 (manual) or uploaded as it came (Echolot judges it itself).
+    Saved { track: Track, file: Option<String>, size: u64, verdict: Severity, master: Master, exact: bool, faded: bool, lossy: Option<Lossy>, issues: Vec<String>, echolot: bool },
     Failed { track: Track, error: String },
     KeyBlocked { count: u32 },
     /// The default output changed.
@@ -715,7 +715,7 @@ struct Checked {
     exact: bool,
     /// The note when only the player's fade-in isn't original.
     faded: Option<String>,
-    lossy: bool,
+    lossy: Option<Lossy>,
 }
 
 /// Off the grid in a share this small: a glitch (worth another try), not a lossy stream.
@@ -729,7 +729,8 @@ fn check(samples: Vec<i32>, (off_grid, off_span): (usize, Option<(usize, usize)>
     let mut report = analyze::analyze_with(&audio, exact || fade.is_some());
     let mut faded = None;
     let share = off_grid as f64 / audio.frames().max(1) as f64;
-    let lossy = lossless && !exact && share > GLITCH_SHARE;
+    let stream = lossless && !exact && fade.is_none() && share > GLITCH_SHARE;
+    let lossy = stream.then_some(Lossy::Stream);
     if !exact && lossless {
         let text = match fade {
             Some((_, last)) => {
@@ -737,7 +738,7 @@ fn check(samples: Vec<i32>, (off_grid, off_span): (usize, Option<(usize, usize)>
                 faded = Some(text.clone());
                 text
             }
-            _ if lossy => format!("{:.1} % of the audio did not arrive as exact 24-bit values: lossy stream or processing (normalization, equalizer, crossfade)", share * 100.0),
+            _ if stream => format!("lossy stream: {:.1} % of the audio did not arrive as exact 24-bit values (or an equalizer, normalization or crossfade changed it)", share * 100.0),
             _ => {
                 let at = |frame: usize| crate::timestamp(frame, rate);
                 let (first, last) = off_span.unwrap_or_default();
@@ -747,6 +748,7 @@ fn check(samples: Vec<i32>, (off_grid, off_span): (usize, Option<(usize, usize)>
         report.issues.insert(0, analyze::Issue { severity: Severity::Altered, text });
         report.verdict = report.verdict.max(Severity::Altered);
     }
+    let lossy = lossy.or(report.lossy_source.then_some(Lossy::Source));
     Checked { audio, report, exact, faded, lossy }
 }
 
@@ -755,7 +757,7 @@ fn file_size(path: &std::path::Path) -> u64 {
 }
 
 fn saved(track: Track, file: Option<PathBuf>, size: u64, checked: Checked, echolot: bool) -> Update {
-    let Checked { report, exact, faded, .. } = checked;
+    let Checked { report, exact, faded, lossy, .. } = checked;
     Update::Saved {
         track,
         file: file.map(|f| f.display().to_string()),
@@ -764,6 +766,7 @@ fn saved(track: Track, file: Option<PathBuf>, size: u64, checked: Checked, echol
         master: report.master,
         exact,
         faded: faded.is_some(),
+        lossy,
         issues: report.issues.into_iter().map(|i| i.text).collect(),
         echolot,
     }
@@ -775,10 +778,13 @@ fn finish(track: Track, tags: Tags, samples: Vec<i32>, grid: (usize, Option<(usi
         return notify(Update::Exists { track, file: file.display().to_string() });
     }
     let checked = check(samples, grid, rate, lossless);
+    // Lossy content in a lossless file would only pretend to be more: MP3 320 holds what arrived.
+    let settings = &Settings { format: if checked.lossy.is_some() { Format::Mp3 } else { settings.format }, ..settings.clone() };
     match output::write(&checked.audio, &tags, settings) {
         Ok(path) => {
             let size = file_size(&path);
-            let flagged = checked.report.verdict > Severity::Info;
+            // Labelled and saved for what it is: nothing to hide.
+            let flagged = checked.report.verdict > Severity::Info && checked.lossy.is_none();
             if flagged && !settings.keep_flagged {
                 let _ = std::fs::remove_file(&path);
             }
@@ -793,7 +799,7 @@ fn finish(track: Track, tags: Tags, samples: Vec<i32>, grid: (usize, Option<(usi
 #[allow(clippy::too_many_arguments)]
 fn finish_job(track: Track, tags: Tags, samples: Vec<i32>, grid: (usize, Option<(usize, usize)>), rate: u32, lossless: bool, settings: &Settings, notify: &Notify) -> Written {
     let checked = check(samples, grid, rate, lossless);
-    if checked.lossy {
+    if checked.lossy == Some(Lossy::Stream) {
         let detail = checked.report.issues.first().map(|i| i.text.clone()).unwrap_or_default();
         notify(Update::Failed { track, error: format!("not lossless, not kept: {detail}") });
         return Written::Lossy { detail };
@@ -857,6 +863,28 @@ mod tests {
         let lossy = finish_job(track, Tags::default(), samples, (60_000, Some((0, 88_199))), rate, true, &settings, &notify);
         assert!(matches!(lossy, Written::Lossy { .. }));
         assert!(!dir.join("Echolot").exists(), "nothing waits for an upload");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_lossy_stream_is_kept_as_mp3_not_as_a_lossless_file() {
+        let rate = 44_100;
+        let samples: Vec<i32> = (0..rate as usize * 2 * 2).map(|i| ((i as f64 * 0.03).sin() * 4_000_000.0) as i32 | 1).collect();
+        let dir = std::env::temp_dir().join(format!("mitschnitt-lossy-{}", std::process::id()));
+        let settings = Settings { out_dir: dir.clone(), format: Format::Flac, keep_flagged: false, skip_existing: false, ..Settings::default() };
+        let track = Track { title: "Song".into(), artist: "Artist".into(), album: String::new(), duration_ms: 2_000 };
+        let tags = Tags { title: track.title.clone(), artist: track.artist.clone(), ..Tags::default() };
+        let saved = Arc::new(Mutex::new(None));
+        let sink = saved.clone();
+        let notify: Notify = Arc::new(move |u| {
+            if let Update::Saved { file, lossy, .. } = u {
+                *sink.lock().unwrap() = Some((file, lossy));
+            }
+        });
+        finish(track, tags, samples, (60_000, Some((0, 88_199))), rate, true, &settings, &notify);
+        let (file, lossy) = saved.lock().unwrap().take().expect("saved");
+        assert_eq!(lossy, Some(Lossy::Stream));
+        assert!(file.is_some_and(|f| f.ends_with(".mp3")), "kept despite keep_flagged = false, as MP3");
         let _ = std::fs::remove_dir_all(dir);
     }
 }

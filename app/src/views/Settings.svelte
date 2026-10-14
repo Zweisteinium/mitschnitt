@@ -5,8 +5,8 @@
 
   const s = $derived(session.settings);
   const formats: { value: Format; label: string; note: string }[] = [
-    { value: "flac", label: "FLAC", note: "lossless, compressed, tagged – 16-bit for 16-bit masters, else 24-bit" },
-    { value: "wav", label: "WAV", note: "lossless, uncompressed, no tags – 16-bit for 16-bit masters, else 24-bit" },
+    { value: "flac", label: "FLAC", note: "lossless, compressed, tagged – 16-bit for 16-bit masters, else 24-bit; lossy recordings as MP3" },
+    { value: "wav", label: "WAV", note: "lossless, uncompressed, no tags – 16-bit for 16-bit masters, else 24-bit; lossy recordings as MP3" },
     { value: "mp3", label: "MP3", note: "320 kbit/s, tagged – lossy, encoded from the verified recording" },
   ];
 

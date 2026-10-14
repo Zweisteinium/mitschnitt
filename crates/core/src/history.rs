@@ -7,7 +7,7 @@ use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
-use crate::analyze::{Master, Severity};
+use crate::analyze::{Lossy, Master, Severity};
 use crate::passive::Track;
 use crate::settings::Settings;
 
@@ -27,6 +27,8 @@ pub struct Record {
     /// Only the player's fade-in at the start is not original (older lines: see [`load`]).
     #[serde(default)]
     pub faded: bool,
+    #[serde(default)]
+    pub lossy: Option<Lossy>,
     pub echolot: bool,
     /// Echolot's answer to the upload: `filed`, `not_better`, `rejected` or `failed`.
     #[serde(default)]
@@ -117,6 +119,7 @@ mod tests {
             master: Master::Bit24,
             exact: true,
             faded: false,
+            lossy: None,
             echolot,
             result: None,
             exists: false,

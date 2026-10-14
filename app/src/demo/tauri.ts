@@ -56,9 +56,9 @@ const session: EcholotSession = {
   reason: "",
   total: 12,
   done: 4,
-  filed: 2,
+  filed: 3,
   not_better: 0,
-  skipped: 1,
+  skipped: 0,
   failed: 1,
   minutes_left: 31,
   seconds_total: 2_820,
@@ -92,6 +92,7 @@ const record = (daysAgo: number, artist: string, title: string, length: [number,
   master: faded ? "bit16_partly" : bits === 16 ? "bit16_exact" : "bit24",
   exact: !faded,
   faded,
+  lossy: null,
   echolot: echolot !== null,
   result: echolot,
   exists,
@@ -105,13 +106,13 @@ const history: HistoryRecord[] = [
   record(6, "New Order", "Blue Monday", [7, 29], 16, "filed"),
 ];
 
-// This run so far, oldest first: one of each label. Rick's first try had a dropout, so he plays again now.
-type Saved = { verdict: "info" | "altered" | "corrupt"; master: "bit16_exact" | "bit16_partly" | "bit24"; exact: boolean; faded: boolean; issues: string[] };
-const exact: Saved = { verdict: "info", master: "bit16_exact", exact: true, faded: false, issues: [] };
+// This run so far, oldest first: the labels worth seeing. Rick's first try had a dropout, so he plays again now.
+type Saved = { verdict: "info" | "altered" | "corrupt"; master: "bit16_exact" | "bit16_partly" | "bit24"; exact: boolean; faded: boolean; lossy: "source" | null; issues: string[] };
+const exact: Saved = { verdict: "info", master: "bit16_exact", exact: true, faded: false, lossy: null, issues: [] };
 const earlierSongs: [number, Track, Saved, string, string][] = [
   [16, { title: "Sandstorm", artist: "Darude", album: "Before the Storm", duration_ms: 225_000 }, exact, "filed", "added to the library"],
   [12, { title: "Castle in the Sky", artist: "DJ Satomi", album: "Castle in the Sky", duration_ms: 201_000 }, { ...exact, verdict: "altered", master: "bit16_partly", exact: false, faded: true }, "filed", "added to the library"],
-  [8, { title: "MAYDAY", artist: "TheFatRat", album: "MAYDAY", duration_ms: 221_000 }, { ...exact, verdict: "altered", master: "bit16_partly", exact: false, issues: ["not original in 41 % of the audio: a lossy stream"] }, "lossy_only", "no lossless stream"],
+  [8, { title: "MAYDAY", artist: "TheFatRat", album: "MAYDAY", duration_ms: 221_000 }, { ...exact, lossy: "source", issues: ["~256 kbps / V0 source: the spectrum ends at 20.0 kHz, 50 dB steep"] }, "filed", "added to the library"],
   [4, rick, { ...exact, verdict: "corrupt", issues: ["dropout 1:12.405 - 1:12.437 (31.5 ms of digital silence inside loud audio)"] }, "stalled", "damaged, played again"],
 ];
 

@@ -6,13 +6,15 @@ export type Track = { title: string; artist: string; album: string; duration_ms:
 export type Status = { phase: "idle" | "waiting" | "recording"; track: Track | null; recorded_ms: number; level: [number, number]; rms: [number, number]; grid: { bit24: number } | null };
 export type Severity = "info" | "altered" | "corrupt";
 export type Master = "bit16_exact" | "bit16_partly" | "bit24";
+/** Lossy content: streamed lossy, or a lossless stream of a master made from a lossy file. */
+export type Lossy = "stream" | "source";
 
 export type Update =
   | { kind: "status"; status: Status }
   | { kind: "started"; track: Track }
   | { kind: "dropped"; track: Track; message: string }
   | { kind: "exists"; track: Track; file: string }
-  | { kind: "saved"; track: Track; file: string | null; size: number; verdict: Severity; master: Master; exact: boolean; faded: boolean; issues: string[]; echolot: boolean }
+  | { kind: "saved"; track: Track; file: string | null; size: number; verdict: Severity; master: Master; exact: boolean; faded: boolean; lossy: Lossy | null; issues: string[]; echolot: boolean }
   | { kind: "failed"; track: Track; error: string }
   | { kind: "key_blocked" }
   | { kind: "monitor_muted"; muted: boolean }
@@ -71,7 +73,7 @@ export type RecorderSnapshot = {
 type RecorderUpdate = { kind: "snapshot"; snapshot: RecorderSnapshot } | { kind: "song"; job: Track; result: string; detail: string; moved: [string, string | null] | null };
 type CardState = { snapshot: RecorderSnapshot; url: string; pairing: boolean };
 /** `at`: Unix ms. `result`: Echolot's answer to the upload. */
-export type HistoryRecord = { at: number; track: Track; file: string; size: number; verdict: Severity; master: Master; exact: boolean; faded: boolean; echolot: boolean; result: string | null; exists: boolean };
+export type HistoryRecord = { at: number; track: Track; file: string; size: number; verdict: Severity; master: Master; exact: boolean; faded: boolean; lossy: Lossy | null; echolot: boolean; result: string | null; exists: boolean };
 
 export const api = {
   sources: () => invoke<Source[]>("sources"),

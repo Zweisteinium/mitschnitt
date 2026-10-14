@@ -1,7 +1,7 @@
-import { api, type Check, type Master, type Platform, type Settings, type Severity, type Source, type SourceInfo, type Status, type Track, type Update } from "./api";
+import { api, type Check, type Lossy, type Master, type Platform, type Settings, type Severity, type Source, type SourceInfo, type Status, type Track, type Update } from "./api";
 
 type Outcome =
-  | { outcome: "saved"; file: string | null; size: number; verdict: Severity; master: Master; exact: boolean; faded: boolean; issues: string[]; echolot: boolean }
+  | { outcome: "saved"; file: string | null; size: number; verdict: Severity; master: Master; exact: boolean; faded: boolean; lossy: Lossy | null; issues: string[]; echolot: boolean }
   | { outcome: "exists"; file: string }
   | { outcome: "dropped" | "failed"; message: string };
 
@@ -137,7 +137,7 @@ class Session {
         this.status = u.status;
         break;
       case "saved":
-        this.#log(u.track, { outcome: "saved", file: u.file, size: u.size, verdict: u.verdict, master: u.master, exact: u.exact, faded: u.faded, issues: u.issues, echolot: u.echolot });
+        this.#log(u.track, { outcome: "saved", file: u.file, size: u.size, verdict: u.verdict, master: u.master, exact: u.exact, faded: u.faded, lossy: u.lossy, issues: u.issues, echolot: u.echolot });
         break;
       case "key_blocked": {
         const at = Date.now();

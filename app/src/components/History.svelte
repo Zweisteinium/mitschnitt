@@ -1,18 +1,22 @@
 <script lang="ts">
-  import { api, clock, megabytes, type HistoryRecord, type Master, type Severity } from "../lib/api";
+  import { api, clock, megabytes, type HistoryRecord, type Lossy, type Master, type Severity } from "../lib/api";
   import { resultText } from "../lib/echolot.svelte";
   import { session, type Entry } from "../lib/session.svelte";
   import Panel from "./Panel.svelte";
 
-  type Tone = "ok" | "warn" | "bad" | "muted";
+  type Tone = "ok" | "lossy" | "warn" | "bad" | "muted";
 
   const time = (d: Date) => d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   const full = (d: Date) => d.toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
   const when = (d: Date) => (d.toDateString() === new Date().toDateString() ? time(d) : d.toLocaleDateString([], { day: "numeric", month: "short" }));
 
   /** OK: fine, but not proven to the last sample (the player's fade-in, or no proof). */
-  function quality(verdict: Severity, master: Master, exact: boolean, faded: boolean): { tone: Tone; tag: string; text: string } {
+  function quality(verdict: Severity, master: Master, exact: boolean, faded: boolean, lossy: Lossy | null, file: string | null): { tone: Tone; tag: string; text: string } {
     if (verdict === "corrupt") return { tone: "bad", tag: "bad", text: "Corrupt" };
+    if (lossy) {
+      const text = lossy === "stream" ? "Streamed lossy only" : "Master made from a lossy file";
+      return { tone: "lossy", tag: "lossy", text: file?.endsWith(".mp3") ? `${text} · saved as MP3` : text };
+    }
     if (faded) return { tone: "ok", tag: "fine", text: "10 ms fade-in · rest bit-exact" };
     if (verdict === "altered") return { tone: "warn", tag: "alt", text: "Not fully original" };
     const bits = master === "bit16_exact" ? "16-bit master" : "24-bit master";
@@ -22,7 +26,7 @@
   function summary(e: Entry): { tone: Tone; tag: string; text: string } {
     if (e.outcome === "exists") return { tone: "muted", tag: "have", text: "Already recorded" };
     if (e.outcome !== "saved") return e.outcome === "dropped" ? { tone: "muted", tag: "skip", text: e.message } : { tone: "bad", tag: "fail", text: e.message };
-    const q = quality(e.verdict, e.master, e.exact, e.faded);
+    const q = quality(e.verdict, e.master, e.exact, e.faded, e.lossy, e.file);
     return e.file === null ? { ...q, text: `${q.text} · removed` } : q;
   }
 
@@ -109,7 +113,7 @@
     {:else}
       <ul class="rows">
         {#each records.slice(0, shown) as r (r.at + r.file)}
-          {@const q = quality(r.verdict, r.master, r.exact, r.faded)}
+          {@const q = quality(r.verdict, r.master, r.exact, r.faded, r.lossy, r.file)}
           {@const at = new Date(r.at)}
           <li>
             <span class="tag mono {q.tone}" title={q.text}>{q.tag}</span>

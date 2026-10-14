@@ -26,6 +26,8 @@ pub struct Report {
     pub peak_dbfs: f64,
     pub duration: String,
     pub issues: Vec<Issue>,
+    /// Made from a lossy file (see [`crate::spectrum`]).
+    pub lossy_source: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -36,6 +38,14 @@ pub enum Master {
     Bit16Partly,
     /// A 24-bit master, or processed audio: the file alone can't tell.
     Bit24,
+}
+
+/// Lossy content: the player streamed it lossy, or its lossless stream carries a master made from a lossy file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Lossy {
+    Stream,
+    Source,
 }
 
 const LIMITER_LO: f64 = 0.977_237_220_955_810_7; // -0.20 dBFS
@@ -82,9 +92,11 @@ pub fn analyze_with(a: &Audio, exact_source: bool) -> Report {
         Some(_) => {}
     }
 
-    // Lossy codecs cut everything above ~20 kHz.
-    if !exact_source && let Some(ratio) = high_band_ratio(a) && ratio < 1e-10 {
-        issues.push(issue(Severity::Info, format!("no content above 20 kHz ({:.0} dB) – possibly from a lossy source", 10.0 * ratio.max(1e-30).log10())));
+    // Also for a bit-exact capture: the player's lossless stream may carry a master made from a lossy file.
+    let lossy_source = crate::spectrum::check(a).and_then(|e| e.lossy.map(|source| (e, source)));
+    if let Some((edge, source)) = &lossy_source {
+        let khz = edge.cut_hz as f64 / 1000.0;
+        issues.push(issue(Severity::Info, format!("{source} source: the spectrum ends at {khz:.1} kHz, {:.0} dB steep", edge.drop_db)));
     }
 
     let off: Vec<usize> = (0..n).filter(|&i| !a.frame_on_grid16(i)).collect();
@@ -150,54 +162,11 @@ pub fn analyze_with(a: &Audio, exact_source: bool) -> Report {
     }
 
     let verdict = issues.iter().map(|i| i.severity).filter(|s| *s > Severity::Info).max().unwrap_or(Severity::Info);
-    Report { verdict, master, peak_dbfs: db(peak), duration: ts(n), issues }
+    Report { verdict, master, peak_dbfs: db(peak), duration: ts(n), issues, lossy_source: lossy_source.is_some() }
 }
 
 fn issue(severity: Severity, text: String) -> Issue {
     Issue { severity, text }
-}
-
-/// Energy above 20 kHz relative to the total (4th-order Butterworth high-pass); `None` for (nearly) silent files.
-fn high_band_ratio(a: &Audio) -> Option<f64> {
-    if a.rate < 44_100 {
-        return None;
-    }
-    let scale = (1u64 << (a.bits - 1)) as f64 * a.channels as f64;
-    let mut stages = [Biquad::highpass(20_000.0, a.rate as f64, 0.541_196), Biquad::highpass(20_000.0, a.rate as f64, 1.306_563)];
-    let (mut total, mut high) = (0.0, 0.0);
-    for i in 0..a.frames() {
-        let x = a.frame(i).iter().map(|s| *s as f64).sum::<f64>() / scale;
-        let y = stages.iter_mut().fold(x, |v, s| s.process(v));
-        total += x * x;
-        high += y * y;
-    }
-    (total > 1e-6 * a.frames() as f64).then(|| high / total)
-}
-
-/// RBJ biquad (direct form I).
-struct Biquad {
-    b: [f64; 3],
-    a: [f64; 2],
-    x: [f64; 2],
-    y: [f64; 2],
-}
-
-impl Biquad {
-    fn highpass(freq: f64, rate: f64, q: f64) -> Self {
-        let w = 2.0 * std::f64::consts::PI * freq / rate;
-        let (sin, cos) = w.sin_cos();
-        let alpha = sin / (2.0 * q);
-        let a0 = 1.0 + alpha;
-        let b = [(1.0 + cos) / 2.0 / a0, -(1.0 + cos) / a0, (1.0 + cos) / 2.0 / a0];
-        Biquad { b, a: [-2.0 * cos / a0, (1.0 - alpha) / a0], x: [0.0; 2], y: [0.0; 2] }
-    }
-
-    fn process(&mut self, x: f64) -> f64 {
-        let y = self.b[0] * x + self.b[1] * self.x[0] + self.b[2] * self.x[1] - self.a[0] * self.y[0] - self.a[1] * self.y[1];
-        self.x = [x, self.x[0]];
-        self.y = [y, self.y[0]];
-        y
-    }
 }
 
 /// Half-open runs of frames where `pred` holds.
