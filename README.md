@@ -41,11 +41,13 @@ For lossless recordings you need Spotify Premium with the streaming quality set 
   length Spotify reports only says where to look: it can be a few milliseconds short, and the sound after it is kept.
   A pause, skip, seek, buffering stall or dropout is detected and reported, so a broken recording never passes as a
   complete one.
-- **Labels.** Every file gets one of four labels, with the reason. The written file is decoded again and compared
+- **Labels.** Every file gets one of five labels, with the reason. The written file is decoded again and compared
   with the recording before it gets its name.
   - **EXACT:** every sample with sound is there and bit-exact, from the first to the last. Only the digital silence
     at the very start and end can be a few milliseconds longer or shorter than in the original.
   - **FINE:** the same, except for Spotify's fade-in of about 10 ms at the start.
+  - **LOSSY:** Spotify streamed the song lossy only, or its master was made from a lossy file (found in the
+    spectrum). When you record yourself, it is saved as MP3, since a lossless file would only pretend to be more.
   - **ALT:** something is not original, or the end could not be proven (see [Limits](#limits)).
   - **BAD:** damaged, for example by a dropout.
 - **Formats and tags.** FLAC in 16 or 24 bit, as the source was, WAV, or MP3 encoded from the verified recording.
@@ -103,8 +105,9 @@ CORRUPT  Rick Astley - Never Gonna Give You Up  3:33.573  peak  -0.21  16-bit, b
 [Echolot](https://github.com/Zweisteinium/echolot) is my other project: a self-hosted music library that syncs
 your playlists and likes and keeps only the right songs, in the best quality it can get. Connect Mitschnitt to it
 and it becomes a recorder for the songs Echolot is still missing. Echolot hands out one song at a time, Mitschnitt
-starts it in Spotify, checks that the right song plays, records it and uploads it. Only EXACT and FINE recordings
-go up. A damaged one is played again, a lossy one is left out.
+starts it in Spotify, checks that the right song plays, records it and uploads it. EXACT and FINE recordings go
+up, and so does one whose master was made from a lossy file: Echolot judges that with its own spectrum check. A
+damaged recording is played again, a song Spotify streams lossy only is left out.
 
 On Linux, while a song records, Mitschnitt switches Spotify to repeat that song. Otherwise Spotify might go on with
 the album's next song without a pause, and the song's end could not be proven. Before repeating, Spotify pauses, and
