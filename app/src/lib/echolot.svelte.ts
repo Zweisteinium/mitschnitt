@@ -47,6 +47,7 @@ class Echolot {
         this.snapshot = u.snapshot;
         if (this.connected) this.pairing = false;
       } else {
+        if (u.moved) session.moved(...u.moved);
         this.results = [{ id: this.#nextId++, at: new Date(), job: u.job, result: u.result, detail: u.detail }, ...this.results].slice(0, 100);
       }
     });

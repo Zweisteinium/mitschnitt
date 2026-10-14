@@ -68,7 +68,7 @@ export type RecorderSnapshot = {
   uploads: number;
   error: string | null;
 };
-type RecorderUpdate = { kind: "snapshot"; snapshot: RecorderSnapshot } | { kind: "song"; job: Track; result: string; detail: string };
+type RecorderUpdate = { kind: "snapshot"; snapshot: RecorderSnapshot } | { kind: "song"; job: Track; result: string; detail: string; moved: [string, string | null] | null };
 type CardState = { snapshot: RecorderSnapshot; url: string; pairing: boolean };
 /** `at`: Unix ms. `result`: Echolot's answer to the upload. */
 export type HistoryRecord = { at: number; track: Track; file: string; size: number; verdict: Severity; master: Master; exact: boolean; faded: boolean; echolot: boolean; result: string | null; exists: boolean };

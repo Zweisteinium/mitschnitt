@@ -70,7 +70,6 @@ pub enum RecorderUpdate {
         job: Job,
         result: String,
         detail: String,
-        #[serde(skip)]
         moved: Option<(PathBuf, Option<PathBuf>)>,
     },
 }

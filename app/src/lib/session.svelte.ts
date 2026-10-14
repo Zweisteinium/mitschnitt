@@ -174,6 +174,11 @@ class Session {
     }
   }
 
+  /** Echolot's answer moved a recording out of the waiting folder (`to`: null when it was deleted). */
+  moved(from: string, to: string | null) {
+    this.history = this.history.map((e) => (e.outcome === "saved" && e.file === from ? { ...e, file: to } : e));
+  }
+
   #log(track: Track, outcome: Outcome) {
     this.history = [{ id: this.#nextId++, at: new Date(), track, ...outcome }, ...this.history].slice(0, 200);
   }

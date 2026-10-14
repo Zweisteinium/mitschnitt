@@ -53,6 +53,17 @@
   });
 </script>
 
+{#snippet fileActions(file: string)}
+  <span class="actions">
+    <button class="icon" onclick={() => api.open(file)} title="Show in folder: {file}" aria-label="Show in folder">
+      <svg viewBox="0 0 16 16"><path d="M1.5 3.5h4.5l1.5 1.5h7v8h-13z" /></svg>
+    </button>
+    <button class="icon" onclick={() => api.play(file)} title="Play" aria-label="Play">
+      <svg viewBox="0 0 16 16"><path d="M4.5 2.5v11l9-5.5z" /></svg>
+    </button>
+  </span>
+{/snippet}
+
 <Panel label="Session" index="03">
   {#snippet actions()}
     <button class="btn" onclick={() => session.settings && api.open(session.settings.out_dir)}>Open folder</button>
@@ -80,7 +91,7 @@
           </div>
           <span class="when mono muted" title={full(e.at)}>{time(e.at)}</span>
           {#if (e.outcome === "saved" || e.outcome === "exists") && e.file}
-            <button class="link mono" onclick={() => api.open(e.file!)} title={e.file}>show</button>
+            {@render fileActions(e.file)}
           {:else}
             <span></span>
           {/if}
@@ -110,7 +121,7 @@
             </div>
             <span class="when mono muted" title={full(at)}>{when(at)}</span>
             {#if r.exists}
-              <button class="link mono" onclick={() => api.open(r.file)} title={r.file}>show</button>
+              {@render fileActions(r.file)}
             {:else}
               <span class="gone mono muted" title="Moved or deleted: {r.file}">gone</span>
             {/if}
@@ -137,7 +148,7 @@
 
   .rows > li {
     display: grid;
-    grid-template-columns: 46px 1fr auto 34px;
+    grid-template-columns: 46px 1fr auto 44px;
     gap: 12px;
     align-items: start;
     padding: 10px 0;
@@ -191,7 +202,6 @@
     font-size: 11px;
   }
 
-  .link,
   .gone {
     margin-top: 2px;
     font-size: 11px;
@@ -200,11 +210,35 @@
     text-align: right;
   }
 
-  .link {
+  .actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 4px;
+  }
+
+  .icon {
+    display: grid;
+    place-items: center;
+    width: 20px;
+    height: 20px;
+    padding: 0;
     border: none;
     background: none;
-    padding: 0;
     color: var(--cyan);
+    opacity: 0.75;
+  }
+
+  .icon:hover {
+    opacity: 1;
+  }
+
+  .icon svg {
+    width: 14px;
+    height: 14px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.4;
+    stroke-linejoin: round;
   }
 
   .history {
