@@ -374,6 +374,12 @@ impl Passive {
         events
     }
 
+    /// The player is told to start a song: an earlier clean start can't be its. Measured: the repeat-one restart of the
+    /// song before played for a moment before the pause took effect, and its start was taken for the next song's.
+    pub fn forget_starts(&mut self) {
+        self.starts.clear();
+    }
+
     pub fn stop(&mut self) -> Vec<Event> {
         let events = self.interrupt(Reason::Stopped);
         self.state = State::Idle;
@@ -641,6 +647,26 @@ mod tests {
         let (samples, proven) = completed(&ev);
         assert!(!proven);
         assert_eq!(samples.len(), ms_to_frames(1_000, RATE) * 2);
+    }
+
+    #[test]
+    fn a_start_before_the_player_was_told_to_start_is_not_taken() {
+        let (old, new) = (track(1_000), Track { title: "Next".into(), ..track(1_000) });
+        let (_, raw) = master(ms_to_frames(1_000, RATE), 17);
+        let mut p = Passive::new(RATE, 2, GAIN);
+        let mut ev = p.media(playing(&old, 0));
+        silence(&mut p, 100, &mut ev);
+        feed(&mut p, &raw, &mut ev);
+        zeros(&mut p, 500, &mut ev);
+        feed(&mut p, &raw[..ms_to_frames(100, RATE) * 2], &mut ev); // the repeat plays for a moment
+        silence(&mut p, 1_000, &mut ev);
+        p.forget_starts();
+        ev.extend(p.media(playing(&new, 0)));
+        assert!(!ev.iter().any(|e| matches!(e, Event::Started(t) if t.title == "Next")), "{ev:?}");
+        silence(&mut p, 100, &mut ev);
+        feed(&mut p, &raw, &mut ev);
+        zeros(&mut p, 500, &mut ev);
+        assert!(ev.iter().any(|e| matches!(e, Event::Completed { track, end_proven: true, .. } if track.title == "Next")), "{ev:?}");
     }
 
     #[test]

@@ -451,8 +451,11 @@ impl Session {
         self.sync_repeat("Idle");
     }
 
-    fn act(&self, actions: &[Action], job: Option<&Job>) {
+    fn act(&mut self, actions: &[Action], job: Option<&Job>) {
         for action in actions {
+            if matches!(action, Action::Open | Action::Restart) {
+                self.passive.forget_starts();
+            }
             crate::log!("runner {action:?} {}", job.map(Job::label).unwrap_or_default());
             let result = match action {
                 Action::Open => job.map_or(Ok(()), |j| desktop::open_link_in_background(&j.play_uri(), self.profile.exe)),

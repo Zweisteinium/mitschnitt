@@ -79,7 +79,7 @@ fn run(
 
     let frame_bytes = 4 * channels as usize;
     let (errors, packets) = (sink.clone(), sink.clone());
-    let mut last = (Instant::now(), 0);
+    let (mut last, mut empty_run) = ((Instant::now(), 0), 0);
     let _stream_listener = stream
         .add_local_listener_with_user_data(())
         .state_changed(move |_, _, _, state| {
@@ -107,6 +107,13 @@ fn run(
                 let bytes = d.data().filter(|_| !empty).and_then(|b| b.get(offset..offset + frames * frame_bytes));
                 let data: Vec<f32> = bytes.map(|b| b.chunks_exact(4).map(|s| f32::from_le_bytes([s[0], s[1], s[2], s[3]])).collect()).unwrap_or_default();
                 let flags = if data.is_empty() { FLAG_SILENT } else { 0 };
+                // Told apart from a gap in the log: one song's end came as an empty buffer instead of digital zeros.
+                if data.is_empty() {
+                    empty_run += frames;
+                } else if empty_run > 0 {
+                    crate::log!("capture: {empty_run} frames as empty buffers");
+                    empty_run = 0;
+                }
                 emit(Packet { data, frames, flags });
             }
         })
