@@ -26,8 +26,9 @@ const POSITION_MATCH_MS: i64 = 1_500;
 const SEEK_TOLERANCE_MS: i64 = 3_000;
 /// A new title may briefly come with the previous track's position.
 const POSITION_SETTLE_MS: u64 = 2_000;
-/// Players announce the next track shortly before the old one has played out of their buffer.
-const EARLY_ANNOUNCE_MS: u64 = 1_500;
+/// The player's status runs ahead of its audio: at the end it showed 0:00 again (repeat) while the last samples were
+/// still on their way (under 0.1 s), and Spotify announces the next track about 0.3 s early (see the media watcher).
+const END_MARGIN_MS: u64 = 500;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Track {
@@ -288,17 +289,20 @@ impl Passive {
     pub fn media(&mut self, m: Media) -> Vec<Event> {
         let mut events = Vec::new();
         match &self.state {
-            State::Recording { track, expected, samples, .. } => {
+            // A real pause at the end still ends it: the audio stops (silent packets, an underrun).
+            State::Recording { track, expected, samples, .. } if frames_to_ms(expected.saturating_sub(samples.len() / self.channels), self.rate) > END_MARGIN_MS => {
                 let recorded = samples.len() / self.channels;
-                let remaining_ms = frames_to_ms(expected.saturating_sub(recorded), self.rate);
-                let elapsed_ms = frames_to_ms(recorded, self.rate) as i64;
+                let (elapsed_ms, left_ms) = (frames_to_ms(recorded, self.rate) as i64, frames_to_ms(expected - recorded, self.rate));
+                // No track at all: its metadata is being updated (seen 35 s before the end); a real change shows the
+                // other track within a moment.
                 if !m.playing {
+                    crate::log!("paused with {left_ms} ms left");
                     self.drop_recording(Reason::Paused, &mut events);
-                } else if m.track.as_ref() != Some(track) {
-                    if remaining_ms > EARLY_ANNOUNCE_MS {
-                        self.drop_recording(Reason::TrackChanged, &mut events);
-                    }
-                } else if (m.position_ms - elapsed_ms).abs() > SEEK_TOLERANCE_MS {
+                } else if let Some(shown) = m.track.as_ref().filter(|t| *t != track) {
+                    crate::log!("track changed with {left_ms} ms left: recording {track:?}, the player shows {shown:?} at {} ms", m.position_ms);
+                    self.drop_recording(Reason::TrackChanged, &mut events);
+                } else if m.track.is_some() && (m.position_ms - elapsed_ms).abs() > SEEK_TOLERANCE_MS {
+                    crate::log!("seeked with {left_ms} ms left: recorded {elapsed_ms} ms, the player is at {} ms", m.position_ms);
                     self.drop_recording(Reason::Seeked, &mut events);
                 }
             }
@@ -307,7 +311,7 @@ impl Passive {
                     self.state = State::Idle;
                 }
             }
-            State::Idle => {}
+            State::Recording { .. } | State::Idle => {}
         }
 
         if let (State::Idle, true, Some(track)) = (&self.state, m.playing, &m.track) {
@@ -648,6 +652,30 @@ mod tests {
             feed(&mut p, &raw, &mut ev);
             ev.extend(interrupt(&mut p, &t));
             assert!(ev.iter().any(|e| matches!(e, Event::Dropped { reason: r, .. } if *r == reason)), "{reason:?}: {ev:?}");
+        }
+    }
+
+    /// Both seen in a real run: the title missing for a moment mid-track, and the song repeating at its end. A real
+    /// pause at the end still costs the recording.
+    #[test]
+    fn a_missing_title_or_a_restart_at_the_end_keeps_the_recording() {
+        let t = track(3_000);
+        let (_, raw) = master(ms_to_frames(3_000, RATE), 5);
+        let at = |ms| ms_to_frames(ms, RATE) * 2;
+        for paused in [false, true] {
+            let mut p = Passive::new(RATE, 2, GAIN);
+            let mut ev = p.media(playing(&t, 0));
+            silence(&mut p, 100, &mut ev);
+            feed(&mut p, &raw[..at(1_000)], &mut ev);
+            ev.extend(p.media(Media { playing: true, track: None, position_ms: 1_000 }));
+            feed(&mut p, &raw[at(1_000)..at(2_900)], &mut ev);
+            ev.extend(p.media(Media { playing: !paused, track: Some(t.clone()), position_ms: 0 }));
+            if paused {
+                silence(&mut p, 50, &mut ev);
+            }
+            feed(&mut p, &raw[at(2_900)..], &mut ev);
+            let completed = ev.iter().any(|e| matches!(e, Event::Completed { .. }));
+            assert_eq!(completed, !paused, "{ev:?}");
         }
     }
 
