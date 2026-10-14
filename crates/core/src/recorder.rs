@@ -77,6 +77,7 @@ pub enum RecorderUpdate {
 
 pub struct Recorder {
     pub client: Option<Client>,
+    profile: Profile,
     snapshot: Arc<Mutex<Snapshot>>,
     stop: Arc<AtomicBool>,
 }
@@ -92,6 +93,14 @@ impl Recorder {
 
     pub fn session(&self, action: &str, host: &dyn Host) -> Result<(), String> {
         let client = self.client.as_ref().ok_or("not connected")?;
+        // Resume takes the player back: Echolot hands the next song only to a device whose player is idle.
+        crate::log!("echolot session {action}");
+        if action == "resume" {
+            init_thread();
+            if let Ok(Some(player)) = media::find(&self.profile) {
+                let _ = media::Watcher::new(player).control(media::Control::Pause);
+            }
+        }
         let session = client.session(action).map_err(|e| e.to_string())?;
         let snapshot = {
             let mut s = self.snapshot.lock().map_err(|e| e.to_string())?;
@@ -225,7 +234,7 @@ pub fn connect(client: Client, saved: echolot::store::Saved, profile: Profile, o
         ..Snapshot::default()
     }));
     let stop = Arc::new(AtomicBool::new(false));
-    let recorder = Arc::new(Recorder { client: Some(client.clone()), snapshot: snapshot.clone(), stop: stop.clone() });
+    let recorder = Arc::new(Recorder { client: Some(client.clone()), profile: profile.clone(), snapshot: snapshot.clone(), stop: stop.clone() });
     std::thread::Builder::new()
         .name("echolot".into())
         .spawn(move || {
@@ -539,7 +548,7 @@ pub fn run_list(export: Export, profile: Profile, out_dir: PathBuf, host: Arc<dy
     let jobs = export.jobs();
     let snapshot = Arc::new(Mutex::new(Snapshot { connection: "file".into(), detail: export.title.clone(), total: jobs.len() as u32, ..Snapshot::default() }));
     let stop = Arc::new(AtomicBool::new(false));
-    let recorder = Arc::new(Recorder { client: None, snapshot: snapshot.clone(), stop: stop.clone() });
+    let recorder = Arc::new(Recorder { client: None, profile: profile.clone(), snapshot: snapshot.clone(), stop: stop.clone() });
     std::thread::Builder::new()
         .name("queue".into())
         .spawn(move || {
