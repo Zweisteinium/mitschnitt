@@ -8,7 +8,7 @@ use zbus::names::InterfaceName;
 use zbus::zvariant::{OwnedValue, Value};
 
 use crate::flac::Cover;
-use crate::media::{Control, Extra, Source};
+use crate::media::{Control, Extra, Repeat, Source};
 use crate::passive::{Media, Track};
 use crate::profile::{PROFILES, Profile};
 use crate::sessions;
@@ -27,9 +27,11 @@ impl Session {
     }
 
     fn props(&self) -> Result<Props, String> {
-        self.0.get_all(InterfaceName::from_static_str_unchecked("org.mpris.MediaPlayer2.Player")).map(Props).map_err(|e| e.to_string())
+        self.0.get_all(PLAYER).map(Props).map_err(|e| e.to_string())
     }
 }
+
+const PLAYER: InterfaceName<'static> = InterfaceName::from_static_str_unchecked("org.mpris.MediaPlayer2.Player");
 
 fn players() -> Result<Vec<String>, String> {
     let names = DBusProxy::new(super::bus()?).and_then(|d| Ok(d.list_names()?)).map_err(|e| e.to_string())?;
@@ -108,6 +110,24 @@ impl Watcher {
             // MPRIS clamps a seek before the start to 0.
             Control::Restart => call(player, "Seek", &-1_000_000_000_000_i64),
         }
+    }
+
+    pub fn repeat(&self) -> Result<Repeat, String> {
+        let status = self.session.0.get(PLAYER, "LoopStatus").map_err(|e| e.to_string())?;
+        Ok(match text(&status).as_str() {
+            "Track" => Repeat::Track,
+            "Playlist" => Repeat::List,
+            _ => Repeat::Off,
+        })
+    }
+
+    pub fn set_repeat(&self, repeat: Repeat) -> Result<(), String> {
+        let status = match repeat {
+            Repeat::Off => "None",
+            Repeat::Track => "Track",
+            Repeat::List => "Playlist",
+        };
+        self.session.0.set(PLAYER, "LoopStatus", Value::from(status)).map_err(|e| e.to_string())
     }
 
     /// Album artist, track number and cover of what is playing now (best effort).

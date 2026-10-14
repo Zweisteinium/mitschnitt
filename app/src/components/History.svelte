@@ -17,7 +17,7 @@
       const text = lossy === "stream" ? "Streamed lossy only" : "Master made from a lossy file";
       return { tone: "lossy", tag: "lossy", text: file?.endsWith(".mp3") ? `${text} · saved as MP3` : text };
     }
-    if (faded) return { tone: "ok", tag: "fine", text: "10 ms fade-in · rest bit-exact" };
+    if (faded) return { tone: "ok", tag: "fine", text: "Fade-in · rest bit-exact" };
     if (verdict === "altered") return { tone: "warn", tag: "alt", text: "Not fully original" };
     const bits = master === "bit16_exact" ? "16-bit master" : "24-bit master";
     return exact ? { tone: "ok", tag: "exact", text: `Bit-exact · ${bits}` } : { tone: "ok", tag: "fine", text: `Clean · ${bits}` };

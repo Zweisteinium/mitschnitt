@@ -69,6 +69,12 @@ async fn stop(state: State<'_, App>) -> Result<(), String> {
     Ok(())
 }
 
+/// What is being listened to: Echolot may have started it before the window was there to hear of it.
+#[tauri::command]
+fn listening(state: State<'_, App>) -> Result<Option<SourceInfo>, String> {
+    Ok(lock(&state.engine)?.as_ref().map(|e| e.info().clone()))
+}
+
 #[tauri::command]
 fn stop_after_track(state: State<'_, App>) -> Result<(), String> {
     if let Some(engine) = lock(&state.engine)?.as_ref() {
@@ -194,6 +200,7 @@ fn main() {
             start,
             stop,
             stop_after_track,
+            listening,
             release,
             unmute_monitor,
             set_monitor_volume,

@@ -37,26 +37,35 @@ For lossless recordings you need Spotify Premium with the streaming quality set 
   resampled, normalized or turned up or down.
 - **Live check.** Every sample is checked as it arrives. A lossless stream shows 100 %. A lossy stream, an
   equalizer or resampling shows up while the track is still playing.
-- **Whole tracks.** A track is recorded from the point where its sound starts to the exact length the player
-  reports. A pause, skip, seek, buffering stall or dropout is detected and reported, so a broken recording never
-  passes as a complete one.
-- **Labels.** Every file gets EXACT, FINE (only Spotify's 10 ms fade-in at the start differs), ALT or BAD, with
-  the reason. The written file is decoded again and compared with the recording before it gets its name.
+- **Whole tracks.** A track is recorded from the point where its sound starts until Spotify's pause after it. The
+  length Spotify reports only says where to look: it can be a few milliseconds short, and the sound after it is kept.
+  A pause, skip, seek, buffering stall or dropout is detected and reported, so a broken recording never passes as a
+  complete one.
+- **Labels.** Every file gets one of four labels, with the reason. The written file is decoded again and compared
+  with the recording before it gets its name.
+  - **EXACT:** every sample with sound is there and bit-exact, from the first to the last. Only the digital silence
+    at the very start and end can be a few milliseconds longer or shorter than in the original.
+  - **FINE:** the same, except for Spotify's fade-in of about 10 ms at the start.
+  - **ALT:** something is not original, or the end could not be proven (see [Limits](#limits)).
+  - **BAD:** damaged, for example by a dropout.
 - **Formats and tags.** FLAC in 16 or 24 bit, as the source was, WAV, or MP3 encoded from the verified recording.
   Title, artist, album, track number and cover are filled in, names follow your own template, and tracks you
   already have are skipped.
 - **Auto setup.** The Setup tab checks Spotify's settings (quality, normalization, equalizer, crossfade, automix)
   and tells you what to switch. On Windows it also installs VB-Cable, matches its sample rate and routes Spotify
   into it, one click each. The goal is a setup without any manual steps.
-- **Media key protection.** While a track records, media keys, headset buttons and Bluetooth earbuds that pause
-  when you take them out are held back, so they can't ruin the recording. The player's own pause button still
-  works. The keyboard hook behind this looks at media keys and nothing else.
+- **Guards.** While Mitschnitt listens, it keeps away what would spoil a recording. The computer doesn't go to sleep,
+  though the screen still turns off and locks. With media key protection switched on in the settings, media keys,
+  headset buttons and Bluetooth earbuds that pause when you take them out are held back as well. The player's own
+  pause button still works, and the keyboard hook behind this looks at media keys and nothing else.
 - **Song lists.** Together with [Echolot](#echolot), Mitschnitt records a whole list of songs on its own.
 
 |  | Windows | Linux |
 |---|:---:|:---:|
 | Recording, live check, labels, formats and tags | ✓ | ✓ |
+| Song end proven by Spotify's pause after it | – | ✓ |
 | Auto setup | ✓ | Spotify settings only |
+| No sleep while listening | ✓ | ✓ |
 | Media key protection | ✓ | – |
 | Song lists with Echolot | ✓ | ✓ |
 
@@ -97,6 +106,10 @@ and it becomes a recorder for the songs Echolot is still missing. Echolot hands 
 starts it in Spotify, checks that the right song plays, records it and uploads it. Only EXACT and FINE recordings
 go up. A damaged one is played again, a lossy one is left out.
 
+On Linux, while a song records, Mitschnitt switches Spotify to repeat that song. Otherwise Spotify might go on with
+the album's next song without a pause, and the song's end could not be proven. Before repeating, Spotify pauses, and
+Mitschnitt stops it there. Your repeat setting comes back after each song, when you take over and when you stop.
+
 You can keep using your PC meanwhile. On Windows, when Spotify grabs the focus for a new song, Mitschnitt gives it
 back. On Linux the desktop decides whether Spotify may come to the front.
 
@@ -111,8 +124,10 @@ dropouts caught instead of saved, and Linux.
 
 - Spotify is the only supported app. An app only gets a profile once its output has been proven untouched. If
   you ask nicely, I'll try Deezer, Apple Music or whatever your heart is after next <3
-- Gapless albums, where one track flows into the next, are skipped. Without silence before a track there is no
-  exact start.
+- Gapless albums, where one track flows into the next, can't be recorded in full. Without a pause before a track
+  there is no exact start, so those tracks are skipped. Without a pause after a track its end can't be proven: on
+  Linux it is saved as ALT ("end not verified"), because a skip in its last moments would look the same. Song lists
+  with Echolot avoid this with Spotify's repeat (see [Echolot](#echolot)).
 
 ## Your account, your risk
 

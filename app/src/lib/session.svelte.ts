@@ -48,6 +48,7 @@ class Session {
     await api.onUpdate((u) => this.#apply(u));
     // Echolot started listening for its songs.
     await api.onListening((info) => (this.source = info));
+    this.source ??= await api.listening();
     this.platform = await api.platform();
     this.settings = await api.getSettings();
     await this.#try(async () => this.#setSources(await api.sources()));

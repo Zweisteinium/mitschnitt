@@ -53,8 +53,23 @@ const LIMITER_HI: f64 = 0.990_831_944_892_768_9; // -0.08 dBFS
 /// Nothing above this came through Windows' limiter.
 const WINDOWS_CEILING: f64 = 0.986_848_891_640_427_5; // -0.115 dBFS
 
+/// A file of unknown origin. A length off the whole millisecond may mean an early stop, but no longer proves one:
+/// Mitschnitt keeps a song's sound beyond the length the player reports.
 pub fn analyze(a: &Audio) -> Report {
-    analyze_with(a, false)
+    let mut report = analyze_with(a, false);
+    let ms = a.frames() as f64 * 1000.0 / a.rate as f64;
+    if (ms - ms.round()).abs() >= 0.012 {
+        let text = format!("length {} is not a whole-millisecond track length (stopped early, or longer than its listed length)", timestamp(a.frames(), a.rate));
+        report.issues.insert(0, issue(Severity::Info, text));
+    }
+    report
+}
+
+/// Spotify fades a started track in: over 10 ms on Windows, over 10.9 to 12.2 ms on Linux (three starts from a link).
+/// Longer is damage, not a fade.
+// TODO(windows): this also widens the limit there from 10 ms; check that Windows starts never fade in for longer.
+pub fn fade_in_frames(rate: u32) -> usize {
+    rate as usize * 15 / 1000
 }
 
 /// `exact_source`: the capture proved the audio untouched, so whatever the file shows is in the master itself.
@@ -66,11 +81,6 @@ pub fn analyze_with(a: &Audio, exact_source: bool) -> Report {
     if a.rate != 44_100 || a.channels != 2 {
         issues.push(issue(Severity::Corrupt, format!("format {} Hz / {} ch (expected 44100 Hz stereo)", a.rate, a.channels)));
     }
-    let ms = n as f64 * 1000.0 / a.rate as f64;
-    if (ms - ms.round()).abs() >= 0.012 {
-        issues.push(issue(Severity::Corrupt, format!("length {} is not a whole-millisecond track length (stopped early?)", ts(n))));
-    }
-
     // Dropouts: >= 1 ms of digital silence between loud audio.
     for (s, e) in runs(n, |i| a.frame(i).iter().all(|s| *s == 0)) {
         if e - s >= a.rate as usize / 1000 && s > 0 && e < n {
@@ -111,8 +121,7 @@ pub fn analyze_with(a: &Audio, exact_source: bool) -> Report {
     if master == Master::Bit16Partly && !exact_source {
         let stretches = group(&off, a.rate as usize / 20);
         let text = match stretches[..] {
-            // Spotify fades a started track in over exactly 10 ms.
-            [(_, last)] if last < a.rate as usize / 100 => format!("fade-in at the start: first {:.1} ms not original (rest bit-exact 16-bit)", (last + 1) as f64 * 1000.0 / a.rate as f64),
+            [(_, last)] if last < fade_in_frames(a.rate) => format!("fade-in at the start: first {:.1} ms not original (rest bit-exact 16-bit)", (last + 1) as f64 * 1000.0 / a.rate as f64),
             _ => format!("not original in {} stretch(es) of an otherwise bit-exact 16-bit file: {}", stretches.len(), list(&stretches, a.rate, 8)),
         };
         issues.push(issue(Severity::Altered, text));

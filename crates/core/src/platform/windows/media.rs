@@ -11,7 +11,7 @@ use windows::Storage::Streams::DataReader;
 use windows::core::Result;
 
 use crate::flac::Cover;
-use crate::media::{Control, Extra, Source};
+use crate::media::{Control, Extra, Repeat, Source};
 use crate::passive::{Media, Track};
 use crate::profile::{PROFILES, Profile};
 use crate::sessions;
@@ -145,6 +145,15 @@ impl Watcher {
             Control::Restart => self.session.TryChangePlaybackPositionAsync(0),
         };
         op.and_then(|op| op.join()).map(|_| ()).map_err(|e| e.to_string())
+    }
+
+    // TODO(windows): SMTC has AutoRepeatMode and TryChangeAutoRepeatModeAsync; unmeasured with Spotify, so unused.
+    pub fn repeat(&self) -> std::result::Result<Repeat, String> {
+        Err("not supported on Windows yet".into())
+    }
+
+    pub fn set_repeat(&self, _: Repeat) -> std::result::Result<(), String> {
+        Err("not supported on Windows yet".into())
     }
 
     pub fn extra(&self) -> Extra {

@@ -14,6 +14,13 @@ pub struct Source {
     pub artist: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum Repeat {
+    Off,
+    Track,
+    List,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Control {
     Play,

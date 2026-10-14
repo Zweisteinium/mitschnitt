@@ -29,6 +29,21 @@ const POSITION_SETTLE_MS: u64 = 2_000;
 /// The player's status runs ahead of its audio: at the end it showed 0:00 again (repeat) while the last samples were
 /// still on their way (under 0.1 s), and Spotify announces the next track about 0.3 s early (see the media watcher).
 const END_MARGIN_MS: u64 = 500;
+/// Where the reported length ends, the song's sound may still go on (up to 10.9 ms measured, Linux): the recording ends
+/// where [`END_SILENCE_MS`] of digital silence begins, searched this far past the length. None there means the next
+/// song or a skip followed: the end is unproven.
+const END_SEARCH_MS: u64 = 50;
+/// Spotify pauses at least 0.5 s between songs and before a repeat, always as rendered digital zeros (18 of 18,
+/// Linux); a pause inside a song this long right at its listed end, with sound after it, would be cut. A gap in the
+/// stream (a stall) is never taken for it: sound may follow.
+// TODO(windows): measured on Linux only.
+const END_SILENCE_MS: u64 = 200;
+/// The next title comes earlier still. Measured on Linux (Spotify 1.2.96): 0.12 to 0.18 s before the end when the next
+/// song is from another album (digital silence follows), 1.22 to 1.52 s when it follows gaplessly on the same album.
+/// A skip that late looks the same (neither the position nor the audio tells them apart), so a skip in the last 2 s
+/// keeps the new song's first moments: accepted, as a gapless album would otherwise lose every song.
+// TODO(windows): measured on Linux only; check how early SMTC shows the next title on Windows.
+const EARLY_ANNOUNCE_MS: u64 = 2_000;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Track {
@@ -80,7 +95,8 @@ impl Reason {
 pub enum Event {
     Started(Track),
     /// `samples` at the original level (24 bit); `off_grid`/`off_span`: frames that weren't exact, the first and last.
-    Completed { track: Track, samples: Vec<i32>, off_grid: usize, off_span: Option<(usize, usize)> },
+    /// `end_proven`: digital silence followed within [`END_SEARCH_MS`], so no sound is cut and nothing else follows.
+    Completed { track: Track, samples: Vec<i32>, off_grid: usize, off_span: Option<(usize, usize)>, end_proven: bool },
     Dropped { track: Track, reason: Reason },
 }
 
@@ -128,7 +144,9 @@ impl GridCount {
 enum State {
     Idle,
     Waiting { track: Track, until: u64 },
-    Recording { track: Track, expected: usize, samples: Vec<i32>, off_grid: usize, off_span: Option<(usize, usize)>, start: u64 },
+    /// `tail_off`: off-grid frames past `expected`, counted only if the end search keeps them. `gap`: the first frame
+    /// past `expected` where the stream rendered nothing; silence from there on proves no end.
+    Recording { track: Track, expected: usize, samples: Vec<i32>, off_grid: usize, off_span: Option<(usize, usize)>, tail_off: Vec<usize>, gap: Option<usize>, start: u64 },
 }
 
 pub struct Passive {
@@ -198,8 +216,11 @@ impl Passive {
         if flags & FLAG_GLITCH != 0 {
             self.drop_recording(Reason::Glitch, &mut events);
         }
-        if silent {
+        if silent && !self.ending() {
             self.drop_recording(Reason::Underrun, &mut events);
+        }
+        if let (true, State::Recording { samples, gap, .. }) = (silent, &mut self.state) {
+            gap.get_or_insert(samples.len() / self.channels);
         }
 
         let ch = self.channels;
@@ -264,14 +285,16 @@ impl Passive {
                 }
             }
 
-            if let State::Recording { expected, samples, off_grid, off_span, .. } = &mut self.state {
+            if let State::Recording { expected, samples, off_grid, off_span, tail_off, .. } = &mut self.state {
                 samples.extend_from_slice(&self.scratch);
-                if off24 {
-                    let i = samples.len() / ch - 1;
+                let i = samples.len() / ch - 1;
+                if off24 && i < *expected {
                     *off_grid += 1;
                     *off_span = Some(off_span.map_or((i, i), |(a, _)| (a, i)));
+                } else if off24 {
+                    tail_off.push(i);
                 }
-                if samples.len() >= *expected * ch {
+                if samples.len() >= (*expected + self.end_search()) * ch {
                     self.complete(&mut events);
                 }
             }
@@ -299,8 +322,10 @@ impl Passive {
                     crate::log!("paused with {left_ms} ms left");
                     self.drop_recording(Reason::Paused, &mut events);
                 } else if let Some(shown) = m.track.as_ref().filter(|t| *t != track) {
-                    crate::log!("track changed with {left_ms} ms left: recording {track:?}, the player shows {shown:?} at {} ms", m.position_ms);
-                    self.drop_recording(Reason::TrackChanged, &mut events);
+                    if left_ms > EARLY_ANNOUNCE_MS {
+                        crate::log!("track changed with {left_ms} ms left: recording {track:?}, the player shows {shown:?} at {} ms", m.position_ms);
+                        self.drop_recording(Reason::TrackChanged, &mut events);
+                    }
                 } else if m.track.is_some() && (m.position_ms - elapsed_ms).abs() > SEEK_TOLERANCE_MS {
                     crate::log!("seeked with {left_ms} ms left: recorded {elapsed_ms} ms, the player is at {} ms", m.position_ms);
                     self.drop_recording(Reason::Seeked, &mut events);
@@ -399,22 +424,57 @@ impl Passive {
         let first = (start - self.ring_first) as usize;
         samples.extend(self.ring.range(first * self.channels..));
         let off: Vec<usize> = self.ring_off.range(first..).enumerate().filter(|(_, o)| **o).map(|(i, _)| i).collect();
+        let (off, tail_off): (Vec<usize>, Vec<usize>) = off.into_iter().partition(|i| *i < expected);
         let (off_grid, off_span) = (off.len(), off.first().zip(off.last()).map(|(a, b)| (*a, *b)));
         // A start belongs to exactly one track.
         self.starts.retain(|s| *s > start);
         events.push(Event::Started(track.clone()));
-        let complete = samples.len() >= expected * self.channels;
-        self.state = State::Recording { track, expected, samples, off_grid, off_span, start };
+        let complete = samples.len() >= (expected + self.end_search()) * self.channels;
+        self.state = State::Recording { track, expected, samples, off_grid, off_span, tail_off, gap: None, start };
         if complete {
             self.complete(events);
         }
     }
 
+    /// Frames read past the reported length before the end is decided.
+    fn end_search(&self) -> usize {
+        ms_to_frames(END_SEARCH_MS + END_SILENCE_MS, self.rate)
+    }
+
+    /// Past the reported length, waiting for the end to show.
+    pub fn ending(&self) -> bool {
+        matches!(&self.state, State::Recording { expected, samples, .. } if samples.len() >= *expected * self.channels)
+    }
+
+    /// The player stopped after the song and its stream with it (Linux sends nothing then): the rest is silence.
+    pub fn stream_stopped(&mut self) -> Vec<Event> {
+        match &self.state {
+            State::Recording { expected, samples, .. } if self.ending() => {
+                let missing = (expected + self.end_search()).saturating_sub(samples.len() / self.channels);
+                self.push(&vec![0.0; missing * self.channels], missing, 0)
+            }
+            _ => Vec::new(),
+        }
+    }
+
     fn complete(&mut self, events: &mut Vec<Event>) {
-        if let State::Recording { track, expected, mut samples, off_grid, off_span, .. } = std::mem::replace(&mut self.state, State::Idle) {
-            samples.truncate(expected * self.channels);
+        if let State::Recording { track, expected, mut samples, mut off_grid, mut off_span, tail_off, gap, .. } = std::mem::replace(&mut self.state, State::Idle) {
+            let (ch, min) = (self.channels, ms_to_frames(END_SILENCE_MS, self.rate));
+            let rendered = gap.unwrap_or(usize::MAX);
+            let silent_from = |f: usize| f + min <= rendered && samples.get(f * ch..(f + min) * ch).is_some_and(|s| s.iter().all(|v| *v == 0));
+            let end = (expected..=expected + ms_to_frames(END_SEARCH_MS, self.rate)).find(|f| silent_from(*f));
+            let cut = end.unwrap_or(expected);
+            samples.truncate(cut * ch);
+            for i in tail_off.into_iter().filter(|i| *i < cut) {
+                off_grid += 1;
+                off_span = Some(off_span.map_or((i, i), |(a, _)| (a, i)));
+            }
+            crate::log!("end of {:?}: {}", track.title, match end {
+                Some(f) => format!("silence {} ms past the reported length", frames_to_ms(f - expected, self.rate)),
+                None => "no silence after the reported length".into(),
+            });
             self.done = Some(track.clone());
-            events.push(Event::Completed { track, samples, off_grid, off_span });
+            events.push(Event::Completed { track, samples, off_grid, off_span, end_proven: end.is_some() });
         }
     }
 
@@ -497,6 +557,92 @@ mod tests {
         assert!(ev.iter().any(|e| matches!(e, Event::Completed { off_grid: 0, .. })), "an untouched source is on the grid");
     }
 
+    fn zeros(p: &mut Passive, ms: u64, events: &mut Vec<Event>) {
+        let frames = ms_to_frames(ms, RATE);
+        events.extend(p.push(&vec![0.0; frames * 2], frames, 0));
+    }
+
+    fn completed(ev: &[Event]) -> (&Vec<i32>, bool) {
+        ev.iter().find_map(|e| match e { Event::Completed { samples, end_proven, .. } => Some((samples, *end_proven)), _ => None }).expect("completed")
+    }
+
+    /// Measured on Linux: a song's sound went on 10.9 ms past its listed length, then Spotify's pause began.
+    #[test]
+    fn sound_past_the_listed_length_is_kept_up_to_the_pause() {
+        let t = track(1_000);
+        let (orig, raw) = master(ms_to_frames(1_011, RATE), 12);
+        let mut p = Passive::new(RATE, 2, GAIN);
+        let mut ev = p.media(playing(&t, 0));
+        silence(&mut p, 100, &mut ev);
+        feed(&mut p, &raw, &mut ev);
+        zeros(&mut p, 500, &mut ev);
+        let (samples, proven) = completed(&ev);
+        assert!(proven);
+        assert_eq!(samples[..], orig[..], "every sample of sound, nothing cut");
+    }
+
+    #[test]
+    fn the_songs_own_silence_at_the_end_proves_it() {
+        let t = track(1_000);
+        let (orig, raw) = master(ms_to_frames(900, RATE), 13);
+        let mut p = Passive::new(RATE, 2, GAIN);
+        let mut ev = p.media(playing(&t, 0));
+        silence(&mut p, 100, &mut ev);
+        feed(&mut p, &raw, &mut ev);
+        zeros(&mut p, 600, &mut ev); // the master's last 100 ms are silent, then the pause
+        let (samples, proven) = completed(&ev);
+        assert!(proven);
+        assert_eq!(samples.len(), ms_to_frames(1_000, RATE) * 2);
+        assert_eq!(samples[..orig.len()], orig[..]);
+    }
+
+    /// A pause inside the song right at its listed length, with sound after it, is not the end.
+    #[test]
+    fn a_short_pause_at_the_listed_end_does_not_prove_it() {
+        let t = track(1_000);
+        let (_, raw) = master(ms_to_frames(1_000, RATE), 14);
+        let mut p = Passive::new(RATE, 2, GAIN);
+        let mut ev = p.media(playing(&t, 0));
+        silence(&mut p, 100, &mut ev);
+        feed(&mut p, &raw, &mut ev);
+        zeros(&mut p, 50, &mut ev);
+        feed(&mut p, &raw[..ms_to_frames(300, RATE) * 2], &mut ev);
+        zeros(&mut p, 500, &mut ev);
+        let (samples, proven) = completed(&ev);
+        assert!(!proven);
+        assert_eq!(samples.len(), ms_to_frames(1_000, RATE) * 2);
+    }
+
+    /// Measured: Spotify's pause is rendered zeros, a gap only comes with a stall, pause or seek.
+    #[test]
+    fn a_stall_after_the_listed_length_proves_no_end() {
+        let t = track(1_000);
+        let (_, raw) = master(ms_to_frames(1_000, RATE), 16);
+        let mut p = Passive::new(RATE, 2, GAIN);
+        let mut ev = p.media(playing(&t, 0));
+        silence(&mut p, 100, &mut ev);
+        feed(&mut p, &raw, &mut ev);
+        silence(&mut p, 300, &mut ev);
+        let (samples, proven) = completed(&ev);
+        assert!(!proven);
+        assert_eq!(samples.len(), ms_to_frames(1_000, RATE) * 2);
+    }
+
+    #[test]
+    fn a_stream_that_stops_after_the_song_ends_it() {
+        let t = track(1_000);
+        let (orig, raw) = master(ms_to_frames(1_000, RATE), 15);
+        let mut p = Passive::new(RATE, 2, GAIN);
+        let mut ev = p.media(playing(&t, 0));
+        silence(&mut p, 100, &mut ev);
+        feed(&mut p, &raw, &mut ev);
+        assert!(p.ending() && !ev.iter().any(|e| matches!(e, Event::Completed { .. })));
+        ev.extend(p.stream_stopped());
+        let (samples, proven) = completed(&ev);
+        assert!(proven);
+        assert_eq!(samples[..], orig[..]);
+    }
+
     #[test]
     fn processed_audio_is_off_the_grid() {
         let t = track(1_000);
@@ -508,6 +654,7 @@ mod tests {
         let mut ev = p.media(playing(&t, 0));
         silence(&mut p, 100, &mut ev);
         feed(&mut p, &raw, &mut ev);
+        silence(&mut p, 300, &mut ev);
         let off = ev.iter().find_map(|e| match e { Event::Completed { off_grid, .. } => Some(*off_grid), _ => None }).expect("completed");
         assert!((40..=50).contains(&off), "{off} frames off the grid");
         let grid = p.status().grid.expect("audio arrived");
@@ -523,6 +670,7 @@ mod tests {
         assert_eq!(p.status().phase, Phase::Waiting);
         silence(&mut p, 200, &mut ev);
         feed(&mut p, &raw, &mut ev);
+        silence(&mut p, 300, &mut ev);
         assert!(ev.iter().any(|e| matches!(e, Event::Completed { samples, .. } if samples[..] == orig[..])));
     }
 
@@ -536,6 +684,7 @@ mod tests {
         silence(&mut p, 300, &mut ev); // stream not running: "no data" packets
         ev.extend(p.push(&vec![0.0; lead * 2], lead, 0)); // stream starts: rendered zeros ...
         feed(&mut p, &raw_body, &mut ev); // ... then the music
+        silence(&mut p, 300, &mut ev);
         let done = ev.iter().find_map(|e| match e { Event::Completed { samples, .. } => Some(samples), _ => None }).expect("completed");
         assert!(done[..lead * 2].iter().all(|s| *s == 0), "leading silence kept");
         assert_eq!(done[lead * 2..], body[..], "then the master, exactly");
@@ -554,6 +703,7 @@ mod tests {
         feed(&mut p, &raw[..800], &mut ev);
         ev.extend(p.media(playing(&actual, 50))); // the title catches up
         feed(&mut p, &raw[800..], &mut ev);
+        silence(&mut p, 300, &mut ev);
         assert!(ev.iter().any(|e| matches!(e, Event::Dropped { track, reason: Reason::TrackChanged } if track.title == "Previous")));
         let done = ev.iter().find_map(|e| match e { Event::Completed { track, samples, .. } if track.title == "Song" => Some(samples), _ => None });
         assert_eq!(done.expect("actual track recorded")[..], orig[..]);
@@ -583,6 +733,7 @@ mod tests {
         let mut ev = p.media(playing(&t, 0));
         silence(&mut p, 100, &mut ev);
         feed(&mut p, &raw, &mut ev);
+        silence(&mut p, 300, &mut ev);
         let span = ev.iter().find_map(|e| match e { Event::Completed { off_span, .. } => Some(*off_span), _ => None }).expect("completed");
         assert!(matches!(span, Some((0, last)) if last < 80), "{span:?}");
     }
@@ -657,6 +808,24 @@ mod tests {
 
     /// Both seen in a real run: the title missing for a moment mid-track, and the song repeating at its end. A real
     /// pause at the end still costs the recording.
+    /// Seen on Linux: the next title up to 1.52 s before the end. A change earlier than 2 s still ends the recording.
+    #[test]
+    fn the_next_title_shortly_before_the_end_keeps_the_recording() {
+        let (t, next) = (track(3_000), Track { title: "Next".into(), ..track(4_000) });
+        let (_, raw) = master(ms_to_frames(3_000, RATE), 6);
+        let at = |ms| ms_to_frames(ms, RATE) * 2;
+        for (shown_at, completed) in [(1_100, true), (900, false)] {
+            let mut p = Passive::new(RATE, 2, GAIN);
+            let mut ev = p.media(playing(&t, 0));
+            silence(&mut p, 100, &mut ev);
+            feed(&mut p, &raw[..at(shown_at)], &mut ev);
+            ev.extend(p.media(playing(&next, 0)));
+            feed(&mut p, &raw[at(shown_at)..], &mut ev);
+            silence(&mut p, 300, &mut ev);
+            assert_eq!(ev.iter().any(|e| matches!(e, Event::Completed { .. })), completed, "{ev:?}");
+        }
+    }
+
     #[test]
     fn a_missing_title_or_a_restart_at_the_end_keeps_the_recording() {
         let t = track(3_000);
@@ -674,6 +843,7 @@ mod tests {
                 silence(&mut p, 50, &mut ev);
             }
             feed(&mut p, &raw[at(2_900)..], &mut ev);
+            silence(&mut p, 300, &mut ev);
             let completed = ev.iter().any(|e| matches!(e, Event::Completed { .. }));
             assert_eq!(completed, !paused, "{ev:?}");
         }
@@ -688,10 +858,13 @@ mod tests {
         let mut ev = p.media(playing(&a, 0));
         silence(&mut p, 100, &mut ev);
         let one_s = ms_to_frames(1_000, RATE) * 2;
-        feed(&mut p, &raw[..one_s], &mut ev); // a completes
+        let ending = one_s + ms_to_frames(300, RATE) * 2;
+        feed(&mut p, &raw[..one_s], &mut ev);
         ev.extend(p.media(playing(&b, 0)));
-        feed(&mut p, &raw[one_s..], &mut ev); // b starts without silence
-        assert!(ev.iter().any(|e| matches!(e, Event::Completed { track, .. } if track.title == "Song")));
+        feed(&mut p, &raw[one_s..ending], &mut ev); // a completes, without a pause to prove its end
+        ev.extend(p.media(playing(&b, 300)));
+        feed(&mut p, &raw[ending..], &mut ev); // b starts without silence
+        assert!(ev.iter().any(|e| matches!(e, Event::Completed { track, end_proven: false, .. } if track.title == "Song")));
         assert!(ev.iter().any(|e| matches!(e, Event::Dropped { track, reason: Reason::NoCleanStart } if track.title == "Next")));
     }
 
@@ -719,6 +892,7 @@ mod tests {
         feed(&mut p, &raw[..ms_to_frames(300, RATE) * 2], &mut ev);
         ev.extend(p.media(playing(&t, 300)));
         feed(&mut p, &raw[ms_to_frames(300, RATE) * 2..], &mut ev);
+        silence(&mut p, 300, &mut ev);
         assert!(ev.iter().any(|e| matches!(e, Event::Completed { .. })), "{ev:?}");
     }
 
@@ -739,6 +913,7 @@ mod tests {
         silence(&mut p, 300, &mut ev);
         ev.extend(p.media(playing(&t, 0)));
         feed(&mut p, &raw, &mut ev);
+        silence(&mut p, 300, &mut ev);
         assert!(ev.iter().any(|e| matches!(e, Event::Completed { .. })), "{ev:?}");
     }
 }

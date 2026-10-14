@@ -24,6 +24,10 @@ const SEEK_WAIT: Duration = Duration::from_secs(1);
 const POSITION_SETTLE: Duration = Duration::from_millis(1_500);
 const LENGTH_TOLERANCE_MS: u64 = 2_000;
 const BUSY_TIMEOUT: Duration = Duration::from_secs(10);
+/// A song picked in Spotify while one records: its audio stopped 0.15 s before Spotify showed it (Linux), so the
+/// stall can arrive first. Wait this long for the player to show whether the user took over.
+// TODO(windows): measured on Linux only.
+const STALL_WAIT: Duration = Duration::from_millis(500);
 /// An album may start one track off: next, then back past the original to the previous one.
 const CORRECTIONS: [Action; 3] = [Action::Next, Action::Previous, Action::Previous];
 
@@ -100,6 +104,8 @@ enum Stage {
     Starting { job: Job, at: Instant, timeout: Duration, corrections: usize, wrong: Option<Track>, retried: bool, rewound: bool, late: Option<Instant> },
     Playing { job: Job, at: Instant, retried: bool },
     Recording { job: Job, at: Instant, retried: bool },
+    /// The audio stopped: a stall, unless the player shows within [`STALL_WAIT`] that the user took over.
+    Stalled { job: Job, since: Instant, detail: String },
     Writing { job: Job },
     /// Back to 0:00 after the gap, then play: opening the link again would only resume the song.
     Rewind { job: Job, since: Instant, retried: bool, seeked: bool },
@@ -123,7 +129,7 @@ impl Runner {
     pub fn job(&self) -> Option<&Job> {
         match &self.stage {
             Stage::Idle { .. } => None,
-            Stage::Waiting { job, .. } | Stage::Starting { job, .. } | Stage::Playing { job, .. } | Stage::Recording { job, .. } | Stage::Writing { job } | Stage::Rewind { job, .. } => Some(job),
+            Stage::Waiting { job, .. } | Stage::Starting { job, .. } | Stage::Playing { job, .. } | Stage::Recording { job, .. } | Stage::Stalled { job, .. } | Stage::Writing { job } | Stage::Rewind { job, .. } => Some(job),
         }
     }
 
@@ -134,6 +140,7 @@ impl Runner {
             Stage::Starting { .. } => "Starting",
             Stage::Playing { .. } => "Playing",
             Stage::Recording { .. } => "Recording",
+            Stage::Stalled { .. } => "Stalled",
             Stage::Writing { .. } => "Writing",
             Stage::Rewind { .. } => "Rewind",
         }
@@ -200,6 +207,19 @@ impl Runner {
                     return Vec::new();
                 }
                 self.finish(job, Outcome::TookOver { detail: "Spotify is in use".into() }, now, false)
+            }
+            Stage::Stalled { job, since, detail } => {
+                let other = media.track.as_ref().is_some_and(|t| matches(job, t).is_err());
+                let job = job.clone();
+                if !media.playing || other {
+                    let detail = if other { Reason::TrackChanged } else { Reason::Paused }.message().to_owned();
+                    return self.finish(job, Outcome::TookOver { detail }, now, false);
+                }
+                if now < *since + STALL_WAIT {
+                    return Vec::new();
+                }
+                let detail = detail.clone();
+                self.finish(job, Outcome::Stalled { detail }, now, true)
             }
             Stage::Rewind { job, since, retried, seeked } => {
                 if !*seeked {
@@ -313,6 +333,10 @@ impl Runner {
                     return vec![Action::Pause];
                 }
                 let detail = reason.message().to_owned();
+                if *reason == Reason::Underrun {
+                    self.stage = Stage::Stalled { job, since: now, detail };
+                    return Vec::new();
+                }
                 let outcome = match reason {
                     Reason::Paused | Reason::Seeked | Reason::TrackChanged | Reason::VolumeChanged => Outcome::TookOver { detail },
                     Reason::Underrun | Reason::Glitch | Reason::Stopped | Reason::MidTrack | Reason::NoCleanStart => Outcome::Stalled { detail },
@@ -476,7 +500,7 @@ mod tests {
         assert!(r.tick(t + Duration::from_secs(1), &playing(&song, 200)).is_empty());
         r.event(t + Duration::from_secs(1), &Event::Started(song.clone()));
         assert!(r.recording());
-        let end = Event::Completed { track: song.clone(), samples: vec![], off_grid: 0, off_span: None };
+        let end = Event::Completed { track: song.clone(), samples: vec![], off_grid: 0, off_span: None, end_proven: true };
         assert_eq!(r.event(t + Duration::from_secs(226), &end), vec![Action::Pause]);
         assert!(r.is_target(&song));
         r.written(t + Duration::from_secs(227), Written::Saved { file: "a.flac".into(), note: None });
@@ -560,6 +584,24 @@ mod tests {
     }
 
     #[test]
+    fn a_stall_is_the_users_when_the_player_shows_another_song_within_moments() {
+        let t = Instant::now();
+        let song = track("Feel It", "NYCO", 225_000);
+        for (at, shown, took_over) in [(30_400, playing(&track("Mine", "Me", 100_000), 0), true), (30_500, playing(&song, 30_500), false)] {
+            let mut r = Runner::new(t - GAP);
+            r.assign(job(), t, &Media::default());
+            r.event(t, &Event::Started(song.clone()));
+            assert!(r.event(t + Duration::from_secs(30), &Event::Dropped { track: song.clone(), reason: Reason::Underrun }).is_empty());
+            assert!(r.tick(t + Duration::from_millis(30_200), &playing(&song, 30_000)).is_empty());
+            let actions = r.tick(t + Duration::from_millis(at), &shown);
+            assert_eq!(actions.is_empty(), took_over);
+            let outcome = &r.take_done()[0].1;
+            assert_eq!(matches!(outcome, Outcome::TookOver { .. }), took_over, "{outcome:?}");
+            assert_eq!(matches!(outcome, Outcome::Stalled { .. }), !took_over, "{outcome:?}");
+        }
+    }
+
+    #[test]
     fn waits_while_the_user_plays_something() {
         let t = Instant::now();
         let mut r = Runner::new(t - GAP);
@@ -632,7 +674,7 @@ mod tests {
         let mut r = Runner::new(t - GAP);
         r.assign(job(), t, &Media::default());
         let other = track("Next One", "NYCO", 200_000);
-        assert!(r.event(t, &Event::Completed { track: other.clone(), samples: vec![], off_grid: 0, off_span: None }).is_empty());
+        assert!(r.event(t, &Event::Completed { track: other.clone(), samples: vec![], off_grid: 0, off_span: None, end_proven: true }).is_empty());
         assert!(!r.is_target(&other));
     }
 }

@@ -100,6 +100,7 @@ fn run(
                 let now = Instant::now();
                 let gap = now.saturating_duration_since(last.0).saturating_sub(Duration::from_secs_f64(last.1 as f64 / rate as f64));
                 if gap > GAP {
+                    crate::log!("capture: {gap:?} without audio");
                     emit(Packet { data: Vec::new(), frames: (gap.min(MAX_GAP).as_secs_f64() * rate as f64) as usize, flags: FLAG_SILENT });
                 }
                 last = (now, frames);

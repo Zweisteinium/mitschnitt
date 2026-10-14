@@ -78,6 +78,7 @@ export type HistoryRecord = { at: number; track: Track; file: string; size: numb
 export const api = {
   sources: () => invoke<Source[]>("sources"),
   start: (app: string) => invoke<SourceInfo>("start", { app }),
+  listening: () => invoke<SourceInfo | null>("listening"),
   stop: () => invoke<void>("stop"),
   stopAfterTrack: () => invoke<void>("stop_after_track"),
   release: () => invoke<void>("release"),
