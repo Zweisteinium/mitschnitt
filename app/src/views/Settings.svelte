@@ -62,6 +62,10 @@
       </label>
 
       <p class="muted rate">Sample rate: original (no resampling – required for bit-exact files).</p>
+      <div class="log">
+        <span class="muted">What happened while listening, for tracking down problems.</span>
+        <button class="btn" onclick={() => api.openLog()}>Show log</button>
+      </div>
     </Panel>
 
     <Panel label="Behaviour" index="02">
@@ -192,6 +196,17 @@
 
   .rate {
     margin: 0;
+    font-size: 12px;
+  }
+
+  .log {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-top: 16px;
+    padding-top: 14px;
+    border-top: 1px solid var(--faint);
     font-size: 12px;
   }
 

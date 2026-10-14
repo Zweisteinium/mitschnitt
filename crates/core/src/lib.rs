@@ -8,6 +8,7 @@ pub mod echolot;
 pub mod engine;
 pub mod flac;
 pub mod history;
+pub mod log;
 pub mod media;
 pub mod monitor;
 pub mod output;

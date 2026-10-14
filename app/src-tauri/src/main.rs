@@ -128,6 +128,16 @@ fn open(target: String) -> Result<(), String> {
     mitschnitt_core::desktop::open(&target)
 }
 
+#[tauri::command]
+fn play(file: String) -> Result<(), String> {
+    mitschnitt_core::desktop::open_link(&file)
+}
+
+#[tauri::command]
+fn open_log() -> Result<(), String> {
+    mitschnitt_core::desktop::open(&mitschnitt_core::log::path().to_string_lossy())
+}
+
 #[derive(serde::Serialize)]
 struct Platform {
     os: &'static str,
@@ -142,6 +152,7 @@ fn platform() -> Platform {
 }
 
 fn main() {
+    mitschnitt_core::log::init("app");
     // Repair volumes a previous run left behind (crash or killed process), off the UI thread.
     std::thread::spawn(engine::recover);
     let settings = Settings::load(&Settings::default_path());
@@ -191,6 +202,8 @@ fn main() {
             health,
             fix,
             open,
+            open_log,
+            play,
             platform,
             history,
             echolot::echolot_state,

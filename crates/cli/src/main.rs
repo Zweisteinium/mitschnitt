@@ -79,6 +79,7 @@ enum EcholotAction {
 }
 
 fn main() -> ExitCode {
+    mitschnitt_core::log::init("cli");
     match Cli::parse().command {
         Command::Devices => devices(),
         Command::Check { paths } => check(&paths),

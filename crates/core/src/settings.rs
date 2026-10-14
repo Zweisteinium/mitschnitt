@@ -9,6 +9,11 @@ pub const APP_DIR: &str = "Mitschnitt";
 #[cfg(not(windows))]
 pub const APP_DIR: &str = "mitschnitt";
 
+/// Local, not roaming: what belongs to this PC (restore state, log).
+pub fn state_dir() -> PathBuf {
+    dirs::state_dir().or_else(dirs::data_local_dir).unwrap_or_else(std::env::temp_dir).join(APP_DIR)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Format {

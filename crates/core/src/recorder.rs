@@ -270,6 +270,7 @@ fn echolot_loop(client: &Client, profile: &Profile, out_dir: &Path, shared_host:
     let mut setup = (Instant::now() - SETUP_CHECK, None::<String>);
     let mut backoff = Duration::from_secs(5);
     let mut paused_for_sound = false;
+    let mut logged = (DeviceState::Idle, "-".to_owned());
     // The first poll tells Echolot to release what a crashed run had leased.
     let mut fresh = true;
     for upload in leftover_uploads(&pending_dir) {
@@ -313,6 +314,7 @@ fn echolot_loop(client: &Client, profile: &Profile, out_dir: &Path, shared_host:
                 }
                 other => {
                     let (result, detail) = result_of(&other);
+                    crate::log!("echolot result {} {}: {result} \"{detail}\"", item.id, job.label());
                     if matches!(other, Outcome::NoSound) && !paused_for_sound {
                         paused_for_sound = true;
                         let _ = client.session("pause");
@@ -367,6 +369,10 @@ fn echolot_loop(client: &Client, profile: &Profile, out_dir: &Path, shared_host:
             (None, Spotify::Playing) => (DeviceState::Busy, BUSY.into()),
             (None, _) => (DeviceState::Idle, String::new()),
         };
+        if logged != (state, detail.clone()) {
+            crate::log!("echolot state {state:?} {detail}");
+            logged = (state, detail.clone());
+        }
         publish(snapshot, host, |s| {
             s.state = Some(state);
             s.detail = detail.clone();
@@ -401,6 +407,7 @@ fn echolot_loop(client: &Client, profile: &Profile, out_dir: &Path, shared_host:
                             }
                         }
                         let job = item.job();
+                        crate::log!("echolot item {} {}", item.id, job.label());
                         in_flight = Some(item.id);
                         items.insert(item.id, item);
                         publish(snapshot, host, |s| s.current = Some(job.clone()));
@@ -422,6 +429,7 @@ fn echolot_loop(client: &Client, profile: &Profile, out_dir: &Path, shared_host:
             }
             Err(Error::Unauthorized) => return disconnected(snapshot, host),
             Err(e) => {
+                crate::log!("echolot offline: {e}");
                 publish(snapshot, host, |s| {
                     s.connection = "offline".into();
                     s.error = Some(e.to_string());
@@ -516,6 +524,7 @@ fn uploader(client: Client, not_taken: PathBuf, snapshot: Arc<Mutex<Snapshot>>, 
                         ("failed".into(), format!("upload: {e}"), to)
                     }
                 };
+                crate::log!("upload {}: {result} \"{detail}\"", upload.job.label());
                 let _ = std::fs::remove_file(sidecar(&upload.file));
                 host.update(RecorderUpdate::Song { job: upload.job, result, detail, moved: Some((upload.file, to)) });
                 publish(&snapshot, &*host, |s| s.uploads = s.uploads.saturating_sub(1));

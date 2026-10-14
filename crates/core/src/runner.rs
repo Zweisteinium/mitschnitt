@@ -127,6 +127,18 @@ impl Runner {
         }
     }
 
+    pub fn stage(&self) -> &'static str {
+        match self.stage {
+            Stage::Idle { .. } => "Idle",
+            Stage::Waiting { .. } => "Waiting",
+            Stage::Starting { .. } => "Starting",
+            Stage::Playing { .. } => "Playing",
+            Stage::Recording { .. } => "Recording",
+            Stage::Writing { .. } => "Writing",
+            Stage::Rewind { .. } => "Rewind",
+        }
+    }
+
     pub fn recording(&self) -> bool {
         matches!(self.stage, Stage::Recording { .. })
     }
@@ -169,6 +181,7 @@ impl Runner {
     }
 
     fn finish(&mut self, job: Job, outcome: Outcome, now: Instant, pause: bool) -> Vec<Action> {
+        crate::log!("outcome {}: {outcome:?} in {}", job.label(), self.stage());
         self.done.push((job, outcome));
         self.stage = Stage::Idle { since: now };
         if pause { vec![Action::Pause] } else { Vec::new() }

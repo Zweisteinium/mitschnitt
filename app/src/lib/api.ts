@@ -86,6 +86,9 @@ export const api = {
   health: (app: string) => invoke<Check[]>("health", { app }),
   fix: (action: string, app: string) => invoke<string>("fix", { action, app }),
   open: (target: string) => invoke<void>("open", { target }),
+  openLog: () => invoke<void>("open_log"),
+  /** With the default app for its type. */
+  play: (file: string) => invoke<void>("play", { file }),
   platform: () => invoke<Platform>("platform"),
   history: () => invoke<HistoryRecord[]>("history"),
   echolotState: () => invoke<CardState>("echolot_state"),

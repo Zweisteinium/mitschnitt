@@ -165,6 +165,8 @@ impl Engine {
                 let queue = config.queue.take();
                 match Session::open(&config, queue.is_some(), packets) {
                     Ok(mut session) => {
+                        let SourceInfo { app, device, rate } = &session.info;
+                        crate::log!("engine start {app} on \"{device}\" at {rate} Hz, queue={}", queue.is_some());
                         let monitor = session.monitor.as_ref().map(|m| (m.volume_handle(), m.state()));
                         let _ = ready_tx.send(Ok((session.info.clone(), monitor)));
                         if let Some(queue) = queue {
@@ -173,6 +175,7 @@ impl Engine {
                         session.run(&rx, &config.settings, &notify);
                     }
                     Err(e) => {
+                        crate::log!("engine start failed: {e}");
                         let _ = ready_tx.send(Err(e));
                     }
                 }
@@ -236,8 +239,7 @@ struct Restore {
 
 impl Restore {
     fn path() -> PathBuf {
-        let base = dirs::state_dir().or_else(dirs::data_local_dir).unwrap_or_else(std::env::temp_dir);
-        base.join(crate::settings::APP_DIR).join("restore.json")
+        crate::settings::state_dir().join("restore.json")
     }
 
     fn save(&self) {
@@ -287,6 +289,23 @@ struct QueueRun {
     runner: Runner,
     /// The monitor is silenced while the queue runs: the level to go back to.
     quiet: Option<f32>,
+    /// The runner's stage as last logged.
+    stage: &'static str,
+}
+
+impl QueueRun {
+    fn log_stage(&mut self, media: Option<&crate::passive::Media>) {
+        let stage = self.runner.stage();
+        if stage != self.stage {
+            crate::log!("runner {} -> {stage}{}", self.stage, media.map(|m| format!(" | {}", show(m))).unwrap_or_default());
+            self.stage = stage;
+        }
+    }
+}
+
+fn show(m: &crate::passive::Media) -> String {
+    let track = m.track.as_ref().map_or("-".into(), |t| format!("\"{} - {}\"", t.artist, t.title));
+    format!("{} {track} @{:.1}s", if m.playing { "playing" } else { "paused" }, m.position_ms as f64 / 1000.0)
 }
 
 /// Everything on the engine thread.
@@ -388,7 +407,7 @@ impl Session {
 
     fn attach(&mut self, queue: Queue) {
         self.detach(Outcome::Stalled { detail: "replaced by another queue".into() });
-        self.queue = Some(QueueRun { queue, runner: Runner::new(Instant::now()), quiet: None });
+        self.queue = Some(QueueRun { queue, runner: Runner::new(Instant::now()), quiet: None, stage: "Idle" });
     }
 
     fn detach(&mut self, outcome: Outcome) {
@@ -413,6 +432,7 @@ impl Session {
 
     fn act(&self, actions: &[Action], job: Option<&Job>) {
         for action in actions {
+            crate::log!("runner {action:?} {}", job.map(Job::label).unwrap_or_default());
             let result = match action {
                 Action::Open => job.map_or(Ok(()), |j| desktop::open_link_in_background(&j.play_uri(), self.profile.exe)),
                 Action::Play | Action::Pause | Action::Next | Action::Previous | Action::Restart => {
@@ -427,7 +447,7 @@ impl Session {
                 }
             };
             if let Err(e) = result {
-                eprintln!("runner: {action:?}: {e}");
+                crate::log!("runner {action:?} failed: {e}");
             }
         }
     }
@@ -489,6 +509,9 @@ impl Session {
                 if self.watcher.is_none() && now >= self.find_at {
                     self.find_at = now + FIND_SESSION;
                     self.watcher = media::find(&self.profile).ok().flatten().map(Watcher::new);
+                    if self.watcher.is_some() {
+                        crate::log!("media session found");
+                    }
                 }
                 let snapshot = self.watcher.as_mut().map(|w| w.snapshot().map_err(|e| e.to_string()));
                 match snapshot {
@@ -502,7 +525,8 @@ impl Session {
                         self.drive(now, &media);
                     }
                     // Gone for a moment, or with the app (on Linux its session goes first; the check below says so).
-                    Some(Err(_)) => {
+                    Some(Err(e)) => {
+                        crate::log!("media session lost: {e}");
                         self.watcher = None;
                         self.find_at = now;
                     }
@@ -528,6 +552,7 @@ impl Session {
                     let controls = sessions::app_volumes_by_name(self.profile.exe);
                     let volumes = sessions::get(&controls);
                     if volumes.iter().any(|v| (v - GAIN).abs() > 1e-4) {
+                        crate::log!("app volume {volumes:?}, set back to {GAIN} (recording={})", self.passive.recording());
                         if self.restore.app_volume.is_none() {
                             self.restore.app_volume = volumes.into_iter().reduce(f32::max);
                             self.restore.save();
@@ -541,10 +566,12 @@ impl Session {
                 notify(Update::Status { status: self.passive.status() });
                 if let Some(count) = self.guard.as_ref().map(Guard::blocked).filter(|c| *c != blocked) {
                     blocked = count;
+                    crate::log!("media keys blocked: {count}");
                     notify(Update::KeyBlocked { count });
                 }
                 if let Some(now) = self.monitor.as_ref().map(|m| m.state().muted.load(Ordering::Relaxed)).filter(|m| *m != muted) {
                     muted = now;
+                    crate::log!("monitor muted={muted}");
                     notify(Update::MonitorMuted { muted });
                 }
                 if let Some(now) = self.monitor.as_ref().map(|m| f32::from_bits(m.volume_handle().load(Ordering::Relaxed))).filter(|v| !v.is_nan() && *v != volume) {
@@ -553,6 +580,7 @@ impl Session {
                 }
             }
         }
+        crate::log!("engine stop: {}", error.as_deref().unwrap_or("by the user"));
         let events = self.passive.stop();
         self.dispatch(events, settings, notify);
         // Stopped by the user: a take-over. A failure: worth another try.
@@ -586,6 +614,7 @@ impl Session {
         {
             actions.extend(run.runner.assign(job, now, media));
         }
+        run.log_stage(Some(media));
         for d in run.runner.take_done() {
             let _ = run.queue.done.send(d);
         }
@@ -598,6 +627,11 @@ impl Session {
 
     fn dispatch(&mut self, events: Vec<Event>, settings: &Settings, notify: &Notify) {
         for event in events {
+            match &event {
+                Event::Started(track) => crate::log!("recording started \"{} - {}\"", track.artist, track.title),
+                Event::Dropped { track, reason } => crate::log!("recording dropped \"{} - {}\": {reason:?}", track.artist, track.title),
+                Event::Completed { track, off_grid, .. } => crate::log!("recording completed \"{} - {}\", off grid {off_grid}", track.artist, track.title),
+            }
             if let Some(t) = &mut self.trace {
                 t.note(&match &event {
                     Event::Started(track) => format!("started\t{}", track.title),
@@ -610,6 +644,7 @@ impl Session {
             if let Some(run) = &mut self.queue {
                 let now = Instant::now();
                 let actions = run.runner.event(now, &event);
+                run.log_stage(None);
                 let job = run.runner.job().cloned();
                 target = match &event {
                     Event::Completed { track, .. } => run.runner.is_target(track),

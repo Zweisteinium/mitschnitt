@@ -23,12 +23,14 @@ pub fn open_link_in_background(link: &str, exe: &str) -> Result<(), String> {
     let before = unsafe { GetForegroundWindow() };
     let pids = app_pids(exe);
     if !pids.is_empty() && window_pid(before).is_some_and(|pid| pids.contains(&pid)) {
+        crate::log!("focus: {exe} is in front already");
         return open_link(link);
     }
     // SAFETY: a window handle from the system.
     let minimize_after = main_window(&pids).is_none_or(|w| unsafe { IsIconic(w) }.as_bool());
     // A starting app can take several seconds to show its window.
     let watch = if pids.is_empty() { Duration::from_secs(20) } else { Duration::from_secs(3) };
+    crate::log!("focus: front is {}, {exe} running={} minimize_after={minimize_after}", who(before), !pids.is_empty());
     let (before, exe) = (before.0 as isize, exe.to_owned()); // a window handle isn't Send; its value is
     std::thread::spawn(move || {
         let before = HWND(before as _);
@@ -40,6 +42,7 @@ pub fn open_link_in_background(link: &str, exe: &str) -> Result<(), String> {
         // for a moment; after that it stays (the user may have clicked it).
         let mut grabbed: Option<Instant> = None;
         let mut last_minimize = Instant::now() - Duration::from_secs(1);
+        let started = Instant::now();
         while Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(15));
             // SAFETY: plain query of the foreground window.
@@ -47,6 +50,9 @@ pub fn open_link_in_background(link: &str, exe: &str) -> Result<(), String> {
             if front == before || !window_pid(front).is_some_and(|pid| app_pids(&exe).contains(&pid)) {
                 grabbed = None;
                 continue;
+            }
+            if grabbed.is_none() {
+                crate::log!("focus: {exe} took the front after {} ms", started.elapsed().as_millis());
             }
             if grabbed.get_or_insert_with(Instant::now).elapsed() >= Duration::from_millis(1_500) {
                 continue;
@@ -66,8 +72,18 @@ pub fn open_link_in_background(link: &str, exe: &str) -> Result<(), String> {
         {
             minimize(window);
         }
+        // SAFETY: plain query of the foreground window.
+        let front = unsafe { GetForegroundWindow() };
+        crate::log!("focus: watch over, front is {}{}", who(front), if front == before { " (as before)" } else { "" });
     });
     open_link(link)
+}
+
+/// "firefox.exe (pid 8812)", for the log.
+fn who(window: windows::Win32::Foundation::HWND) -> String {
+    let Some(pid) = window_pid(window) else { return "nothing".into() };
+    let name = crate::sessions::processes().into_iter().find(|p| p.pid == pid).map(|p| p.name).unwrap_or_default();
+    format!("{name} (pid {pid})")
 }
 
 /// Windows only lets the foreground's own input queue hand over the focus, so the calling thread shares it briefly.

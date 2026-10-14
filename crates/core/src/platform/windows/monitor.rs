@@ -61,6 +61,7 @@ impl Monitor {
                             home = Some(out.device.clone());
                         }
                         st.muted.store(home.as_deref() != Some(out.device.as_str()), Ordering::Relaxed);
+                        crate::log!("monitor on \"{}\", home \"{}\"", out.device, home.as_deref().unwrap_or_default());
                         let _ = out.run(&q, &v, 1.0 / gain, &s, &st);
                         continue;
                     }
