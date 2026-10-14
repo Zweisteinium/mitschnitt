@@ -20,7 +20,7 @@ await server.listen();
 try {
   // Async: the dev server in this process has to answer the browser meanwhile. Virtual time lets the demo start and
   // fill its meters without real waiting.
-  await promisify(execFile)(browser, ["--headless=new", "--disable-gpu", "--hide-scrollbars", "--window-size=1040,800", "--force-device-scale-factor=2", "--virtual-time-budget=3000", `--screenshot=${out}`, "http://localhost:5174/?shot"]);
+  await promisify(execFile)(browser, ["--headless=new", "--disable-gpu", "--hide-scrollbars", "--force-prefers-reduced-motion","--window-size=1040,800", "--force-device-scale-factor=2", "--virtual-time-budget=3000", `--screenshot=${out}`, "http://localhost:5174/?shot"]);
 } finally {
   await server.close();
 }

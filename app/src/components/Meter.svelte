@@ -8,7 +8,8 @@
 
   let { rms, peak }: { rms: number[]; peak: number[] } = $props();
 
-  const GLIDE_MS = 80;
+  /** None with reduced motion (also the README screenshot, whose headless browser barely runs animation frames). */
+  const GLIDE_MS = matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 80;
   /** CSS px: cell pitch, gap, bar height, gap between bars, peak line overhang and width. */
   const PITCH = 8, GAP = 2, BAR = 6, BAR_GAP = 3, OVERHANG = 1, LINE = 2;
   const STOPS: [number, number[]][] = [[0, [14, 95, 115]], [0.38, [34, 211, 238]], [0.64, [167, 139, 250]], [0.8, [244, 63, 94]], [1, [185, 28, 28]]];
@@ -33,7 +34,7 @@
 
   /** A value gliding from `from` to `to`, started at `at`. */
   type Glide = { from: number; to: number; at: number };
-  const value = (g: Glide, now: number) => g.from + (g.to - g.from) * Math.min(1, (now - g.at) / GLIDE_MS);
+  const value = (g: Glide, now: number) => g.from + (g.to - g.from) * (GLIDE_MS ? Math.min(1, (now - g.at) / GLIDE_MS) : 1);
   const glide = (g: Glide, to: number, now: number): Glide => ({ from: value(g, now), to, at: now });
 
   let canvas: HTMLCanvasElement;
@@ -49,7 +50,8 @@
     const now = performance.now();
     levels = levels.map((g, c) => glide(g, position(rms[c] ?? 0), now));
     peaks = peaks.map((g, c) => glide(g, position(peak[c] ?? 0), now));
-    if (!frame) frame = requestAnimationFrame(tick);
+    if (!GLIDE_MS) draw(now);
+    else if (!frame) frame = requestAnimationFrame(tick);
   });
 
   function tick(now: number) {
