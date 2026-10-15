@@ -125,7 +125,8 @@ pub enum Update {
     Exists { track: Track, file: String },
     /// `file`: `None` when a flagged file was removed. `exact`: every sample arrived untouched. `faded`: all but the
     /// player's fade-in did. `lossy`: saved as MP3 (manual) or uploaded as it came (Echolot judges it itself).
-    Saved { track: Track, file: Option<String>, size: u64, verdict: Severity, master: Master, exact: bool, faded: bool, lossy: Option<Lossy>, issues: Vec<String>, echolot: bool },
+    /// `peak_dbfs`: `None` for digital silence.
+    Saved { track: Track, file: Option<String>, size: u64, verdict: Severity, master: Master, exact: bool, faded: bool, lossy: Option<Lossy>, issues: Vec<String>, echolot: bool, frames: u64, peak_dbfs: Option<f64> },
     Failed { track: Track, error: String },
     KeyBlocked { count: u32 },
     /// The default output changed.
@@ -844,7 +845,7 @@ fn file_size(path: &std::path::Path) -> u64 {
 }
 
 fn saved(track: Track, file: Option<PathBuf>, size: u64, checked: Checked, echolot: bool) -> Update {
-    let Checked { report, exact, faded, lossy, .. } = checked;
+    let Checked { audio, report, exact, faded, lossy, .. } = checked;
     Update::Saved {
         track,
         file: file.map(|f| f.display().to_string()),
@@ -856,6 +857,8 @@ fn saved(track: Track, file: Option<PathBuf>, size: u64, checked: Checked, echol
         lossy,
         issues: report.issues.into_iter().map(|i| i.text).collect(),
         echolot,
+        frames: audio.frames() as u64,
+        peak_dbfs: report.peak_dbfs.is_finite().then_some(report.peak_dbfs),
     }
 }
 

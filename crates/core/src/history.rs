@@ -36,6 +36,10 @@ pub struct Record {
     /// The check's findings, most important first (older lines have none).
     #[serde(default)]
     pub issues: Vec<String>,
+    #[serde(default)]
+    pub frames: Option<u64>,
+    #[serde(default)]
+    pub peak_dbfs: Option<f64>,
     #[serde(default, skip_deserializing)]
     pub exists: bool,
 }
@@ -126,6 +130,8 @@ mod tests {
             echolot,
             result: None,
             issues: Vec::new(),
+            frames: None,
+            peak_dbfs: None,
             exists: false,
         };
         add(&path, &record("Own", "own.flac", false));

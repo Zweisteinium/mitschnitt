@@ -31,9 +31,16 @@ pub fn number(x: f64) -> String {
     if s == "-0" { "0".into() } else { s.to_owned() }
 }
 
-/// A length for people: milliseconds below a second (`6 ms`, `31.5 ms`), else seconds (`1.2 s`).
+/// A length for people: seconds from one (`1.2 s`), else milliseconds (`31.5 ms`), two digits below one (`0.023 ms`:
+/// a fade-in can be a single frame).
 pub fn duration(ms: f64) -> String {
-    if ms < 1000.0 { format!("{} ms", number(ms)) } else { format!("{} s", number(ms / 1000.0)) }
+    if ms >= 1000.0 {
+        format!("{} s", number(ms / 1000.0))
+    } else if ms >= 1.0 {
+        format!("{} ms", number(ms))
+    } else {
+        format!("{} ms", format!("{ms:.*}", (1.0 - ms.log10().floor()) as usize).trim_end_matches('0'))
+    }
 }
 
 /// `m:ss.mmm` for a frame index (rounded to the nearest millisecond).
@@ -53,6 +60,6 @@ mod tests {
     #[test]
     fn numbers_drop_a_zero_decimal() {
         assert_eq!([super::number(12.0), super::number(31.54), super::number(-0.04), super::number(-0.1)], ["12", "31.5", "0", "-0.1"]);
-        assert_eq!([super::duration(6.0), super::duration(11.61), super::duration(1_250.0)], ["6 ms", "11.6 ms", "1.2 s"]);
+        assert_eq!([super::duration(6.0), super::duration(11.61), super::duration(1_250.0), super::duration(0.62), super::duration(0.0227)], ["6 ms", "11.6 ms", "1.2 s", "0.62 ms", "0.023 ms"]);
     }
 }

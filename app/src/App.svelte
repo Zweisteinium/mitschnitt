@@ -181,7 +181,8 @@
 
   .listen {
     display: grid;
-    grid-template-columns: clamp(380px, 36%, 440px) minmax(0, 1fr);
+    /* Room for a long device name and Echolot's three buttons on one line (they need 376 px, measured). */
+    grid-template-columns: clamp(470px, 40%, 520px) minmax(0, 1fr);
     gap: 16px;
     align-items: start;
   }
@@ -212,7 +213,7 @@
     line-height: 1;
   }
 
-  @media (max-width: 840px) {
+  @media (max-width: 960px) {
     .listen {
       grid-template-columns: 1fr;
     }

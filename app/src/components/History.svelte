@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { api, clock, megabytes, type HistoryRecord, type Lossy, type Master, type Severity } from "../lib/api";
+  import { api, clock, megabytes, readable, type HistoryRecord, type Lossy, type Master, type Severity, type Track } from "../lib/api";
   import { resultText } from "../lib/echolot.svelte";
   import { session, type Entry } from "../lib/session.svelte";
   import Panel from "./Panel.svelte";
@@ -8,11 +8,12 @@
 
   const time = (d: Date) => d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   const full = (d: Date) => d.toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
+  const exact = (d: Date) => d.toLocaleString([], { dateStyle: "medium", timeStyle: "medium" });
   const when = (d: Date) => (d.toDateString() === new Date().toDateString() ? time(d) : d.toLocaleDateString([], { day: "numeric", month: "short" }));
 
   /** A finding's gist for the row: up to its details ("end not verified: no pause …" -> "End not verified"). */
   function headline(issue: string | undefined): string {
-    const gist = (issue ?? "").split(/: | \(/)[0];
+    const gist = readable((issue ?? "").split(/: | \(/)[0]);
     return gist.charAt(0).toUpperCase() + gist.slice(1);
   }
 
@@ -39,11 +40,39 @@
 
   const facts = (durationMs: number, size: number) => `${clock(durationMs)} · ${megabytes(size)}`;
 
-  /** Everything about a row, for its info card. */
-  function details(e: Entry): string[] {
-    if (e.outcome === "exists") return [e.file];
-    if (e.outcome !== "saved") return [e.message];
-    return [...e.issues, bitsOf(e.master), ...(e.file ? [e.file] : [])];
+  type Saved = { track: Track; file: string | null; size: number; master: Master; exact: boolean; faded: boolean; lossy: Lossy | null; issues: string[]; frames: number | null; peak_dbfs: number | null };
+  type Card = { facts: [string, string][]; findings: string[] };
+
+  /** A card line, left out without a value. */
+  const fact = (label: string, value: string | null | undefined): [string, string][] => (value ? [[label, value]] : []);
+
+  const songFacts = (track: Track, at: Date): [string, string][] => [
+    ...fact("Album", track.album),
+    ...fact("Length", `${clock(track.duration_ms)}.${Math.floor((track.duration_ms % 1000) / 100)} listed`),
+    ...fact("Time", exact(at)),
+  ];
+
+  /** Everything about a file, for its info card. */
+  function fileCard(f: Saved, at: Date, origin: string): Card {
+    const format = f.file?.split(".").pop()?.toUpperCase();
+    const facts = [
+      ...fact("Origin", origin),
+      ...fact("Master", f.lossy === "source" ? "made from a lossy file" : f.master === "bit16_exact" ? "16-bit" : f.master === "bit16_partly" ? "16-bit, altered in places" : "24-bit"),
+      ...fact("Stream", f.exact ? "every sample arrived untouched" : f.faded ? "untouched after Spotify's fade-in" : f.lossy === "stream" ? "lossy" : "not every sample proven untouched"),
+      ...fact("Format", format && (format === "MP3" ? "MP3, 320 kbps" : `${format}, ${f.master === "bit16_exact" ? 16 : 24}-bit`)),
+      ...songFacts(f.track, at),
+      ...fact("Samples", f.frames ? `${f.frames.toLocaleString()} per channel` : null),
+      ...fact("Peak", f.peak_dbfs !== null ? `${f.peak_dbfs.toFixed(2)} dBFS` : null),
+      ...fact("Size", f.size ? `${(f.size / 1048576).toFixed(2)} MB, ${Math.round((f.size * 8) / f.track.duration_ms)} kbps` : null),
+      ...fact("File", f.file),
+    ];
+    return { facts, findings: f.issues.map((i) => readable(i, true)) };
+  }
+
+  function card(e: Entry): Card {
+    if (e.outcome === "saved") return fileCard(e, e.at, e.echolot ? "Echolot" : "Manual");
+    if (e.outcome === "exists") return { facts: [...songFacts(e.track, e.at), ["File", e.file]], findings: [] };
+    return { facts: songFacts(e.track, e.at), findings: [readable(e.message, true)] };
   }
 
   function origin(r: HistoryRecord): string {
@@ -71,15 +100,18 @@
   });
 </script>
 
-{#snippet info(lines: string[])}
-  {#if lines.length}
-    <span class="info" tabindex="0" role="button" aria-label="Details">
-      i
-      <span class="card" role="tooltip">
-        {#each lines as line}<span class="line">{line}</span>{/each}
+{#snippet info({ facts, findings }: Card)}
+  <span class="info" tabindex="0" role="button" aria-label="Details">
+    i
+    <span class="card" role="tooltip">
+      {#if findings.length}
+        <span class="findings">{#each findings as line}<span>{line}</span>{/each}</span>
+      {/if}
+      <span class="facts-list">
+        {#each facts as [label, value]}<span class="label mono">{label}</span><span>{value}</span>{/each}
       </span>
     </span>
-  {/if}
+  </span>
 {/snippet}
 
 {#snippet fileActions(file: string)}
@@ -111,7 +143,7 @@
             <div class="detail {s.tone}">
               {s.text}{#if e.outcome === "saved" && e.echolot}{" · for Echolot"}{/if}
               {#if e.outcome === "saved" && e.file}<span class="facts mono">{facts(e.track.duration_ms, e.size)}</span>{/if}
-              {@render info(details(e))}
+              {@render info(card(e))}
             </div>
           </div>
           <span class="when mono muted" title={full(e.at)}>{time(e.at)}</span>
@@ -142,7 +174,7 @@
               <div class="name">{r.track.artist} – {r.track.title}</div>
               <div class="detail muted">
                 {origin(r)}<span class="facts mono">{facts(r.track.duration_ms, r.size)}</span>
-                {@render info([...(r.issues ?? []), bitsOf(r.master), r.file])}
+                {@render info(fileCard({ ...r, issues: r.issues ?? [] }, at, origin(r)))}
               </div>
             </div>
             <span class="when mono muted" title={full(at)}>{when(at)}</span>
@@ -243,7 +275,7 @@
     position: absolute;
     z-index: 10;
     top: 18px;
-    left: -8px;
+    right: -8px;
     width: max-content;
     max-width: min(420px, 70vw);
     padding: 8px 10px;
@@ -261,11 +293,29 @@
   .info:hover .card,
   .info:focus-within .card {
     display: grid;
-    gap: 2px;
+    gap: 8px;
   }
 
-  .line {
+  .findings {
+    display: grid;
+    gap: 2px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--faint);
+  }
+
+  .facts-list {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 2px 12px;
     overflow-wrap: anywhere;
+  }
+
+  .label {
+    font-size: 10px;
+    line-height: 17px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
   }
 
   .when {

@@ -96,6 +96,8 @@ const record = (daysAgo: number, artist: string, title: string, length: [number,
   echolot: echolot !== null,
   result: echolot,
   issues: faded ? ["Spotify's fade-in: first 10 ms"] : [],
+  frames: (length[0] * 60 + length[1]) * 44_100,
+  peak_dbfs: -0.12,
   exists,
 });
 const history: HistoryRecord[] = [
@@ -122,7 +124,7 @@ function start() {
   for (const [ago, track, saved, result, detail] of earlierSongs) {
     earlier(ago, () => {
       const kept = saved.verdict === "info" || saved.faded;
-      emit("update", { kind: "saved", track, file: `${out}\\${kept ? "" : "Not taken\\"}${track.artist} - ${track.title}.flac`, size: Math.round((track.duration_ms / 1000) * 112_000), ...saved, echolot: true });
+      emit("update", { kind: "saved", track, file: `${out}\\${kept ? "" : "Not taken\\"}${track.artist} - ${track.title}.flac`, size: Math.round((track.duration_ms / 1000) * 112_000), ...saved, echolot: true, frames: Math.round(track.duration_ms * 44.1), peak_dbfs: -0.3 });
       emit("echolot", { kind: "song", job: track, result, detail });
     });
   }

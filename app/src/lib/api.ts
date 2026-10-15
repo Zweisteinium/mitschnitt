@@ -14,7 +14,7 @@ export type Update =
   | { kind: "started"; track: Track }
   | { kind: "dropped"; track: Track; message: string }
   | { kind: "exists"; track: Track; file: string }
-  | { kind: "saved"; track: Track; file: string | null; size: number; verdict: Severity; master: Master; exact: boolean; faded: boolean; lossy: Lossy | null; issues: string[]; echolot: boolean }
+  | { kind: "saved"; track: Track; file: string | null; size: number; verdict: Severity; master: Master; exact: boolean; faded: boolean; lossy: Lossy | null; issues: string[]; echolot: boolean; frames: number; peak_dbfs: number | null }
   | { kind: "failed"; track: Track; error: string }
   | { kind: "key_blocked" }
   | { kind: "monitor_muted"; muted: boolean }
@@ -73,7 +73,7 @@ export type RecorderSnapshot = {
 type RecorderUpdate = { kind: "snapshot"; snapshot: RecorderSnapshot } | { kind: "song"; job: Track; result: string; detail: string; moved: [string, string | null] | null };
 type CardState = { snapshot: RecorderSnapshot; url: string; pairing: boolean };
 /** `at`: Unix ms. `result`: Echolot's answer to the upload. */
-export type HistoryRecord = { at: number; track: Track; file: string; size: number; verdict: Severity; master: Master; exact: boolean; faded: boolean; lossy: Lossy | null; echolot: boolean; result: string | null; issues: string[]; exists: boolean };
+export type HistoryRecord = { at: number; track: Track; file: string; size: number; verdict: Severity; master: Master; exact: boolean; faded: boolean; lossy: Lossy | null; echolot: boolean; result: string | null; issues: string[]; frames: number | null; peak_dbfs: number | null; exists: boolean };
 
 export const api = {
   sources: () => invoke<Source[]>("sources"),
@@ -116,6 +116,22 @@ export function num(x: number): string {
 
 export function megabytes(bytes: number): string {
   return `${num(bytes / 1048576)} MB`;
+}
+
+/** Lengths and times in a finding, for its row (`fine` false: `1:30`, `10 ms`, `0.02 ms`) or its info card (`1:30.3`,
+ * `10.4 ms`, `0.018 ms`). The texts come with times to the millisecond. */
+export function readable(text: string, fine = false): string {
+  return text
+    .replace(/\b(\d+):(\d\d)\.(\d{3})\b/g, (_, m: string, s: string, ms: string) => {
+      if (!fine) return `${m}:${s}`;
+      const tenths = Math.round((+m * 60_000 + +s * 1000 + +ms) / 100);
+      return `${Math.floor(tenths / 600)}:${String(Math.floor(tenths / 10) % 60).padStart(2, "0")}.${tenths % 10}`;
+    })
+    .replace(/\b([\d:.]+)-\1\b/g, "$1")
+    .replace(/\b(\d+(?:\.\d+)?) (ms|s)\b/g, (_, x: string, unit: string) => {
+      const v = +x;
+      return `${v >= 1 ? (fine ? num(v) : Math.round(v)) : +v.toPrecision(fine ? 2 : 1)} ${unit}`;
+    });
 }
 
 export function clock(ms: number): string {

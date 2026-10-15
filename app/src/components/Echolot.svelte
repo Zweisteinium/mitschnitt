@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { clock } from "../lib/api";
+  import { clock, readable } from "../lib/api";
   import { echolot, resultText } from "../lib/echolot.svelte";
   import { session as listener } from "../lib/session.svelte";
   import Panel from "./Panel.svelte";
@@ -85,7 +85,7 @@
   {#if echolot.results.length > 0}
     <ul class="results small">
       {#each echolot.results.slice(0, 8) as r (r.id)}
-        <li title={r.detail}>
+        <li title={readable(r.detail, true)}>
           <span class="tag mono" class:ok={r.result === "filed" || r.result === "recorded"} class:bad={r.result === "rejected" || r.result === "failed" || r.result === "stalled"}>{resultText[r.result] ?? r.result}</span>
           <span class="song">{r.job.artist} – {r.job.title}</span>
         </li>
