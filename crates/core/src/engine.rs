@@ -310,11 +310,20 @@ struct QueueRun {
     quiet: Option<f32>,
     /// The runner's stage as last logged.
     stage: &'static str,
+    /// What the player showed as last logged while a song starts: a failed start is explained by it.
+    shown: (bool, Option<crate::passive::Track>),
 }
 
 impl QueueRun {
     fn log_stage(&mut self, media: Option<&crate::passive::Media>) -> Option<&'static str> {
         let stage = self.runner.stage();
+        if let Some(m) = media
+            && matches!(stage, "Starting" | "Playing" | "Rewind")
+            && self.shown != (m.playing, m.track.clone())
+        {
+            crate::log!("player {}", show(m));
+            self.shown = (m.playing, m.track.clone());
+        }
         if stage == self.stage {
             return None;
         }
@@ -428,7 +437,7 @@ impl Session {
 
     fn attach(&mut self, queue: Queue) {
         self.detach(Outcome::Stalled { detail: "replaced by another list".into() });
-        self.queue = Some(QueueRun { queue, runner: Runner::new(Instant::now()), quiet: None, stage: "Idle" });
+        self.queue = Some(QueueRun { queue, runner: Runner::new(Instant::now()), quiet: None, stage: "Idle", shown: (false, None) });
     }
 
     fn detach(&mut self, outcome: Outcome) {

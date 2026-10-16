@@ -151,7 +151,8 @@ impl GridCount {
 
 enum State {
     Idle,
-    Waiting { track: Track, until: u64 },
+    /// `target`: where the clean start should lie (from the shown position).
+    Waiting { track: Track, until: u64, target: i64 },
     /// `tail_off`: off-grid frames past `expected`, counted only if the end search keeps them. `gap`: the first frame
     /// past `expected` without packets; silence from there on proves no end. `tail_empty`: per frame past `expected`,
     /// whether the player rendered it as an empty buffer.
@@ -315,7 +316,9 @@ impl Passive {
         }
 
         if let State::Waiting { until, .. } = self.state && self.frame >= until {
-            let State::Waiting { track, .. } = std::mem::replace(&mut self.state, State::Idle) else { unreachable!() };
+            let State::Waiting { track, target, .. } = std::mem::replace(&mut self.state, State::Idle) else { unreachable!() };
+            let off: Vec<String> = self.starts.iter().map(|s| format!("{:+}", (*s as i64 - target) * 1000 / self.rate as i64)).collect();
+            crate::log!("no clean start for \"{}\": silence ended {} ms from where the position puts its start", track.title, if off.is_empty() { "nowhere".into() } else { off.join(", ") });
             self.done = Some(track.clone());
             events.push(Event::Dropped { track, reason: Reason::NoCleanStart });
         }
@@ -442,7 +445,7 @@ impl Passive {
         let tolerance = ms_to_frames(POSITION_MATCH_MS as u64, self.rate) as i64;
         match self.starts.iter().rev().find(|s| (**s as i64 - target).abs() <= tolerance) {
             Some(&start) => self.start_recording(track, start, events),
-            None => self.state = State::Waiting { track, until: self.frame + ms_to_frames(WAIT_MS, self.rate) as u64 },
+            None => self.state = State::Waiting { track, until: self.frame + ms_to_frames(WAIT_MS, self.rate) as u64, target },
         }
     }
 

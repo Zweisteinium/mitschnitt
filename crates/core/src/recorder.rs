@@ -27,6 +27,8 @@ const LONG_POLL_S: u32 = 25;
 const BUSY: &str = "Spotify is playing (here or on another device)";
 const NO_SOUND: &str = "no sound: playing on another device?";
 const HEARTBEAT: Duration = Duration::from_secs(10);
+/// The player still shows playing for a moment after the runner's own pause: read as busy, the long poll lost 25 s.
+const OWN_PAUSE: Duration = Duration::from_secs(2);
 const SETUP_CHECK: Duration = Duration::from_secs(60);
 const PLAYER_START: Duration = Duration::from_secs(30);
 const UPLOAD_RETRY_FIRST: Duration = Duration::from_secs(10);
@@ -288,6 +290,7 @@ fn echolot_loop(client: &Client, profile: &Profile, out_dir: &Path, shared_host:
     let mut setup = (Instant::now() - SETUP_CHECK, None::<String>);
     let mut backoff = Duration::from_secs(5);
     let mut paused_for_sound = false;
+    let mut ended = Instant::now() - OWN_PAUSE;
     let mut logged = (DeviceState::Idle, "-".to_owned());
     // The first poll tells Echolot to release what a crashed run had leased.
     let mut fresh = true;
@@ -331,6 +334,7 @@ fn echolot_loop(client: &Client, profile: &Profile, out_dir: &Path, shared_host:
                     let _ = uploads.send(Upload { item, job, file, keep_as, note });
                 }
                 other => {
+                    ended = Instant::now();
                     let (result, detail) = result_of(&other);
                     crate::log!("echolot result {} {}: {result} \"{detail}\"", item.id, job.label());
                     if matches!(other, Outcome::NoSound) && !paused_for_sound {
@@ -382,6 +386,10 @@ fn echolot_loop(client: &Client, profile: &Profile, out_dir: &Path, shared_host:
             setup = (Instant::now(), setup_problem(profile));
         }
         let spotify = spotify_state(profile, status.as_ref());
+        if spotify == Spotify::Playing && ended.elapsed() < OWN_PAUSE {
+            std::thread::sleep(Duration::from_millis(200));
+            continue;
+        }
         let (state, detail) = match (&setup.1, spotify) {
             (Some(problem), _) => (DeviceState::Setup, problem.clone()),
             (None, Spotify::Playing) => (DeviceState::Busy, BUSY.into()),
