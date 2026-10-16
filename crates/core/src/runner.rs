@@ -254,6 +254,17 @@ impl Runner {
                 self.finish(job, Outcome::NoSound, now, true)
             }
             Stage::Starting { job, at, timeout, corrections, wrong, retried, rewound, late } => {
+                // Spotify loads a song it stopped a minute before where it left it, paused (9.7 s, measured): it would
+                // wait for the timeout. From the start instead.
+                let resumed = !media.playing && media.position_ms > MAX_START_POSITION_MS && media.track.as_ref().is_some_and(|t| matches(job, t).is_ok());
+                if resumed && !*rewound {
+                    if now.duration_since(*late.get_or_insert(now)) < POSITION_SETTLE {
+                        return Vec::new();
+                    }
+                    let (job, retried) = (job.clone(), *retried);
+                    self.stage = Stage::Rewind { job, since: now, retried, seeked: false };
+                    return Vec::new();
+                }
                 let showing = media.track.as_ref().filter(|_| media.playing);
                 let Some(track) = showing.filter(|t| wrong.as_ref() != Some(*t)) else {
                     if now.duration_since(*at) < if wrong.is_some() { CORRECTION_TIMEOUT } else { *timeout } {
@@ -320,15 +331,17 @@ impl Runner {
                 Vec::new()
             }
             Event::Dropped { track, reason } => {
-                let (job, at, retried) = match &self.stage {
-                    Stage::Recording { job, at, retried } if matches(job, track).is_ok() => (job.clone(), *at, *retried),
-                    // Before the recording: only a start that can never be clean ends the job.
-                    Stage::Playing { job, at, retried } if matches(job, track).is_ok() && matches!(reason, Reason::MidTrack | Reason::NoCleanStart) => (job.clone(), *at, *retried),
+                let (job, at, retried, before) = match &self.stage {
+                    Stage::Recording { job, at, retried } if matches(job, track).is_ok() => (job.clone(), *at, *retried, false),
+                    // Before the recording: only a start that can never be clean ends the job. It comes 5 s after the
+                    // song showed (passive's wait), so no time limit: a late start (Spotify played 3 to 7 s after the
+                    // link, and showed it only 0.5 to 2.5 s in) is loaded by then and starts cleanly from 0:00.
+                    Stage::Playing { job, at, retried } if matches(job, track).is_ok() && matches!(reason, Reason::MidTrack | Reason::NoCleanStart) => (job.clone(), *at, *retried, true),
                     _ => return Vec::new(),
                 };
                 // Spoilt by the start itself (a stream that came up at the wrong volume, a key that reached the player
                 // while it had the focus): once more from silence.
-                let startup = matches!(reason, Reason::VolumeChanged | Reason::NoCleanStart | Reason::MidTrack | Reason::Paused) && now.duration_since(at) < Duration::from_secs(4);
+                let startup = before || (matches!(reason, Reason::VolumeChanged | Reason::Paused) && now.duration_since(at) < Duration::from_secs(4));
                 if startup && !retried {
                     self.stage = Stage::Rewind { job, since: now, retried: true, seeked: false };
                     return vec![Action::Pause];
@@ -646,6 +659,28 @@ mod tests {
         r.tick(t + Duration::from_secs(7), &playing(&song, 101_000));
         assert!(r.tick(t + Duration::from_secs(18), &playing(&song, 112_000)).contains(&Action::Pause));
         assert!(matches!(&r.take_done()[0].1, Outcome::Failed { detail } if detail.starts_with("started at ")));
+    }
+
+    #[test]
+    fn a_late_start_without_a_clean_start_and_a_song_resumed_paused_start_again_from_zero() {
+        let t = Instant::now();
+        let song = track("Feel It", "NYCO", 225_000);
+        let mut r = Runner::new(t - GAP);
+        r.assign(job(), t, &Media::default());
+        r.tick(t + Duration::from_secs(5), &playing(&song, 1_500));
+        // The engine's wait for the clean start ends 5 s after the song showed.
+        assert_eq!(r.event(t + Duration::from_secs(10), &Event::Dropped { track: song.clone(), reason: Reason::NoCleanStart }), vec![Action::Pause]);
+        assert!(r.take_done().is_empty());
+        let paused = Media { playing: false, track: Some(song.clone()), position_ms: 6_500 };
+        assert_eq!(r.tick(t + Duration::from_secs(12), &paused), vec![Action::Restart]);
+
+        let mut r = Runner::new(t - GAP);
+        r.assign(job(), t, &Media::default());
+        let resumed = Media { playing: false, track: Some(song.clone()), position_ms: 9_700 };
+        assert!(r.tick(t + Duration::from_secs(1), &resumed).is_empty());
+        assert!(r.tick(t + Duration::from_millis(2_600), &resumed).is_empty());
+        assert_eq!(r.tick(t + Duration::from_millis(3_900), &resumed), vec![Action::Restart]);
+        assert_eq!(r.tick(t + Duration::from_millis(4_000), &Media { position_ms: 0, ..resumed }), vec![Action::Play]);
     }
 
     #[test]
