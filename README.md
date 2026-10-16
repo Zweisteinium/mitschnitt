@@ -24,8 +24,9 @@ Get the latest version from [Releases](https://github.com/Zweisteinium/mitschnit
 - **Windows 10/11:** `…_x64-setup.exe` (installer, no admin rights) or `…_x64_portable.exe` (single file).
   Needs [VB-Cable](https://vb-audio.com/Cable/), donationware by VB-Audio, which the Setup tab downloads from their
   site and installs. The builds are not code-signed, so SmartScreen asks once: More info → Run anyway.
-- **Linux:** `…_amd64.AppImage`. Needs PipeWire and glibc 2.36 or newer, so Debian 12, Ubuntu 22.10, Fedora 37,
-  Mint 22, Arch or anything newer.
+- **Linux:** `…_amd64.deb` for Debian 12, Ubuntu 22.04, Mint 21 or newer (6 MB, uses the system's WebKit). Otherwise
+  `…_amd64.AppImage`, which needs glibc 2.36 or newer, so Fedora 37, Arch or anything newer. Both need PipeWire, which
+  Ubuntu 22.04 doesn't use by default.
 - **macOS:** planned, low priority.
 
 For lossless recordings you need Spotify Premium with the streaming quality set to Lossless (up to 24 bit /
@@ -148,8 +149,8 @@ cd app && npm install && npx tauri build
 
 On Linux you also need the PipeWire headers and libclang (`pipewire clang` on Arch, `libpipewire-0.3-dev
 libclang-dev` on Debian and Ubuntu) next to the usual [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/).
-`make test-live` checks the capture against your running PipeWire without making a sound, and `make appimage`
-builds the portable AppImage inside a Debian 12 container.
+`make test-live` checks the capture against your running PipeWire without making a sound, and `make linux`
+builds the AppImage and the .deb inside a Debian 12 container.
 
 The code lives in three places. `crates/core` does the capture, the checks and the file writing, with the
 platform specific parts in `crates/core/src/platform`. `crates/cli` is a command line front end with `check`,

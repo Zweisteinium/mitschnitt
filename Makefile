@@ -1,4 +1,4 @@
-.PHONY: test test-live dev build appimage
+.PHONY: test test-live dev build linux
 
 test:
 	cargo test --workspace
@@ -13,9 +13,9 @@ dev:
 build:
 	cd app && npm install && npx tauri build
 
-# Portable AppImage, built in Debian 12: target/appimage/release/bundle/appimage
-appimage:
+# AppImage and .deb, built in Debian 12: target/appimage/release/bundle/{appimage,deb}
+linux:
 	docker build -t mitschnitt-build packaging/linux
 	docker run --rm --user $$(id -u):$$(id -g) -v "$$PWD":/src -w /src/app -e HOME=/src/target/appimage/home \
 		-e CARGO_HOME=/src/target/appimage/cargo -e CARGO_TARGET_DIR=/src/target/appimage \
-		mitschnitt-build sh -c 'npm ci && npx tauri build --bundles appimage'
+		mitschnitt-build sh -c 'npm ci && npx tauri build --bundles appimage,deb'
