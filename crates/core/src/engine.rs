@@ -854,7 +854,9 @@ fn file_size(path: &std::path::Path) -> u64 {
 }
 
 fn saved(track: Track, file: Option<PathBuf>, size: u64, checked: Checked, echolot: bool) -> Update {
-    let Checked { audio, report, exact, faded, lossy, .. } = checked;
+    let Checked { audio, mut report, exact, faded, lossy, .. } = checked;
+    // The row shows the first one.
+    report.issues.sort_by_key(|i| std::cmp::Reverse(i.severity));
     Update::Saved {
         track,
         file: file.map(|f| f.display().to_string()),
@@ -897,7 +899,7 @@ fn finish(track: Track, tags: Tags, samples: Vec<i32>, proof: Proof, rate: u32, 
 /// Only exact recordings (or exact after the fade-in) are handed on for upload; damaged ones go to "Not taken".
 #[allow(clippy::too_many_arguments)]
 fn finish_job(track: Track, tags: Tags, samples: Vec<i32>, proof: Proof, rate: u32, lossless: bool, settings: &Settings, notify: &Notify) -> Written {
-    let checked = check(samples, proof, rate, lossless);
+    let mut checked = check(samples, proof, rate, lossless);
     if checked.lossy == Some(Lossy::Stream) {
         let detail = checked.report.issues.first().map(|i| i.text.clone()).unwrap_or_default();
         notify(Update::Failed { track, error: format!("lossy, not kept: {detail}") });
@@ -905,6 +907,7 @@ fn finish_job(track: Track, tags: Tags, samples: Vec<i32>, proof: Proof, rate: u
     }
     // A short altered stretch is a glitch, not the stream: played again like a damaged one.
     let glitch = lossless && !checked.exact && checked.faded.is_none() || checked.unproven_end;
+    let in_master = lossless && !glitch && checked.report.verdict == Severity::Corrupt && dropouts_in_master(&track, &mut checked);
     if checked.report.verdict == Severity::Corrupt || glitch {
         let detail = checked.report.issues.iter().filter(|i| i.severity == Severity::Corrupt || glitch).map(|i| i.text.as_str()).collect::<Vec<_>>().join("; ");
         let file = settings.keep_flagged.then(|| Settings { out_dir: settings.out_dir.with_file_name(crate::recorder::NOT_TAKEN_DIR), ..settings.clone() }).and_then(|s| output::write(&checked.audio, &tags, &s).ok());
@@ -914,7 +917,11 @@ fn finish_job(track: Track, tags: Tags, samples: Vec<i32>, proof: Proof, rate: u
     }
     match output::write(&checked.audio, &tags, settings) {
         Ok(path) => {
-            let note = checked.faded.clone();
+            let mut note = checked.faded.clone();
+            if in_master {
+                let master = checked.report.issues.iter().filter(|i| i.text.starts_with("dropout in the master")).map(|i| i.text.as_str());
+                note = Some(note.as_deref().into_iter().chain(master).collect::<Vec<_>>().join("; "));
+            }
             notify(saved(track, Some(path.clone()), file_size(&path), checked, true));
             Written::Saved { file: path, note }
         }
@@ -923,6 +930,29 @@ fn finish_job(track: Track, tags: Tags, samples: Vec<i32>, proof: Proof, rate: u
             Written::Failed { error }
         }
     }
+}
+
+static DROPOUTS: Mutex<Vec<(Track, Vec<Vec<i32>>)>> = Mutex::new(Vec::new());
+const DROPOUT_CONTEXT_MS: usize = 100;
+
+/// Seen: the same 1766-frame gap in three bit-exact takes of one song.
+fn dropouts_in_master(track: &Track, checked: &mut Checked) -> bool {
+    let Checked { audio, report, .. } = checked;
+    let (ch, context) = (audio.channels, audio.rate as usize * DROPOUT_CONTEXT_MS / 1000);
+    let around: Vec<Vec<i32>> = report.dropouts.iter().map(|&(s, e)| audio.samples[s.saturating_sub(context) * ch..(e + context).min(audio.frames()) * ch].to_vec()).collect();
+    let mut seen = DROPOUTS.lock().unwrap();
+    let before = seen.iter().position(|(t, _)| t == track).map(|i| seen.swap_remove(i).1);
+    let only_dropouts = report.issues.iter().filter(|i| i.severity == Severity::Corrupt).count() == around.len();
+    if !only_dropouts || before.as_ref() != Some(&around) {
+        seen.push((track.clone(), around));
+        return false;
+    }
+    for i in report.issues.iter_mut().filter(|i| i.severity == Severity::Corrupt) {
+        i.severity = Severity::Info;
+        i.text = i.text.replacen("dropout", "dropout in the master", 1);
+    }
+    report.verdict = report.issues.iter().map(|i| i.severity).max().unwrap_or(Severity::Info);
+    true
 }
 
 #[cfg(test)]
@@ -941,10 +971,18 @@ mod tests {
         let track = Track { title: "Revolution".into(), artist: "Artist".into(), album: String::new(), duration_ms: 2_000 };
         let tags = Tags { title: track.title.clone(), artist: track.artist.clone(), ..Tags::default() };
         let notify: Notify = Arc::new(|_| {});
-        let written = finish_job(track, tags, samples, (0, None, true), rate, true, &settings, &notify);
+        let take = |samples: Vec<i32>| finish_job(track.clone(), tags.clone(), samples, (0, None, true), rate, true, &settings, &notify);
+        let written = take(samples.clone());
         assert!(matches!(&written, Written::Corrupt { detail } if detail.contains("dropout")), "{written:?}");
         assert!(!dir.join("Echolot").exists(), "nothing waits for an upload");
         assert!(dir.join("Not taken").join("Artist - Revolution.flac").is_file(), "kept for a look");
+
+        let mut longer = samples.clone();
+        longer[(gap - 1) * 2..gap * 2].fill(0);
+        assert!(matches!(take(longer), Written::Corrupt { .. }));
+        assert!(matches!(take(samples.clone()), Written::Corrupt { .. }));
+        let written = take(samples);
+        assert!(matches!(&written, Written::Saved { note: Some(n), .. } if n.starts_with("dropout in the master")), "{written:?}");
         std::fs::remove_dir_all(dir).unwrap();
     }
 

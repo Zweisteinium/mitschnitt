@@ -28,6 +28,7 @@ pub struct Report {
     pub issues: Vec<Issue>,
     /// Made from a lossy file (see [`crate::spectrum`]).
     pub lossy_source: bool,
+    pub dropouts: Vec<(usize, usize)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -75,7 +76,7 @@ pub fn fade_in_frames(rate: u32) -> usize {
 
 /// `exact_source`: the capture proved the audio untouched, so whatever the file shows is in the master itself.
 pub fn analyze_with(a: &Audio, exact_source: bool) -> Report {
-    let mut issues = Vec::new();
+    let (mut issues, mut dropouts) = (Vec::new(), Vec::new());
     let n = a.frames();
     let ts = |i: usize| timestamp(i, a.rate);
 
@@ -96,6 +97,7 @@ pub fn analyze_with(a: &Audio, exact_source: bool) -> Report {
             if pre > 0.02 && post > 0.02 {
                 let ms = (e - s) as f64 * 1000.0 / a.rate as f64;
                 issues.push(issue(Severity::Corrupt, format!("dropout at {} ({} of silence)", ts(s), crate::duration(ms))));
+                dropouts.push((s, e));
             }
         }
     }
@@ -178,7 +180,7 @@ pub fn analyze_with(a: &Audio, exact_source: bool) -> Report {
     }
 
     let verdict = issues.iter().map(|i| i.severity).filter(|s| *s > Severity::Info).max().unwrap_or(Severity::Info);
-    Report { verdict, master, peak_dbfs: db(peak), duration: ts(n), issues, lossy_source: lossy_source.is_some() }
+    Report { verdict, master, peak_dbfs: db(peak), duration: ts(n), issues, lossy_source: lossy_source.is_some(), dropouts }
 }
 
 fn issue(severity: Severity, text: String) -> Issue {

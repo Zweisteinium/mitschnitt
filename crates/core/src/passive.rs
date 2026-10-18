@@ -333,7 +333,21 @@ impl Passive {
         if let State::Waiting { until, .. } = self.state && self.frame >= until {
             let State::Waiting { track, target, .. } = std::mem::replace(&mut self.state, State::Idle) else { unreachable!() };
             let off: Vec<String> = self.starts.iter().map(|s| format!("{:+}", (*s as i64 - target) * 1000 / self.rate as i64)).collect();
-            crate::log!("no clean start for \"{}\": silence ended {} ms from where the position puts its start", track.title, if off.is_empty() { "nowhere".into() } else { off.join(", ") });
+            let (mut peak, mut run, mut longest) = (0, 0, 0);
+            for f in 0..self.ring.len() / self.channels {
+                let p = (0..self.channels).map(|c| self.ring[f * self.channels + c].abs()).max().unwrap_or(0);
+                peak = peak.max(p);
+                run = if p == 0 { run + 1 } else { 0 };
+                longest = longest.max(run);
+            }
+            crate::log!(
+                "no clean start for \"{}\": silence ended {} ms from where the position puts its start; last {} ms: peak {:.1} dBFS, longest silence {} ms",
+                track.title,
+                if off.is_empty() { "nowhere".into() } else { off.join(", ") },
+                frames_to_ms(self.ring.len() / self.channels, self.rate),
+                20.0 * (peak as f64 / 8_388_608.0).log10(),
+                frames_to_ms(longest, self.rate)
+            );
             self.done = Some(track.clone());
             events.push(Event::Dropped { track, reason: Reason::NoCleanStart });
         }

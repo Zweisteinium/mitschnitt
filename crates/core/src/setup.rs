@@ -23,6 +23,7 @@ const KNOWN_KEYS: &[&str] = &[
     "audio.gapless_migrated_to_ps",
     "audio.play_bitrate_non_metered_migrated",
     "audio.play_bitrate_non_metered_enumeration",
+    "audio.sync_bitrate_enumeration",
 ];
 
 pub fn fix(action: &str, profile: &Profile) -> Result<String, String> {
