@@ -3,7 +3,7 @@
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
-use mitschnitt_core::echolot::{self, Client, Link, Pairing, store};
+use mitschnitt_core::echolot::{self, Client, Export, Link, Pairing, store};
 use mitschnitt_core::engine::{Config, Engine, Queue};
 use mitschnitt_core::history;
 use mitschnitt_core::profile::SPOTIFY;
@@ -15,15 +15,27 @@ use crate::{App, lock};
 #[derive(Default)]
 pub struct Echolot {
     recorder: Mutex<Option<Arc<Recorder>>>,
+    list: Mutex<Option<Arc<Recorder>>>,
     pairing: Mutex<Option<Pairing>>,
+}
+
+impl Echolot {
+    fn list_running(&self) -> bool {
+        lock(&self.list).is_ok_and(|l| l.as_ref().is_some_and(|r| !r.snapshot().connection.is_empty()))
+    }
 }
 
 struct AppHost {
     handle: AppHandle,
+    list: bool,
 }
 
 impl Host for AppHost {
     fn attach(&self, queue: Queue) -> Result<(), String> {
+        // One engine, one queue: Echolot's songs are refused while a list runs.
+        if !self.list && self.handle.state::<Echolot>().list_running() {
+            return Err("a list is being recorded on this PC".into());
+        }
         let state = self.handle.state::<App>();
         let mut slot = lock(&state.engine)?;
         // An engine that stopped by itself (Spotify closed) gives the queue back: start a new one.
@@ -62,12 +74,12 @@ impl Host for AppHost {
             let to = to.as_ref().map(|p| p.display().to_string());
             history::moved(&history::default_path(), &from.display().to_string(), to.as_deref(), result);
         }
-        let _ = self.handle.emit("echolot", &update);
+        let _ = self.handle.emit(if self.list { "echolot-list" } else { "echolot" }, &update);
     }
 }
 
 fn host(handle: &AppHandle) -> Arc<dyn Host> {
-    Arc::new(AppHost { handle: handle.clone() })
+    Arc::new(AppHost { handle: handle.clone(), list: false })
 }
 
 fn out_dir(handle: &AppHandle) -> Result<std::path::PathBuf, String> {
@@ -133,6 +145,7 @@ fn claim(handle: &AppHandle, code: &str, state: Option<&str>) -> Result<(), Stri
 #[derive(serde::Serialize)]
 pub struct CardState {
     snapshot: Snapshot,
+    list: Option<Snapshot>,
     url: String,
     pairing: bool,
 }
@@ -141,7 +154,8 @@ pub struct CardState {
 pub fn echolot_state(state: State<'_, Echolot>, app: State<'_, App>) -> Result<CardState, String> {
     let snapshot = lock(&state.recorder)?.as_ref().map(|r| r.snapshot()).unwrap_or_else(|| Snapshot { connection: if store::load().is_some() { "connected".into() } else { String::new() }, ..Snapshot::default() });
     let url = lock(&app.settings)?.echolot_url.clone();
-    Ok(CardState { snapshot, url, pairing: lock(&state.pairing)?.is_some() })
+    let list = lock(&state.list)?.as_ref().map(|r| r.snapshot());
+    Ok(CardState { snapshot, list, url, pairing: lock(&state.pairing)?.is_some() })
 }
 
 #[tauri::command]
@@ -197,3 +211,35 @@ pub async fn echolot_session(action: String, handle: AppHandle) -> Result<(), St
     recorder.session(&action, &*host(&handle))
 }
 
+
+#[tauri::command]
+pub fn echolot_list(json: String, handle: AppHandle) -> Result<(), String> {
+    let export = Export::parse(&json)?;
+    if export.jobs().is_empty() {
+        return Err("The list has no Spotify songs.".into());
+    }
+    let state = handle.state::<Echolot>();
+    if state.list_running() {
+        return Err("A list is already being recorded.".into());
+    }
+    let echolot = lock(&state.recorder)?.as_ref().map(|r| r.snapshot());
+    if echolot.as_ref().is_some_and(|s| s.current.is_some() || s.session.as_ref().is_some_and(|s| s.state == "running")) {
+        return Err("Pause the Echolot session first.".into());
+    }
+    let host: Arc<dyn Host> = Arc::new(AppHost { handle: handle.clone(), list: true });
+    *lock(&state.list)? = Some(recorder::run_list(export, SPOTIFY, out_dir(&handle)?, host));
+    Ok(())
+}
+
+#[tauri::command]
+pub fn echolot_list_control(action: String, handle: AppHandle) -> Result<(), String> {
+    let list = lock(&handle.state::<Echolot>().list)?.clone().ok_or("no list")?;
+    match action.as_str() {
+        "skip" => list.skip(),
+        "pause" => list.pause(true),
+        "resume" => list.pause(false),
+        _ => list.stop(),
+    }
+    let _ = handle.emit("echolot-list", RecorderUpdate::Snapshot { snapshot: list.snapshot() });
+    Ok(())
+}

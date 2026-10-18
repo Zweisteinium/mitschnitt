@@ -3,6 +3,8 @@
   import { echolot } from "../lib/echolot.svelte";
   import { session } from "../lib/session.svelte";
   import Panel from "./Panel.svelte";
+
+  const queue = $derived(echolot.active || echolot.listing);
 </script>
 
 <Panel label="Source" index="01">
@@ -16,9 +18,9 @@
         {#if session.platform?.monitor}<span>{session.settings?.monitor ? "monitoring" : "silent"}</span>{/if}
       </div>
     </div>
-    <!-- During an Echolot session its card has the after-song controls. -->
-    <div class="stops" class:single={echolot.active}>
-      {#if !echolot.active}
+    <!-- During an Echolot session or a list, its card has the after-song controls. -->
+    <div class="stops" class:single={queue}>
+      {#if !queue}
         <button class="btn wide" onclick={() => session.stopAfterTrack()} disabled={session.busy || session.stopping || session.status?.phase !== "recording"}>
           {session.stopping ? "Stopping after track…" : "Stop after track"}
         </button>
@@ -28,7 +30,7 @@
           await session.stop();
         }}
         disabled={session.busy}
-        title={echolot.active ? "Drops the song being recorded and pauses the Echolot session" : undefined}>{echolot.active ? "Stop now" : "Stop"}</button>
+        title={echolot.listing ? "Drops the song being recorded and stops the list" : echolot.active ? "Drops the song being recorded and pauses the Echolot session" : undefined}>{queue ? "Stop now" : "Stop"}</button>
     </div>
   {:else}
     <div class="list" role="radiogroup">

@@ -498,7 +498,11 @@ pub struct ExportTrack {
 impl Export {
     pub fn load(path: &Path) -> Result<Export, String> {
         let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        serde_json::from_str(&text).map_err(|e| format!("{}: not an Echolot export ({e})", path.display()))
+        Self::parse(&text).map_err(|e| format!("{}: {e}", path.display()))
+    }
+
+    pub fn parse(text: &str) -> Result<Export, String> {
+        serde_json::from_str(text).map_err(|e| format!("not an Echolot export ({e})"))
     }
 
     pub fn jobs(&self) -> Vec<Job> {

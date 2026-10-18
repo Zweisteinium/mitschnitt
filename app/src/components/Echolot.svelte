@@ -62,7 +62,7 @@
       {#if s.current}<div class="current small">♪ {s.current.artist} – {s.current.title} <span class="muted mono">{clock(s.current.duration_ms)}</span></div>{/if}
       <div class="buttons">
         {#if session.state === "paused"}
-          <button class="btn primary" onclick={() => echolot.session("resume")} disabled={echolot.busy}>Resume</button>
+          <button class="btn primary" onclick={() => echolot.session("resume")} disabled={echolot.busy || echolot.listing} title={echolot.listing ? "Wait until the list is done" : undefined}>Resume</button>
         {:else if session.state === "running"}
           <button class="btn" onclick={() => echolot.session("pause")} disabled={echolot.busy}>Pause</button>
         {/if}

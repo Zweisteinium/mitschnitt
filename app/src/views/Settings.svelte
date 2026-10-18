@@ -1,6 +1,7 @@
 <script lang="ts">
   import Panel from "../components/Panel.svelte";
   import { api, type Format, type Settings } from "../lib/api";
+  import { echolot } from "../lib/echolot.svelte";
   import { session } from "../lib/session.svelte";
 
   const s = $derived(session.settings);
@@ -110,10 +111,64 @@
       </label>
       <p class="muted rate">Changes apply the next time you start listening{session.platform?.monitor ? "; the monitor volume applies immediately" : ""}.</p>
     </Panel>
+
+    <Panel label="Development" index="03">
+      <div class="dev">
+        <span>
+          <span class="title">Record an exported list</span>
+          <span class="note muted">For development and testing with Echolot. Records the songs of a list exported from Echolot, without a connection. Progress shows on the Listen tab.</span>
+        </span>
+        <label class="btn" class:disabled={echolot.listing || echolot.busy}>
+          Choose list…
+          <input type="file" accept=".json,application/json" disabled={echolot.listing || echolot.busy} onchange={(e) => {
+              const input = e.currentTarget;
+              if (input.files?.[0]) echolot.recordList(input.files[0]);
+              input.value = "";
+            }} />
+        </label>
+      </div>
+      {#if echolot.error}<p class="error">{echolot.error}</p>{/if}
+    </Panel>
   </div>
 {/if}
 
 <style>
+  .dev {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 12px;
+    align-items: center;
+  }
+
+  .dev .title,
+  .dev .note {
+    display: block;
+  }
+
+  .dev .note {
+    font-size: 12px;
+  }
+
+  .dev label {
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  .dev input {
+    display: none;
+  }
+
+  .dev .disabled {
+    opacity: 0.5;
+    pointer-events: none;
+  }
+
+  .error {
+    margin: 10px 0 0;
+    font-size: 12px;
+    color: var(--bad);
+  }
+
   .grid {
     display: grid;
     grid-template-columns: 1.4fr 1fr;

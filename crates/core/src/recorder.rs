@@ -61,6 +61,7 @@ pub struct Snapshot {
     /// Exported list progress.
     pub done: u32,
     pub total: u32,
+    pub paused: bool,
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -83,6 +84,7 @@ pub struct Recorder {
     snapshot: Arc<Mutex<Snapshot>>,
     stop: Arc<AtomicBool>,
     skip: Arc<AtomicBool>,
+    pause: Arc<AtomicBool>,
 }
 
 impl Recorder {
@@ -92,6 +94,14 @@ impl Recorder {
 
     pub fn stop(&self) {
         self.stop.store(true, Ordering::Relaxed);
+    }
+
+    /// An exported list: takes effect after the current song.
+    pub fn pause(&self, paused: bool) {
+        self.pause.store(paused, Ordering::Relaxed);
+        if let Ok(mut s) = self.snapshot.lock() {
+            s.paused = paused;
+        }
     }
 
     pub fn skip(&self) {
@@ -246,7 +256,7 @@ pub fn connect(client: Client, saved: echolot::store::Saved, profile: Profile, o
         ..Snapshot::default()
     }));
     let (stop, skip) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)));
-    let recorder = Arc::new(Recorder { client: Some(client.clone()), profile: profile.clone(), snapshot: snapshot.clone(), stop: stop.clone(), skip: skip.clone() });
+    let recorder = Arc::new(Recorder { client: Some(client.clone()), profile: profile.clone(), snapshot: snapshot.clone(), stop: stop.clone(), skip: skip.clone(), pause: Arc::default() });
     std::thread::Builder::new()
         .name("echolot".into())
         .spawn(move || {
@@ -578,7 +588,8 @@ pub fn run_list(export: Export, profile: Profile, out_dir: PathBuf, host: Arc<dy
     let jobs = export.jobs();
     let snapshot = Arc::new(Mutex::new(Snapshot { connection: "file".into(), detail: export.title.clone(), total: jobs.len() as u32, ..Snapshot::default() }));
     let (stop, skip) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)));
-    let recorder = Arc::new(Recorder { client: None, profile: profile.clone(), snapshot: snapshot.clone(), stop: stop.clone(), skip: skip.clone() });
+    let pause = Arc::new(AtomicBool::new(false));
+    let recorder = Arc::new(Recorder { client: None, profile: profile.clone(), snapshot: snapshot.clone(), stop: stop.clone(), skip: skip.clone(), pause: pause.clone() });
     std::thread::Builder::new()
         .name("queue".into())
         .spawn(move || {
@@ -595,6 +606,15 @@ pub fn run_list(export: Export, profile: Profile, out_dir: PathBuf, host: Arc<dy
                 }
             };
             'jobs: for job in jobs {
+                if pause.load(Ordering::Relaxed) {
+                    publish(snapshot, host, |s| {
+                        s.current = None;
+                        s.state = Some(DeviceState::Idle);
+                    });
+                    while pause.load(Ordering::Relaxed) && !stop.load(Ordering::Relaxed) {
+                        std::thread::sleep(Duration::from_millis(250));
+                    }
+                }
                 if stop.load(Ordering::Relaxed) {
                     break;
                 }

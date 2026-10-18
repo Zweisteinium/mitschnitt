@@ -79,6 +79,9 @@ let snapshot: RecorderSnapshot = {
   current: rick,
   uploads: 0,
   error: null,
+  done: 0,
+  total: 0,
+  paused: false,
 };
 
 const mb = (minutes: number, seconds: number, bits: 16 | 24) => Math.round((minutes * 60 + seconds) * (bits === 16 ? 112_000 : 168_000));

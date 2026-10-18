@@ -69,9 +69,12 @@ export type RecorderSnapshot = {
   current: Track | null;
   uploads: number;
   error: string | null;
+  done: number;
+  total: number;
+  paused: boolean;
 };
-type RecorderUpdate = { kind: "snapshot"; snapshot: RecorderSnapshot } | { kind: "song"; job: Track; result: string; detail: string; moved: [string, string | null] | null };
-type CardState = { snapshot: RecorderSnapshot; url: string; pairing: boolean };
+export type RecorderUpdate = { kind: "snapshot"; snapshot: RecorderSnapshot } | { kind: "song"; job: Track; result: string; detail: string; moved: [string, string | null] | null };
+type CardState = { snapshot: RecorderSnapshot; list: RecorderSnapshot | null; url: string; pairing: boolean };
 /** `at`: Unix ms. `result`: Echolot's answer to the upload. */
 export type HistoryRecord = { at: number; track: Track; file: string; size: number; verdict: Severity; master: Master; exact: boolean; faded: boolean; lossy: Lossy | null; echolot: boolean; result: string | null; issues: string[]; frames: number | null; peak_dbfs: number | null; exists: boolean };
 
@@ -101,6 +104,9 @@ export const api = {
   echolotDisconnect: () => invoke<void>("echolot_disconnect"),
   echolotSession: (action: "pause" | "resume" | "stop") => invoke<void>("echolot_session", { action }),
   echolotSkip: () => invoke<void>("echolot_skip"),
+  echolotList: (json: string) => invoke<void>("echolot_list", { json }),
+  echolotListControl: (action: "skip" | "pause" | "resume" | "stop") => invoke<void>("echolot_list_control", { action }),
+  onEcholotList: (handler: (u: RecorderUpdate) => void) => listen<RecorderUpdate>("echolot-list", (e) => handler(e.payload)),
   onEcholot: (handler: (u: RecorderUpdate) => void) => listen<RecorderUpdate>("echolot", (e) => handler(e.payload)),
   onEcholotConnect: (handler: (url: string) => void) => listen<string>("echolot-connect", (e) => handler(e.payload)),
   onEcholotError: (handler: (error: string) => void) => listen<string>("echolot-error", (e) => handler(e.payload)),

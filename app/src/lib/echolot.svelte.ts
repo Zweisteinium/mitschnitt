@@ -1,4 +1,4 @@
-import { api, type RecorderSnapshot, type Track } from "./api";
+import { api, type RecorderSnapshot, type RecorderUpdate, type Track } from "./api";
 import { session } from "./session.svelte";
 
 type SongResult = { id: number; at: Date; job: Track; result: string; detail: string };
@@ -18,7 +18,7 @@ export const resultText: Record<string, string> = {
   failed: "failed",
 };
 
-const empty: RecorderSnapshot = { connection: "", user: "", host: "", device: "", state: null, detail: "", session: null, current: null, uploads: 0, error: null };
+const empty: RecorderSnapshot = { connection: "", user: "", host: "", device: "", state: null, detail: "", session: null, current: null, uploads: 0, error: null, done: 0, total: 0, paused: false };
 
 class Echolot {
   snapshot = $state<RecorderSnapshot>(empty);
@@ -31,10 +31,16 @@ class Echolot {
   error = $state<string | null>(null);
   busy = $state(false);
   results = $state<SongResult[]>([]);
+  list = $state<RecorderSnapshot | null>(null);
+  listResults = $state<SongResult[]>([]);
   #nextId = 0;
 
   get connected(): boolean {
     return this.snapshot.connection === "connected" || this.snapshot.connection === "offline";
+  }
+
+  get listing(): boolean {
+    return this.list?.connection === "file";
   }
 
   /** Running, paused, or a song still being finished: the card has the controls then. */
@@ -50,8 +56,12 @@ class Echolot {
         if (this.connected) this.pairing = false;
       } else {
         if (u.moved) session.moved(...u.moved);
-        this.results = [{ id: this.#nextId++, at: new Date(), job: u.job, result: u.result, detail: u.detail }, ...this.results].slice(0, 100);
+        this.results = [this.#result(u), ...this.results].slice(0, 100);
       }
+    });
+    await api.onEcholotList((u) => {
+      if (u.kind === "snapshot") this.list = u.snapshot;
+      else this.listResults = [this.#result(u), ...this.listResults].slice(0, 100);
     });
     await api.onEcholotConnect((url) => {
       this.url = url;
@@ -64,6 +74,7 @@ class Echolot {
     });
     const state = await api.echolotState();
     this.snapshot = state.snapshot;
+    this.list = state.list;
     this.url = state.url;
     this.pairing = state.pairing;
   }
@@ -103,8 +114,25 @@ class Echolot {
     await this.#try(() => api.echolotSkip());
   }
 
-  /** Mitschnitt's own Stop: a running session pauses first. */
+  async recordList(file: File) {
+    await this.#try(async () => {
+      this.listResults = [];
+      await api.echolotList(await file.text());
+      session.tab = "listen";
+    });
+  }
+
+  async listControl(action: "skip" | "pause" | "resume" | "stop") {
+    await this.#try(() => api.echolotListControl(action));
+  }
+
+  #result(u: Extract<RecorderUpdate, { kind: "song" }>): SongResult {
+    return { id: this.#nextId++, at: new Date(), job: u.job, result: u.result, detail: u.detail };
+  }
+
+  /** Mitschnitt's own Stop: a running session pauses first, a list ends. */
   async pauseForStop() {
+    if (this.listing) await this.listControl("stop");
     if (this.connected && this.snapshot.session?.state === "running") await this.session("pause");
   }
 

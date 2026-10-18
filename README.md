@@ -35,7 +35,8 @@ still find a bug, please [open an issue](https://github.com/Zweisteinium/mitschn
   follow your template, and songs you already have are skipped.
 - **Auto setup.** Checks [Spotify's settings](#spotify-settings). On Windows it also installs VB-Cable and routes
   Spotify into it.
-- **Song lists.** With [Echolot](#echolot), Mitschnitt records a whole list of songs on its own.
+- **Song lists.** With [Echolot](#echolot), Mitschnitt records a whole list of songs on its own, connected or from a
+  list exported from Echolot.
 - **Media key protection.** Media keys, headset buttons and earbuds that pause when you take them out are held back
   while Mitschnitt listens. Spotify's own pause button still works. The hook only looks at media keys.
 - **No sleep.** The computer stays awake while Mitschnitt listens. The screen still turns off and locks.

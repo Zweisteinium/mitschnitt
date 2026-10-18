@@ -3,6 +3,7 @@
   import { onMount } from "svelte";
   import Echolot from "./components/Echolot.svelte";
   import History from "./components/History.svelte";
+  import List from "./components/List.svelte";
   import Now from "./components/Now.svelte";
   import Source from "./components/Source.svelte";
   import { api } from "./lib/api";
@@ -67,6 +68,7 @@
       <div class="listen">
         <div class="col">
           <Source />
+          {#if echolot.list}<List />{/if}
           {#if echolot.connected}<Echolot />{/if}
         </div>
         <div class="col">
