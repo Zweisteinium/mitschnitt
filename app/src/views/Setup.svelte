@@ -5,7 +5,7 @@
   import { session } from "../lib/session.svelte";
 
   const badge: Record<CheckState, string> = { ok: "ok", warn: "warn", bad: "fix", check: "check" };
-  const fixLabel: Record<string, string> = { install_cable: "Install VB-Cable", cable_rate: "Set rate", route_cable: "Route to cable" };
+  const fixLabel: Record<string, string> = { install_cable: "Install VB-Cable", cable_rate: "Set rate", route_cable: "Route to cable", spotify_keys: "Got it" };
 </script>
 
 <div class="grid">

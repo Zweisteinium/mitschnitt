@@ -7,112 +7,121 @@
 
 <p align="center"><img src="docs/screenshot.png" width="820" alt="Mitschnitt recording a track"></p>
 
-Mitschnitt runs next to your music app. Play a track from the start and it lands in its own file, from the first
-sample to the last. Then Mitschnitt checks the file and tells you whether the capture worked flawlessly.
+Mitschnitt runs next to your music app. Play a song from the start and it lands in its own file, from the first
+sample to the last. Then Mitschnitt checks the file and tells you whether the capture was flawless.
 
-I built it because "lossless" is easy to claim and hard to check. Most recorders take whatever comes out of the
-sound card and hope for the best. Mitschnitt takes the app's own stream before Windows or PipeWire touch it, and
-the check tells you when something did get in the way, like a lossy stream, an equalizer or a dropout.
+I built it because you can rarely tell whether a recording really is lossless. Most recorders take whatever comes
+out of the sound card and hope for the best. Mitschnitt takes the app's own stream before Windows or PipeWire touch
+it, and the check tells you when something got in the way, like a lossy stream, an equalizer or a dropout.
 
-It's a hobby project that I use every day. Windows works well, Linux mostly does. Expect the odd rough edge, and
-if you find one, [open an issue](https://github.com/Zweisteinium/mitschnitt/issues).
-
-## Download
-
-Get the latest version from [Releases](https://github.com/Zweisteinium/mitschnitt/releases/latest):
-
-- **Windows 10/11:** `…_x64-setup.exe` (installer, no admin rights) or `…_x64_portable.exe` (single file).
-  Needs [VB-Cable](https://vb-audio.com/Cable/), donationware by VB-Audio, which the Setup tab downloads from their
-  site and installs. The builds are not code-signed, so SmartScreen asks once: More info → Run anyway.
-- **Linux:** `…_amd64.deb` for Debian 12, Ubuntu 22.04, Mint 21 or newer (6 MB, uses the system's WebKit). Otherwise
-  `…_amd64.AppImage`, which needs glibc 2.36 or newer, so Fedora 37, Arch or anything newer. Both need PipeWire, which
-  Ubuntu 22.04 doesn't use by default.
-- **macOS:** planned, low priority.
-
-For lossless recordings you need Spotify Premium with the streaming quality set to Lossless (up to 24 bit /
-44.1 kHz).
+It's a hobby project that I use every day on Windows and Linux, and it has been tested and fine-tuned a lot. If you
+still find a bug, please [open an issue](https://github.com/Zweisteinium/mitschnitt/issues).
 
 ## Features
 
-- **Bit-exact.** Only the app's own stream is recorded, before the system mixes it with anything else. Nothing is
-  resampled, normalized or turned up or down.
-- **Live check.** Every sample is checked as it arrives. A lossless stream shows 100 %. A lossy stream, an
-  equalizer or resampling shows up while the track is still playing.
-- **Whole tracks.** A track is recorded from the point where its sound starts until Spotify's pause after it. The
-  length Spotify reports only says where to look: it can be a few milliseconds short, and the sound after it is kept.
-  A pause, skip, seek, buffering stall or dropout is detected and reported, so a broken recording never passes as a
-  complete one.
-- **Labels.** Every file gets one of five labels, with the reason. The written file is decoded again and compared
-  with the recording before it gets its name.
-  - **EXACT:** every sample with sound is there and bit-exact, from the first to the last. Only the digital silence
-    at the very start and end can be a few milliseconds longer or shorter than in the original.
-  - **FINE:** the same, except for Spotify's fade-in of about 10 ms at the start.
-  - **LOSSY:** Spotify streamed the song lossy only, or its master was made from a lossy file (found in the
-    spectrum). When you record yourself, it is saved as MP3, since a lossless file would only pretend to be more.
-  - **ALT:** something is not original, or the end could not be proven (see [Limits](#limits)).
-  - **BAD:** damaged, for example by a dropout.
-- **Formats and tags.** FLAC in 16 or 24 bit, as the source was, WAV, or MP3 encoded from the verified recording.
-  Title, artist, album, track number and cover are filled in, names follow your own template, and tracks you
-  already have are skipped.
-- **Auto setup.** The Setup tab checks Spotify's settings (quality, normalization, equalizer, crossfade, automix)
-  and tells you what to switch. On Windows it also installs VB-Cable, matches its sample rate and routes Spotify
-  into it, one click each. The goal is a setup without any manual steps.
-- **Guards.** While Mitschnitt listens, it keeps away what would spoil a recording. The computer doesn't go to sleep,
-  though the screen still turns off and locks. With media key protection switched on in the settings, media keys,
-  headset buttons and Bluetooth earbuds that pause when you take them out are held back as well. The player's own
-  pause button still works, and the keyboard hook behind this looks at media keys and nothing else.
-- **Song lists.** Together with [Echolot](#echolot), Mitschnitt records a whole list of songs on its own.
+- **Bit-exact.** Only the app's own stream is recorded, before the system mixes, resamples or changes its volume.
+- **Checked live.** Every sample is checked as it arrives, so a lossy stream or an equalizer shows up while the song
+  still plays.
+- **Whole songs.** From the start of the song to Spotify's pause after it. A pause, skip, seek, stall or dropout is
+  caught, so a broken recording never passes as complete.
+- **Labeled.** Each file is decoded again, compared with the recording and gets a label with the reason.
+  - **EXACT.** Every sample with sound is bit-exact.
+  - **FINE.** Bit-exact apart from Spotify's fade-in at the very start (see [Limits](#limits)).
+  - **LOSSY.** The song only exists lossy, as Spotify's stream or in its master. Saved as MP3 when you record
+    yourself.
+  - **ALT.** Something isn't original, or the end couldn't be proven.
+  - **BAD.** Damaged, for example by a dropout.
+- **Formats and tags.** FLAC in 16 or 24 bit as the source was, WAV or MP3. Tags and cover are filled in, file names
+  follow your template, and songs you already have are skipped.
+- **Auto setup.** Checks [Spotify's settings](#spotify-settings). On Windows it also installs VB-Cable and routes
+  Spotify into it.
+- **Song lists.** With [Echolot](#echolot), Mitschnitt records a whole list of songs on its own.
+- **Media key protection.** Media keys, headset buttons and earbuds that pause when you take them out are held back
+  while Mitschnitt listens. Spotify's own pause button still works. The hook only looks at media keys.
+- **No sleep.** The computer stays awake while Mitschnitt listens. The screen still turns off and locks.
 
 |  | Windows | Linux |
 |---|:---:|:---:|
-| Recording, live check, labels, formats and tags | ✓ | ✓ |
-| Song end proven by Spotify's pause after it | – | ✓ |
-| Auto setup | ✓ | Spotify settings only |
-| No sleep while listening | ✓ | ✓ |
-| Media key protection | ✓ | – |
+| Bit-exact recording, live check, whole songs | ✓ | ✓ |
+| Labels, formats and tags | ✓ | ✓ |
+| Auto setup | ✓ | ✓ |
 | Song lists with Echolot | ✓ | ✓ |
+| Media key protection | ✓ | |
+| No sleep | ✓ | ✓ |
+
+## Download
+
+Get the latest version from [Releases](https://github.com/Zweisteinium/mitschnitt/releases/latest).
+
+- **Windows 10/11.** Installer (no admin rights) or portable single file. Spotify plays through VB-Cable, which the
+  Setup tab installs for you. You can also get it yourself from [VB-Audio](https://vb-audio.com/Cable/)
+  (donationware). The builds aren't code-signed, so SmartScreen asks once. Click More info, then Run anyway.
+- **Linux.** A .deb for Debian 12, Ubuntu 22.04, Mint 21 and newer, and an AppImage for anything else with glibc
+  2.36 or newer, like Fedora 37 or Arch. Both need PipeWire, which Ubuntu 22.04 doesn't use by default. The
+  AppImage is about 100 MB because it brings its own WebKit, the browser engine the interface runs on. The .deb
+  uses the system's and is 6 MB.
+- **macOS.** Planned, low priority.
+
+## Spotify settings
+
+For lossless, bit-exact recordings, a few Spotify settings need to be right. Several of them change every song
+before it reaches the file. You wouldn't hear most of it, but the file would no longer be the original.
+
+| In Spotify's settings | Set to | Otherwise |
+|---|---|---|
+| Audio quality → Streaming quality | Lossless (Premium) | lossy audio |
+| Audio quality → Auto adjust quality | Off | lossy audio when the network is slow |
+| Playback → Normalize volume | Off | changes the level of every song |
+| Playback → Equalizer | Off | changes every sample |
+| Playback → Crossfade | Off | mixes the end of a song into the next one |
+| Playback → Automix | Off | blends song transitions |
+| Exclusive mode (Windows) | Off | nothing can be recorded |
+
+The Setup tab checks all of them except crossfade, which Spotify 1.3.4 moved out of its settings file. Please check
+that one yourself. If the settings file gains a setting Mitschnitt doesn't know, or two recordings in a row don't
+arrive bit-exact, a banner asks you to look at these settings.
+
+## Good to know
+
+- **Spotify Premium is recommended.** Only Premium streams lossless, which means the file holds exactly the audio
+  Spotify sends. Without it, Mitschnitt still records, labels the file LOSSY and saves it as MP3.
+- **Recording takes as long as the song.** A 3 minute song takes 3 minutes.
+- **Play songs from the start and let them finish.** A song you skip, seek in or pause isn't saved, so no broken file
+  ends up in your library.
+- **Your speaker volume doesn't matter.** Listen as loud or quiet as you like. Only Spotify's own volume slider is
+  held in place while Mitschnitt listens.
 
 ## How it works
 
-On **Windows** Spotify plays into a silent virtual cable, and Mitschnitt plays it back to you. Only Spotify's own
-audio is captured, before Windows mixes it with anything else. While Mitschnitt listens, Spotify's volume sits at
-exactly 50 %. That keeps the Windows peak limiter away from loud masters. Halving a sample is exact, so Mitschnitt
-doubles it again and gets the original back.
+The system can change the audio too. Most volume levels change every sample, another sample rate means resampling,
+and the Windows mixer limits loud songs. Mitschnitt keeps all of that out while it listens.
 
-On **Linux** Mitschnitt connects straight to Spotify's PipeWire stream, before anything else is mixed in, and you
-keep listening on your normal speakers or headphones. While Mitschnitt listens, Spotify's volume is held at 100 %
-(use your system volume instead) and PipeWire runs at 44.1 kHz. Both go back to how they were when you stop.
+On **Windows** Spotify plays into a silent virtual cable, and Mitschnitt plays it back to you. Spotify's volume sits
+at exactly 50 %, which keeps the Windows peak limiter away from loud masters. Halving a sample is exact, so
+Mitschnitt doubles it again and gets the original back.
 
-On both systems an untouched 16 or 24 bit source arrives as exact 24 bit values. That is what Mitschnitt checks
-for, sample by sample.
+On **Linux** Mitschnitt connects straight to Spotify's PipeWire stream, so there is nothing to install and you
+listen on your normal speakers or headphones. Spotify's volume is held at 100 % and PipeWire runs at 44.1 kHz. Both
+go back to how they were when you stop.
 
-Recording happens in real time, so it is slower than a downloader. In return you get exactly the version Spotify
-plays, not some upload that might be a different edit.
+On both systems an untouched 16 or 24 bit source arrives as exact 24 bit values, and Mitschnitt checks every sample
+for that. The end of a song is found in the samples too, since the length Spotify reports can be a few milliseconds
+short.
 
-### Check a file yourself
-
-The command line tool (`cargo build --release -p mitschnitt-cli`) runs the same check on any FLAC file, also on
-ones Mitschnitt didn't make:
-
-```
-$ mitschnitt check Music/
-CLEAN    Darude - Sandstorm.flac                3:45.000  peak  -0.10  16-bit, bit-exact
-CORRUPT  Rick Astley - Never Gonna Give You Up  3:33.573  peak  -0.21  16-bit, bit-exact
-           CORRUPT dropout 1:12.405 - 1:12.437 (31.5 ms of digital silence inside loud audio)
-```
+Recording in real time is slower than a downloader, but you get exactly the version Spotify plays, not some upload
+that might be a different edit.
 
 ## Echolot
 
-[Echolot](https://github.com/Zweisteinium/echolot) is my other project: a self-hosted music library that syncs
-your playlists and likes and keeps only the right songs, in the best quality it can get. Connect Mitschnitt to it
-and it becomes a recorder for the songs Echolot is still missing. Echolot hands out one song at a time, Mitschnitt
-starts it in Spotify, checks that the right song plays, records it and uploads it. EXACT and FINE recordings go
-up, and so does one whose master was made from a lossy file: Echolot judges that with its own spectrum check. A
-damaged recording is played again, a song Spotify streams lossy only is left out.
+[Echolot](https://github.com/Zweisteinium/echolot) is my other project, a self-hosted music library that syncs your
+playlists and likes and keeps each song in the best quality it can get. Connected to it, Mitschnitt records the
+songs Echolot is still missing. It starts each one in Spotify, checks that the right song plays, records it and
+uploads it. EXACT and FINE recordings go up, and so do ones with a lossy master, which Echolot judges with its own
+spectrum check. A damaged recording is tried again, and a song Spotify only streams lossy is left out.
 
-On Linux, while a song records, Mitschnitt switches Spotify to repeat that song. Otherwise Spotify might go on with
-the album's next song without a pause, and the song's end could not be proven. Before repeating, Spotify pauses, and
-Mitschnitt stops it there. Your repeat setting comes back after each song, when you take over and when you stop.
+While a song records, Spotify is set to repeat it. The pause before the repeat proves where the song ends, even on
+gapless albums, and your repeat setting comes back afterwards. If crossfade is on, Mitschnitt hears it, pauses the
+list and asks you to turn it off.
 
 You can keep using your PC meanwhile. On Windows, when Spotify grabs the focus for a new song, Mitschnitt gives it
 back. On Linux the desktop decides whether Spotify may come to the front.
@@ -120,25 +129,30 @@ back. On Linux the desktop decides whether Spotify may come to the front.
 ## Coming from Spytify?
 
 [Spytify](https://github.com/jwallet/spy-spotify) by jwallet has been the go-to Spotify recorder for years and
-showed how well recording instead of downloading can work. Mitschnitt picks up some of its long open issues:
-lossless FLAC and 24 bit instead of MP3, clean starts without the tail of the previous song, glitches and
-dropouts caught instead of saved, and Linux.
+showed how well recording instead of downloading can work. Mitschnitt picks up some of its long open issues, like
+lossless FLAC and 24 bit instead of MP3, clean starts without the tail of the previous song, dropouts caught
+instead of saved, and Linux.
 
 ## Limits
 
-- Spotify is the only supported app. An app only gets a profile once its output has been proven untouched. If
-  you ask nicely, I'll try Deezer, Apple Music or whatever your heart is after next <3
-- Gapless albums, where one track flows into the next, can't be recorded in full. Without a pause before a track
-  there is no exact start, so those tracks are skipped. Without a pause after a track its end can't be proven: on
-  Linux it is saved as ALT ("end not verified"), because a skip in its last moments would look the same. Song lists
-  with Echolot avoid this with Spotify's repeat (see [Echolot](#echolot)).
+- **Spotify only.** An app only gets a profile once its output has been proven untouched. If you ask nicely, I'll
+  try Deezer, Apple Music or whatever your heart is after next <3
+- **Spotify's fade-in.** Now and then Spotify fades in the start of a song, over 10 to 12 ms. It happens for a few
+  percent of songs, and what triggers it isn't known yet. Mitschnitt finds the fade exactly, checks that everything
+  after it is bit-exact and labels the file FINE. You can't hear it, and it is the only difference Mitschnitt
+  accepts. Apart from that, only the digital silence at the very start and end can be a few milliseconds longer or
+  shorter than in the original. The sound itself is never cut.
+- **Gapless albums.** When one song flows into the next, there is no pause to cut at. A song without a pause before
+  it is skipped, because there is no exact start. A song without a pause after it is saved as ALT ("end not
+  verified"), because a skip in its last moments would look the same. Song lists with Echolot avoid this with
+  Spotify's repeat.
 
-## Your account, your risk
+## Your account(s)
 
-Streaming services don't like being recorded, and an account could get flagged for it. The risk seems small,
-nothing has happened to mine so far, but it's there. Mitschnitt only records what plays on your own computer and
-doesn't bypass any protection, so keep the recordings for your own listening. Using it is your decision, and I
-take no responsibility for what happens to your account or your recordings.
+Mitschnitt doesn't download or decrypt songs, doesn't speed up playback and doesn't use an unofficial client, the
+things that have gotten accounts flagged. Songs play in the official Spotify app at normal speed, just like when you
+listen yourself, and Mitschnitt records what comes out. Keep the recordings for your own listening. As with any
+open source tool, you use it at your own discretion and without warranty.
 
 ## Building
 
@@ -148,13 +162,13 @@ cd app && npm install && npx tauri build
 ```
 
 On Linux you also need the PipeWire headers and libclang (`pipewire clang` on Arch, `libpipewire-0.3-dev
-libclang-dev` on Debian and Ubuntu) next to the usual [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/).
-`make test-live` checks the capture against your running PipeWire without making a sound, and `make linux`
-builds the AppImage and the .deb inside a Debian 12 container.
+libclang-dev` on Debian and Ubuntu) and the usual [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/).
+`make test-live` checks the capture against your running PipeWire without making a sound. `make linux` builds the
+AppImage and the .deb in a Debian 12 container.
 
-The code lives in three places. `crates/core` does the capture, the checks and the file writing, with the
-platform specific parts in `crates/core/src/platform`. `crates/cli` is a command line front end with `check`,
-`setup` and `listen`. `app` is the desktop app, built with Tauri 2 and Svelte 5.
+`crates/core` does the capture, the checks and the file writing, with the platform specific parts in
+`crates/core/src/platform`. `crates/cli` is a command line tool with `check`, `setup` and `listen`, and its check
+also works on FLAC files Mitschnitt didn't make. `app` is the desktop app, built with Tauri 2 and Svelte 5.
 
 ## License
 

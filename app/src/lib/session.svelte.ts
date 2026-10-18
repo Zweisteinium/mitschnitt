@@ -7,6 +7,8 @@ type Outcome =
 
 export type Entry = { id: number; at: Date; track: Track } & Outcome;
 
+const ALTERED_IN_ROW = 2;
+
 export type Tab = "listen" | "setup" | "settings";
 
 class Session {
@@ -31,6 +33,8 @@ class Session {
   monitorMuted = $state(false);
   /** Null until the monitor reports it. */
   monitorVolume = $state<number | null>(null);
+  /** Recordings in a row that didn't arrive bit-exact: a lossy stream, or a Spotify setting that changes the sound. */
+  altered = $state(0);
   /** Files older than this are history, newer ones are in this run's list. */
   readonly startedAt = Date.now();
   #nextId = 0;
@@ -38,6 +42,21 @@ class Session {
 
   get listening(): boolean {
     return this.source !== null;
+  }
+
+  /** Why Spotify's settings should be looked at, if they should. */
+  get spotifyWarning(): string | null {
+    const keys = this.checks.find((c) => c.id === "spotify_keys");
+    if (keys) return keys.detail;
+    if (this.altered >= ALTERED_IN_ROW) {
+      return `Your last ${this.altered} recordings didn't arrive bit-exact. A Spotify setting may be changing the sound: check Playback (crossfade, normalization, equalizer) and Audio quality (Lossless).`;
+    }
+    return null;
+  }
+
+  async dismissSpotifyWarning() {
+    if (this.checks.some((c) => c.id === "spotify_keys")) await this.fix("spotify_keys");
+    else this.altered = 0;
   }
 
   get problems(): number {
@@ -138,6 +157,8 @@ class Session {
         this.status = u.status;
         break;
       case "saved":
+        if (u.lossy === "stream") this.altered++;
+        else if (u.exact || u.faded) this.altered = 0;
         this.#log(u.track, { outcome: "saved", file: u.file, size: u.size, verdict: u.verdict, master: u.master, exact: u.exact, faded: u.faded, lossy: u.lossy, issues: u.issues, echolot: u.echolot, frames: u.frames, peak_dbfs: u.peak_dbfs });
         break;
       case "key_blocked": {

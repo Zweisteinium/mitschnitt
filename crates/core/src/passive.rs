@@ -46,6 +46,11 @@ const END_SILENCE_MS: u64 = 200;
 /// keeps the new song's first moments: accepted, as a gapless album would otherwise lose every song.
 // Windows (SMTC): 1.17 to 1.8 s before the end into a gapless next track (3 measured).
 const EARLY_ANNOUNCE_MS: u64 = 2_000;
+/// Spotify's crossfade mixes a song's last seconds into what follows: with repeat-one it showed 0:00 9.4 s before the
+/// listed end, and its mix (nearly every frame off the grid, for 9 s) reached us 1 s later. A seek to 0:00 left 35 ms
+/// of fade (2 of 2, Linux, Spotify 1.3.4; 100 ms in earlier runs). A jump is judged on the audio that follows it.
+const JUDGE_MS: u64 = 2_500;
+const CROSSFADE_OFF_MS: u64 = 500;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Track {
@@ -81,6 +86,7 @@ pub enum Reason {
     Stopped,
     MidTrack,
     NoCleanStart,
+    Crossfade,
 }
 
 impl Reason {
@@ -95,6 +101,7 @@ impl Reason {
             Reason::Stopped => "stopped",
             Reason::MidTrack => "started mid-song",
             Reason::NoCleanStart => "no clean start (gapless)",
+            Reason::Crossfade => "Spotify's crossfade is on",
         }
     }
 }
@@ -155,8 +162,9 @@ enum State {
     Waiting { track: Track, until: u64, target: i64 },
     /// `tail_off`: off-grid frames past `expected`, counted only if the end search keeps them. `gap`: the first frame
     /// past `expected` without packets; silence from there on proves no end. `tail_empty`: per frame past `expected`,
-    /// whether the player rendered it as an empty buffer.
-    Recording { track: Track, expected: usize, samples: Vec<i32>, off_grid: usize, off_span: Option<(usize, usize)>, tail_off: Vec<usize>, tail_empty: Vec<bool>, gap: Option<usize>, start: u64 },
+    /// whether the player rendered it as an empty buffer. `jump`: the frame and off-grid count where the player jumped,
+    /// while the audio after it is judged ([`JUDGE_MS`]).
+    Recording { track: Track, expected: usize, samples: Vec<i32>, off_grid: usize, off_span: Option<(usize, usize)>, tail_off: Vec<usize>, tail_empty: Vec<bool>, gap: Option<usize>, start: u64, jump: Option<(usize, usize)> },
 }
 
 pub struct Passive {
@@ -247,6 +255,7 @@ impl Passive {
             }
             self.silent_run = 0;
         }
+        let (rate, judge, crossfade_off) = (self.rate, ms_to_frames(JUDGE_MS, self.rate), ms_to_frames(CROSSFADE_OFF_MS, self.rate));
         for f in 0..frames {
             let (mut zero, mut off24, mut off16) = (true, false, false);
             for c in 0..ch {
@@ -296,7 +305,7 @@ impl Passive {
                 }
             }
 
-            if let State::Recording { expected, samples, off_grid, off_span, tail_off, tail_empty, .. } = &mut self.state {
+            if let State::Recording { expected, samples, off_grid, off_span, tail_off, tail_empty, jump, .. } = &mut self.state {
                 samples.extend_from_slice(&self.scratch);
                 let i = samples.len() / ch - 1;
                 if i >= *expected {
@@ -308,7 +317,13 @@ impl Passive {
                 } else if off24 {
                     tail_off.push(i);
                 }
-                if samples.len() >= (*expected + self.end_search()) * ch {
+                if let Some((at, off)) = *jump
+                    && i + 1 >= at + judge
+                {
+                    let after = *off_grid + tail_off.len() - off;
+                    crate::log!("after the jump: {} ms off the grid", frames_to_ms(after, rate));
+                    self.drop_recording(if after >= crossfade_off { Reason::Crossfade } else { Reason::Seeked }, &mut events);
+                } else if jump.is_none() && samples.len() >= (*expected + self.end_search()) * ch {
                     self.complete(&mut events);
                 }
             }
@@ -338,7 +353,7 @@ impl Passive {
         }
         match &self.state {
             // A real pause at the end still ends it: the audio stops (silent packets, an underrun).
-            State::Recording { track, expected, samples, .. } if frames_to_ms(expected.saturating_sub(samples.len() / self.channels), self.rate) > END_MARGIN_MS => {
+            State::Recording { track, expected, samples, off_grid, tail_off, jump, .. } if frames_to_ms(expected.saturating_sub(samples.len() / self.channels), self.rate) > END_MARGIN_MS => {
                 let recorded = samples.len() / self.channels;
                 let (elapsed_ms, left_ms) = (frames_to_ms(recorded, self.rate) as i64, frames_to_ms(expected - recorded, self.rate));
                 // No track at all: its metadata is being updated (seen 35 s before the end); a real change shows the
@@ -351,9 +366,19 @@ impl Passive {
                         crate::log!("track changed with {left_ms} ms left: recording {track:?}, the player shows {shown:?} at {} ms", m.position_ms);
                         self.drop_recording(Reason::TrackChanged, &mut events);
                     }
-                } else if m.track.is_some() && (m.position_ms - elapsed_ms).abs() > SEEK_TOLERANCE_MS {
+                } else if m.track.is_some() && jump.is_none() && (m.position_ms - elapsed_ms).abs() > SEEK_TOLERANCE_MS {
                     crate::log!("seeked with {left_ms} ms left: recorded {elapsed_ms} ms, the player is at {} ms", m.position_ms);
-                    self.drop_recording(Reason::Seeked, &mut events);
+                    // Audio off the grid already (a lossy stream, the app volume moved) can't show a crossfade.
+                    let judge = ms_to_frames(JUDGE_MS, self.rate);
+                    let before = self.ring_off.iter().rev().take(judge).filter(|o| **o).count();
+                    if before >= ms_to_frames(CROSSFADE_OFF_MS, self.rate) {
+                        self.drop_recording(Reason::Seeked, &mut events);
+                    } else {
+                        let mark = (recorded, *off_grid + tail_off.len());
+                        if let State::Recording { jump, .. } = &mut self.state {
+                            *jump = Some(mark);
+                        }
+                    }
                 }
             }
             State::Waiting { track, .. } => {
@@ -462,7 +487,7 @@ impl Passive {
         events.push(Event::Started(track.clone()));
         let complete = samples.len() >= (expected + self.end_search()) * self.channels;
         let tail_empty = vec![false; (samples.len() / self.channels).saturating_sub(expected)];
-        self.state = State::Recording { track, expected, samples, off_grid, off_span, tail_off, tail_empty, gap: None, start };
+        self.state = State::Recording { track, expected, samples, off_grid, off_span, tail_off, tail_empty, gap: None, start, jump: None };
         if complete {
             self.complete(events);
         }
@@ -874,7 +899,11 @@ mod tests {
         let interruptions: [(Interrupt, Reason); 3] = [
             (|p, t| p.media(Media { playing: false, track: Some(t.clone()), position_ms: 1_000 }), Reason::Paused),
             (|p, _| p.push(&[], 80, FLAG_SILENT), Reason::Underrun),
-            (|p, t| p.media(playing(t, 7_000)), Reason::Seeked),
+            (|p, t| {
+                let mut ev = p.media(playing(t, 7_000));
+                feed(p, &master(ms_to_frames(JUDGE_MS, RATE), 4).1, &mut ev);
+                ev
+            }, Reason::Seeked),
         ];
         for (interrupt, reason) in interruptions {
             let mut p = Passive::new(RATE, 2, GAIN);
@@ -883,6 +912,34 @@ mod tests {
             feed(&mut p, &raw, &mut ev);
             ev.extend(interrupt(&mut p, &t));
             assert!(ev.iter().any(|e| matches!(e, Event::Dropped { reason: r, .. } if *r == reason)), "{reason:?}: {ev:?}");
+        }
+    }
+
+    /// Measured (Linux, Spotify 1.3.4): with crossfade the jump to 0:00 came 9.4 s early and nearly every frame after it
+    /// was off the grid; a seek to 0:00 left 35 ms of fade.
+    #[test]
+    fn a_jump_followed_by_a_mix_is_spotifys_crossfade() {
+        let t = track(10_000);
+        let (_, raw) = master(ms_to_frames(4_000, RATE), 3);
+        let off = |ms: u64| master(ms_to_frames(ms, RATE), 5).1.iter().map(|x| x * 0.7).collect::<Vec<f32>>();
+        let on = |ms: u64| master(ms_to_frames(ms, RATE), 5).1;
+        let dropped = |ev: &[Event]| ev.iter().find_map(|e| match e { Event::Dropped { reason, .. } => Some(*reason), _ => None });
+        let cases: [(Vec<f32>, Vec<f32>, Option<Reason>); 3] = [
+            (raw.clone(), off(JUDGE_MS), Some(Reason::Crossfade)),
+            (raw.clone(), [off(35), on(JUDGE_MS)].concat(), Some(Reason::Seeked)),
+            // Off the grid before the jump: a lossy stream can't show a crossfade.
+            (off(4_000), Vec::new(), Some(Reason::Seeked)),
+        ];
+        for (before, after, reason) in cases {
+            let mut p = Passive::new(RATE, 2, GAIN);
+            let mut ev = p.media(playing(&t, 0));
+            silence(&mut p, 100, &mut ev);
+            feed(&mut p, &before, &mut ev);
+            ev.extend(p.media(playing(&t, 0)));
+            let decided_at_once = dropped(&ev).is_some();
+            feed(&mut p, &after, &mut ev);
+            assert_eq!(dropped(&ev), reason, "{ev:?}");
+            assert_eq!(decided_at_once, after.is_empty(), "judged on the audio after the jump");
         }
     }
 

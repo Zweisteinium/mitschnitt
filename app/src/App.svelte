@@ -5,6 +5,7 @@
   import History from "./components/History.svelte";
   import Now from "./components/Now.svelte";
   import Source from "./components/Source.svelte";
+  import { api } from "./lib/api";
   import { echolot } from "./lib/echolot.svelte";
   import { session, type Tab } from "./lib/session.svelte";
   import Settings from "./views/Settings.svelte";
@@ -48,6 +49,16 @@
     <div class="error mono" role="alert">
       <span>{session.error}</span>
       <button onclick={() => (session.error = null)} aria-label="Dismiss">×</button>
+    </div>
+  {/if}
+
+  {#if session.spotifyWarning}
+    <div class="warning" role="status">
+      <span>
+        {session.spotifyWarning} If recordings seem affected, please
+        <button class="link" onclick={() => api.open("https://github.com/Zweisteinium/mitschnitt/issues/new")}>open an issue</button>.
+      </span>
+      <button class="btn" onclick={() => session.dismissSpotifyWarning()}>Got it</button>
     </div>
   {/if}
 
@@ -203,6 +214,34 @@
     border: 1px solid rgba(251, 113, 133, 0.5);
     background: rgba(251, 113, 133, 0.07);
     color: var(--bad);
+  }
+
+  .warning {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 16px;
+    margin-bottom: 16px;
+    padding: 10px 14px;
+    font-size: 12px;
+    line-height: 1.5;
+    border: 1px solid rgba(251, 191, 36, 0.5);
+    background: rgba(251, 191, 36, 0.07);
+    color: var(--warn);
+  }
+
+  .warning .link {
+    border: none;
+    background: none;
+    padding: 0;
+    color: var(--cyan);
+    font: inherit;
+    text-decoration: underline;
+    cursor: pointer;
+  }
+
+  .warning .btn {
+    flex: none;
   }
 
   .error button {

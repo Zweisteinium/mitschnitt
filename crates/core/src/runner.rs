@@ -83,6 +83,8 @@ pub enum Outcome {
     Failed { detail: String },
     /// The right song plays but no sound reaches this PC.
     NoSound,
+    /// Spotify's crossfade mixed the song's end: not the song's fault, and every song would fail the same way.
+    Crossfade,
     Skipped,
 }
 
@@ -354,6 +356,7 @@ impl Runner {
                 let outcome = match reason {
                     Reason::Paused | Reason::Seeked | Reason::TrackChanged | Reason::VolumeChanged => Outcome::TookOver { detail },
                     Reason::Underrun | Reason::Glitch | Reason::Stopped | Reason::MidTrack | Reason::NoCleanStart => Outcome::Stalled { detail },
+                    Reason::Crossfade => Outcome::Crossfade,
                 };
                 // After a take-over the player is the user's.
                 let pause = !matches!(outcome, Outcome::TookOver { .. });

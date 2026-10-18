@@ -26,6 +26,7 @@ const LONG_POLL_S: u32 = 25;
 /// Spotify Connect may play on another device while the app here shows "playing".
 const BUSY: &str = "Spotify is playing (here or on another device)";
 const NO_SOUND: &str = "no sound: playing on another device?";
+const CROSSFADE: &str = "Crossfade: on in Spotify, it mixes the end of every song. Turn it off (Settings → Playback → Crossfade), then resume.";
 const HEARTBEAT: Duration = Duration::from_secs(10);
 /// The player still shows playing for a moment after the runner's own pause: read as busy, the long poll lost 25 s.
 const OWN_PAUSE: Duration = Duration::from_secs(2);
@@ -290,6 +291,8 @@ fn echolot_loop(client: &Client, profile: &Profile, out_dir: &Path, shared_host:
     let mut setup = (Instant::now() - SETUP_CHECK, None::<String>);
     let mut backoff = Duration::from_secs(5);
     let mut paused_for_sound = false;
+    // Spotify no longer shows the setting to Mitschnitt: held from the recording until the session runs again.
+    let mut crossfade = false;
     let mut ended = Instant::now() - OWN_PAUSE;
     let mut logged = (DeviceState::Idle, "-".to_owned());
     // The first poll tells Echolot to release what a crashed run had leased.
@@ -341,7 +344,8 @@ fn echolot_loop(client: &Client, profile: &Profile, out_dir: &Path, shared_host:
                         paused_for_sound = true;
                         let _ = client.session("pause");
                     }
-                    host.update(RecorderUpdate::Song { job: job.clone(), result: result.into(), detail: detail.clone(), moved: None });
+                    crossfade |= matches!(other, Outcome::Crossfade);
+                    host.update(RecorderUpdate::Song { job: job.clone(), result: shown(&other, result).into(), detail: detail.clone(), moved: None });
                     match client.result(&item, result, &detail) {
                         Ok(session) => publish(snapshot, host, |s| s.session = session.or(s.session.take())),
                         Err(Error::Unauthorized) => return disconnected(snapshot, host),
@@ -390,7 +394,7 @@ fn echolot_loop(client: &Client, profile: &Profile, out_dir: &Path, shared_host:
             std::thread::sleep(Duration::from_millis(200));
             continue;
         }
-        let (state, detail) = match (&setup.1, spotify) {
+        let (state, detail) = match (&setup.1.clone().or_else(|| crossfade.then(|| CROSSFADE.to_owned())), spotify) {
             (Some(problem), _) => (DeviceState::Setup, problem.clone()),
             (None, Spotify::Playing) => (DeviceState::Busy, BUSY.into()),
             (None, _) => (DeviceState::Idle, String::new()),
@@ -412,6 +416,7 @@ fn echolot_loop(client: &Client, profile: &Profile, out_dir: &Path, shared_host:
                 let session_running = poll.session.as_ref().is_some_and(SessionInfo::running);
                 if session_running {
                     paused_for_sound = false;
+                    crossfade = false;
                 }
                 publish(snapshot, host, |s| {
                     s.connection = "connected".into();
@@ -501,8 +506,15 @@ fn result_of(outcome: &Outcome) -> (&'static str, String) {
         Outcome::Failed { detail } => ("failed", detail.clone()),
         // Not the song's fault: it goes back without costing a try.
         Outcome::NoSound => ("took_over", NO_SOUND.into()),
+        // Echolot pauses the session; the device shows why (Setup).
+        Outcome::Crossfade => ("took_over", "Spotify's crossfade is on".into()),
         Outcome::Skipped => ("skipped", "skipped by you".into()),
     }
+}
+
+/// Echolot knows no result for a crossfade: the card names it.
+fn shown(outcome: &Outcome, result: &'static str) -> &'static str {
+    if matches!(outcome, Outcome::Crossfade) { "crossfade" } else { result }
 }
 
 /// Retries network and server errors for up to an hour.
@@ -607,9 +619,9 @@ pub fn run_list(export: Export, profile: Profile, out_dir: PathBuf, host: Arc<dy
                     Outcome::Recorded { file, note } => ("recorded", note.clone().unwrap_or_else(|| file.display().to_string())),
                     other => result_of(other),
                 };
-                host.update(RecorderUpdate::Song { job, result: result.into(), detail: detail.clone(), moved: None });
+                host.update(RecorderUpdate::Song { job, result: shown(&outcome, result).into(), detail: detail.clone(), moved: None });
                 publish(snapshot, host, |s| s.done += 1);
-                if matches!(outcome, Outcome::TookOver { .. } | Outcome::NoSound) {
+                if matches!(outcome, Outcome::TookOver { .. } | Outcome::NoSound | Outcome::Crossfade) {
                     publish(snapshot, host, |s| s.error = Some(format!("Stopped: {detail}")));
                     break;
                 }

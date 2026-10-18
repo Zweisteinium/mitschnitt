@@ -12,6 +12,7 @@ export const resultText: Record<string, string> = {
   lossy_only: "no lossless",
   wrong_song: "wrong song",
   took_over: "taken over",
+  crossfade: "crossfade on",
   skipped: "skipped by you",
   stalled: "failed",
   failed: "failed",

@@ -57,7 +57,7 @@
       {#if session.state !== "running" && busy}
         <div class="hint warn small">{session.state === "paused" ? "Pausing" : "Ending"} after this song…</div>
       {:else if session.state === "paused"}
-        <div class="hint warn small">{pauseText[session.reason] ?? "Paused"}</div>
+        <div class="hint warn small">{pauseText[s.state === "setup" ? "setup" : session.reason] ?? "Paused"}</div>
       {/if}
       {#if s.current}<div class="current small">♪ {s.current.artist} – {s.current.title} <span class="muted mono">{clock(s.current.duration_ms)}</span></div>{/if}
       <div class="buttons">
@@ -86,7 +86,7 @@
     <ul class="results small">
       {#each echolot.results.slice(0, 8) as r (r.id)}
         <li title={readable(r.detail, true)}>
-          <span class="tag mono" class:ok={r.result === "filed" || r.result === "recorded"} class:bad={r.result === "rejected" || r.result === "failed" || r.result === "stalled"}>{resultText[r.result] ?? r.result}</span>
+          <span class="tag mono" class:ok={r.result === "filed" || r.result === "recorded"} class:bad={r.result === "rejected" || r.result === "failed" || r.result === "stalled" || r.result === "crossfade"}>{resultText[r.result] ?? r.result}</span>
           <span class="song">{r.job.artist} – {r.job.title}</span>
         </li>
       {/each}
