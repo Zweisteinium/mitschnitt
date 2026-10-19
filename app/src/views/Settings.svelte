@@ -75,7 +75,7 @@
           <input type="checkbox" checked={s.monitor} onchange={(e) => set("monitor", e.currentTarget.checked)} />
           <span>
             <span class="title">Monitor</span>
-            <span class="note muted">Play what is recorded on your default output. Replaces Windows' "Listen to this device" (muted while listening).</span>
+            <span class="note muted">Play what is recorded on your default output, with its own volume. Off, recordings are silent.{session.platform.os === "windows" ? ` Replaces Windows' "Listen to this device" (muted while listening).` : ""}</span>
           </span>
         </label>
       {/if}

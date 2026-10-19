@@ -34,7 +34,7 @@ pub fn health(profile: &Profile) -> Vec<Check> {
     let volumes: Vec<f32> = streams.iter().filter_map(|s| conn.volume(*s).ok()).flat_map(|v| v.effective()).collect();
     let percent = |v: f32| format!("{:.0} %", v * 100.0);
     if let Some(off) = volumes.iter().find(|v| **v != GAIN) {
-        let detail = format!("{} – held at {} while listening, use the system volume instead", percent(*off), percent(GAIN));
+        let detail = format!("{} – held at {} while listening, use Mitschnitt's monitor volume instead", percent(*off), percent(GAIN));
         out.push(check("volume", "App volume", State::Warn, detail, None));
     } else if !volumes.is_empty() {
         out.push(check("volume", "App volume", State::Ok, percent(GAIN), None));

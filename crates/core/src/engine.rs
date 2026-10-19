@@ -413,7 +413,7 @@ impl Session {
                 return Err(e);
             }
         };
-        let monitor = monitoring.then(|| Monitor::start(endpoint.sample_rate, CHANNELS, GAIN)).flatten();
+        let monitor = crate::monitor::SUPPORTED.then(|| Monitor::start(endpoint.sample_rate, CHANNELS, GAIN, root.pid, monitoring)).flatten();
         Ok(Session {
             info: SourceInfo { app: profile.name.to_owned(), device: endpoint.name, rate: endpoint.sample_rate },
             profile: profile.clone(),

@@ -41,7 +41,11 @@ pub struct Monitor {
 
 impl Monitor {
     /// `gain`: the recording gain the player applies, undone here.
-    pub fn start(rate: u32, channels: u16, gain: f32) -> Option<Monitor> {
+    /// `audible` off: no monitor, the app plays into the silent cable.
+    pub fn start(rate: u32, channels: u16, gain: f32, _app_pid: u32, audible: bool) -> Option<Monitor> {
+        if !audible {
+            return None;
+        }
         let queue = Arc::new(Mutex::new(VecDeque::new()));
         let volume = Arc::new(AtomicU32::new(f32::NAN.to_bits()));
         let stop = Arc::new(AtomicBool::new(false));

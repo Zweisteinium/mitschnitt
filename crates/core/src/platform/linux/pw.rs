@@ -2,6 +2,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::ffi::CString;
 use std::rc::Rc;
 use std::sync::Once;
 
@@ -228,12 +229,16 @@ impl Conn {
 
     /// Set every channel of node `id` to `value` and unmute it.
     pub fn set_volume(&self, id: u32, value: f32) -> Result<(), String> {
+        self.set_volume_mute(id, value, false)
+    }
+
+    pub fn set_volume_mute(&self, id: u32, value: f32, mute: bool) -> Result<(), String> {
         let channels = self.volume(id)?.channels.len();
         self.set_props(
             id,
             vec![
                 Property::new(spa::sys::SPA_PROP_channelVolumes, Value::ValueArray(ValueArray::Float(vec![value; channels]))),
-                Property::new(spa::sys::SPA_PROP_mute, Value::Bool(false)),
+                Property::new(spa::sys::SPA_PROP_mute, Value::Bool(mute)),
             ],
         )
     }
@@ -249,11 +254,31 @@ impl Conn {
 
     /// Write a key of the "settings" metadata (subject 0).
     pub fn set_setting(&self, key: &str, value: &str) -> Result<(), String> {
-        let settings = self.objects().into_iter().find(|o| o.type_ == ObjectType::Metadata && o.get("metadata.name") == Some("settings"));
-        let metadata = self.bind::<pw::metadata::Metadata>(&settings.ok_or("PipeWire has no settings metadata")?)?;
-        metadata.set_property(0, key, None, Some(value));
+        self.set_metadata("settings", 0, key, Some(value))
+    }
+
+    /// Where the session manager links stream `subject` (a node name), `None` to let it choose again.
+    pub fn set_target(&self, subject: u32, target: Option<&str>) -> Result<(), String> {
+        self.set_metadata("default", subject, "target.object", target)
+    }
+
+    fn set_metadata(&self, name: &str, subject: u32, key: &str, value: Option<&str>) -> Result<(), String> {
+        let object = self.objects().into_iter().find(|o| o.type_ == ObjectType::Metadata && o.get("metadata.name") == Some(name));
+        let metadata = self.bind::<pw::metadata::Metadata>(&object.ok_or_else(|| format!("PipeWire has no {name} metadata"))?)?;
+        metadata.set_property(subject, key, None, value);
         self.roundtrip();
         Ok(())
+    }
+
+    /// A module of this process, such as a loopback; it goes when dropped or with the process.
+    pub fn load_module(&self, name: &str, args: &str) -> Result<Module, String> {
+        let (c_name, c_args) = (CString::new(name).map_err(|e| e.to_string())?, CString::new(args).map_err(|e| e.to_string())?);
+        // SAFETY: the context outlives the call; PipeWire copies both strings.
+        let module = unsafe { pw::sys::pw_context_load_module(self._context.as_raw_ptr(), c_name.as_ptr(), c_args.as_ptr(), std::ptr::null_mut()) };
+        if module.is_null() {
+            return Err(format!("PipeWire could not load {name}"));
+        }
+        Ok(Module(module))
     }
 
     /// A stream with its full info. Native PipeWire apps are known by their client's pid
@@ -270,6 +295,16 @@ impl Conn {
     pub fn format_rate(&self, id: u32) -> Option<u32> {
         let params = self.params(id, ParamType::Format).ok()?;
         params.iter().find_map(|bytes| prop(bytes, spa::sys::SPA_FORMAT_AUDIO_rate)?.get_int().ok()).and_then(|r| u32::try_from(r).ok())
+    }
+}
+
+/// Drop it before the [`Conn`] that loaded it.
+pub struct Module(*mut pw::sys::pw_impl_module);
+
+impl Drop for Module {
+    fn drop(&mut self) {
+        // SAFETY: loaded by `load_module` and destroyed only here.
+        unsafe { pw::sys::pw_impl_module_destroy(self.0) }
     }
 }
 

@@ -91,8 +91,8 @@ arrive bit-exact, a banner asks you to look at these settings.
 - **Recording takes as long as the song.** A 3 minute song takes 3 minutes.
 - **Play songs from the start and let them finish.** A song you skip, seek in or pause isn't saved, so no broken file
   ends up in your library.
-- **Your speaker volume doesn't matter.** Listen as loud or quiet as you like. Only Spotify's own volume slider is
-  held in place while Mitschnitt listens.
+- **Your volume doesn't matter.** Listen as loud or quiet as you like with Mitschnitt's monitor slider. Only
+  Spotify's own volume slider is held in place while Mitschnitt listens. Song lists are recorded silently.
 
 ## How it works
 
@@ -103,9 +103,9 @@ On **Windows** Spotify plays into a silent virtual cable, and Mitschnitt plays i
 at exactly 50 %, which keeps the Windows peak limiter away from loud masters. Halving a sample is exact, so
 Mitschnitt doubles it again and gets the original back.
 
-On **Linux** Mitschnitt connects straight to Spotify's PipeWire stream, so there is nothing to install and you
-listen on your normal speakers or headphones. Spotify's volume is held at 100 % and PipeWire runs at 44.1 kHz. Both
-go back to how they were when you stop.
+On **Linux** Mitschnitt records straight from Spotify's PipeWire stream, so there is nothing to install. Spotify
+plays into a virtual output of Mitschnitt, which plays it back to you. Spotify's volume is held at 100 % and
+PipeWire runs at 44.1 kHz. All of it goes back to how it was when you stop.
 
 On both systems an untouched 16 or 24 bit source arrives as exact 24 bit values, and Mitschnitt checks every sample
 for that. The end of a song is found in the samples too, since the length Spotify reports can be a few milliseconds

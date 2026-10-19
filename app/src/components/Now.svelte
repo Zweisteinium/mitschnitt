@@ -63,7 +63,7 @@
     {/if}
     <Meter rms={status?.rms ?? [0, 0]} peak={status?.level ?? [0, 0]} />
     {#if session.platform?.monitor && session.settings?.monitor && session.monitorVolume !== null}
-      <label class="volume" title="Mitschnitt in the Windows volume mixer, on a loudness scale">
+      <label class="volume" title="Mitschnitt in the {session.platform.os === 'windows' ? 'Windows volume mixer' : 'system mixer'}, on a loudness scale">
         <span class="mono muted">Monitor</span>
         <input type="range" min="0" max="1" step="0.01" value={position} oninput={(e) => session.setMonitorVolume(Math.pow(+e.currentTarget.value, 3))} />
         <span class="mono">{Math.round(position * 100)}</span>
