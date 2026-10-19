@@ -17,6 +17,8 @@ it, and the check tells you when something got in the way, like a lossy stream, 
 It's a hobby project that I use every day on Windows and Linux, and it has been tested and fine-tuned a lot. If you
 still find a bug, please [open an issue](https://github.com/Zweisteinium/mitschnitt/issues).
 
+Large parts of the code were written with AI assistance (Claude Code).
+
 ## Features
 
 - **Bit-exact.** Only the app's own stream is recorded, before the system mixes, resamples or changes its volume.
