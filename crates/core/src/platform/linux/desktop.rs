@@ -2,24 +2,6 @@ use std::ffi::OsStr;
 use std::path::Path;
 use std::process::Command;
 
-/// Set by the AppImage runtime for its bundled libraries; they must not leak into other programs.
-const APPIMAGE_ENV: &[&str] = &[
-    "LD_LIBRARY_PATH",
-    "GDK_PIXBUF_MODULE_FILE",
-    "GDK_PIXBUF_MODULEDIR",
-    "GIO_MODULE_DIR",
-    "GIO_EXTRA_MODULES",
-    "GSETTINGS_SCHEMA_DIR",
-    "GST_PLUGIN_PATH",
-    "GST_PLUGIN_SYSTEM_PATH",
-    "GST_PLUGIN_SYSTEM_PATH_1_0",
-    "GST_PLUGIN_SCANNER",
-    "GTK_PATH",
-    "GTK_EXE_PREFIX",
-    "GTK_DATA_PREFIX",
-    "GTK_IM_MODULE_FILE",
-];
-
 /// Open a link with its registered app (`spotify:track:…:play` starts that track in Spotify).
 pub fn open_link(link: &str) -> Result<(), String> {
     xdg_open(link.as_ref())
@@ -47,12 +29,7 @@ fn show_item(path: &Path) -> Result<(), String> {
 }
 
 fn xdg_open(target: &OsStr) -> Result<(), String> {
-    let mut command = Command::new("xdg-open");
-    command.arg(target);
-    if std::env::var_os("APPIMAGE").is_some() {
-        APPIMAGE_ENV.iter().for_each(|var| _ = command.env_remove(var));
-    }
-    command.spawn().map(|_| ()).map_err(|e| format!("xdg-open: {e}"))
+    Command::new("xdg-open").arg(target).spawn().map(|_| ()).map_err(|e| format!("xdg-open: {e}"))
 }
 
 fn file_uri(path: &Path) -> String {

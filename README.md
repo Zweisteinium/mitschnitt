@@ -61,8 +61,8 @@ Get the latest version from [Releases](https://github.com/Zweisteinium/mitschnit
   (donationware). The builds aren't code-signed, so SmartScreen asks once. Click More info, then Run anyway.
 - **Linux.** A .deb for Debian 12, Ubuntu 22.04, Mint 21 and newer, and an AppImage for anything else with glibc
   2.36 or newer, like Fedora 37 or Arch. Both need PipeWire, which Ubuntu 22.04 doesn't use by default. The
-  AppImage is about 100 MB because it brings its own WebKit, the browser engine the interface runs on. The .deb
-  uses the system's and is 6 MB.
+  AppImage also needs WebKitGTK 4.1, the browser engine the interface runs on (`webkit2gtk4.1` on Fedora,
+  `webkit2gtk-4.1` on Arch). The .deb installs it for you.
 - **macOS.** Planned, low priority.
 
 ## Spotify settings
