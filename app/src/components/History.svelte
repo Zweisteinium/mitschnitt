@@ -4,7 +4,7 @@
   import { session, type Entry } from "../lib/session.svelte";
   import Panel from "./Panel.svelte";
 
-  type Tone = "ok" | "lossy" | "warn" | "bad" | "muted";
+  type Tone = "ok" | "warn" | "bad" | "muted";
 
   const time = (d: Date) => d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   const full = (d: Date) => d.toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
@@ -24,7 +24,7 @@
     if (verdict === "corrupt") return { tone: "bad", tag: "bad", text: issues.length ? `Damaged · ${headline(issues[0])}` : "Damaged" };
     if (lossy) {
       const text = lossy === "stream" ? "Lossy stream" : "Lossy master";
-      return { tone: "lossy", tag: "lossy", text: file?.endsWith(".mp3") ? `${text} · MP3` : text };
+      return { tone: "warn", tag: "lossy", text: file?.endsWith(".mp3") ? `${text} · MP3` : text };
     }
     if (faded) return { tone: "ok", tag: "fine", text: "Fade-in, rest bit-exact" };
     if (verdict === "altered") return { tone: "warn", tag: "alt", text: issues.length ? headline(issues[0]) : "Not fully original" };
@@ -125,7 +125,7 @@
   </span>
 {/snippet}
 
-<Panel label="Session" index="03">
+<Panel label="Session">
   {#snippet actions()}
     <button class="btn" onclick={() => session.settings && api.open(session.settings.out_dir)}>Open folder</button>
   {/snippet}
@@ -140,10 +140,9 @@
           <span class="tag mono {s.tone}">{s.tag}</span>
           <div class="main">
             <div class="name">{e.track.artist} – {e.track.title}</div>
-            <div class="detail {s.tone}">
+            <div class="detail muted" class:bad={s.tone === "bad"}>
               {s.text}{#if e.outcome === "saved" && e.echolot}{" · for Echolot"}{/if}
-              {#if e.outcome === "saved" && e.file}<span class="facts mono">{facts(e.track.duration_ms, e.size)}</span>{/if}
-              {@render info(card(e))}
+              <span class="end">{#if e.outcome === "saved" && e.file}<span class="facts mono">{facts(e.track.duration_ms, e.size)}</span>{/if}{@render info(card(e))}</span>
             </div>
           </div>
           <span class="when mono muted" title={full(e.at)}>{time(e.at)}</span>
@@ -173,8 +172,7 @@
             <div class="main">
               <div class="name">{r.track.artist} – {r.track.title}</div>
               <div class="detail muted">
-                {origin(r)}<span class="facts mono">{facts(r.track.duration_ms, r.size)}</span>
-                {@render info(fileCard({ ...r, issues: r.issues ?? [] }, at, origin(r)))}
+                {origin(r)}<span class="end"><span class="facts mono">{facts(r.track.duration_ms, r.size)}</span>{@render info(fileCard({ ...r, issues: r.issues ?? [] }, at, origin(r)))}</span>
               </div>
             </div>
             <span class="when mono muted" title={full(at)}>{when(at)}</span>
@@ -242,6 +240,13 @@
     flex-wrap: wrap;
     column-gap: 10px;
     font-size: 12px;
+  }
+
+  /* Size and the info icon wrap together. */
+  .end {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
   }
 
   .facts {
@@ -345,12 +350,11 @@
     padding: 0;
     border: none;
     background: none;
-    color: var(--cyan);
-    opacity: 0.75;
+    color: var(--muted);
   }
 
   .icon:hover {
-    opacity: 1;
+    color: var(--cyan);
   }
 
   .icon svg {

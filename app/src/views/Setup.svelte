@@ -9,7 +9,7 @@
 </script>
 
 <div class="grid">
-  <Panel label="Health" index="01">
+  <Panel label="Health">
     {#snippet actions()}
       <button class="btn" onclick={() => session.check()} disabled={session.checking}>{session.checking ? "Checking…" : "Re-check"}</button>
     {/snippet}
@@ -35,7 +35,7 @@
   </Panel>
 
   <div class="col">
-    <Panel label="How it works" index="02">
+    <Panel label="How it works">
       <ol>
         {#if session.platform?.os === "linux"}
           <li><b>Straight from the app.</b> Mitschnitt connects to the app's own PipeWire stream, before anything else is mixed in. You keep listening as usual.</li>
@@ -112,7 +112,7 @@
     color: var(--bad);
   }
   .s-check .badge {
-    color: var(--violet);
+    color: var(--cyan);
   }
 
   .title {

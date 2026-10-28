@@ -7,13 +7,13 @@
   const queue = $derived(echolot.active || echolot.listing);
 </script>
 
-<Panel label="Source" index="01">
+<Panel label="Source">
   {#if session.source}
     <div class="active">
       <div class="name">{session.source.app}</div>
       <div class="device muted">{session.source.device}</div>
       <div class="tags mono">
-        <span class:ok={session.source.rate === 44100} class:warn={session.source.rate !== 44100}>{num(session.source.rate / 1000)} kHz</span>
+        <span class:warn={session.source.rate !== 44100}>{num(session.source.rate / 1000)} kHz</span>
         {#if session.platform}<span>gain {session.platform.gain * 100} %</span>{/if}
         {#if session.platform?.monitor}<span>{session.settings?.monitor ? "monitoring" : "silent"}</span>{/if}
       </div>
@@ -137,11 +137,6 @@
     border: 1px solid var(--faint);
     color: var(--muted);
     white-space: nowrap;
-  }
-
-  .tags .ok {
-    border-color: rgba(52, 211, 153, 0.5);
-    color: var(--ok);
   }
 
   .tags .warn {

@@ -7,7 +7,7 @@
   const busy = $derived(s.current !== null);
 </script>
 
-<Panel label="Echolot" index="03">
+<Panel label="Echolot">
   {#snippet actions()}
     {#if echolot.connected}
       <button class="btn" onclick={() => echolot.disconnect()} disabled={echolot.busy || busy} title={busy ? "Wait until the current song is done" : undefined}>Disconnect</button>

@@ -34,7 +34,7 @@
   };
 </script>
 
-<Panel label="Echolot" index="04">
+<Panel label="Echolot">
   <div class="who small" title={s.state === "busy" ? "Waiting while Spotify plays something else, here or on another device" : undefined}>
     <span class="dot" class:offline={s.connection === "offline"}></span>
     {s.connection === "offline" ? "Offline" : "Connected"}{#if s.state}<span class="muted"> · {stateText[s.state] ?? s.state}</span>{/if}
@@ -48,7 +48,7 @@
       <div class="bar"><span style:width="{progress * 100}%"></span></div>
       <div class="counts mono small">
         <span>{session.done}/{session.total}</span>
-        <span class="ok">{session.filed} added</span>
+        <span>{session.filed} added</span>
         {#if session.not_better}<span>{session.not_better} not better</span>{/if}
         {#if session.skipped}<span>{session.skipped} skipped</span>{/if}
         {#if session.failed}<span class="bad">{session.failed} failed</span>{/if}

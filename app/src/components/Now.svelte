@@ -20,7 +20,7 @@
   const position = $derived(Math.cbrt(session.monitorVolume ?? 1));
 </script>
 
-<Panel label="Now" index="02">
+<Panel label="Now">
   <div class="state {phase}">
     <span class="dot"></span>
     <span class="mono">{labels[phase]}</span>
