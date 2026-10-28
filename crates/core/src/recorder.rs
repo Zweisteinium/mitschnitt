@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::echolot::{self, Client, DeviceState, Error, Export, Item, SessionInfo, Spotify};
 use crate::engine::{Queue, QueueStatus};
 use crate::profile::Profile;
-use crate::runner::{Job, Outcome};
+use crate::runner::{self, Job, Outcome};
 use crate::settings::Settings;
 use crate::setup::{self, State};
 use crate::{desktop, init_thread, media, sessions};
@@ -27,6 +27,9 @@ const LONG_POLL_S: u32 = 25;
 const BUSY: &str = "Spotify is playing (here or on another device)";
 const NO_SOUND: &str = "no sound: playing on another device?";
 const CROSSFADE: &str = "Crossfade: on in Spotify, it mixes the end of every song. Turn it off (Settings → Playback → Crossfade), then resume.";
+const NOT_STARTING: &str = "Spotify ignores links: 3 songs in a row didn't start. Restart Spotify, then resume.";
+/// Up to 2 in a row passed on their own (14 to 20 Oct). On 20 Oct Spotify ignored every link after one.
+const NOT_STARTED_STOP: u32 = 3;
 const HEARTBEAT: Duration = Duration::from_secs(10);
 /// The player still shows playing for a moment after the runner's own pause: read as busy, the long poll lost 25 s.
 const OWN_PAUSE: Duration = Duration::from_secs(2);
@@ -62,6 +65,7 @@ pub struct Snapshot {
     pub done: u32,
     pub total: u32,
     pub paused: bool,
+    pub lagging: bool,
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -161,6 +165,13 @@ pub fn ensure_player(profile: &Profile) -> Result<(), String> {
         }
     }
     Err(format!("{} didn't start", profile.name))
+}
+
+fn show_lagging(snapshot: &Mutex<Snapshot>, host: &dyn Host, status: &QueueStatus) {
+    let shown = snapshot.lock().map(|s| s.lagging).unwrap_or_default();
+    if status.lagging != shown {
+        publish(snapshot, host, |s| s.lagging = status.lagging);
+    }
 }
 
 fn spotify_state(profile: &Profile, status: Option<&QueueStatus>) -> Spotify {
@@ -301,8 +312,9 @@ fn echolot_loop(client: &Client, profile: &Profile, out_dir: &Path, shared_host:
     let mut setup = (Instant::now() - SETUP_CHECK, None::<String>);
     let mut backoff = Duration::from_secs(5);
     let mut paused_for_sound = false;
-    // Spotify no longer shows the setting to Mitschnitt: held from the recording until the session runs again.
-    let mut crossfade = false;
+    // Spotify no longer shows the crossfade setting to Mitschnitt: held from the recording until the session runs again.
+    let mut hold: Option<&str> = None;
+    let mut not_started = 0;
     let mut ended = Instant::now() - OWN_PAUSE;
     let mut logged = (DeviceState::Idle, "-".to_owned());
     // The first poll tells Echolot to release what a crashed run had leased.
@@ -339,6 +351,7 @@ fn echolot_loop(client: &Client, profile: &Profile, out_dir: &Path, shared_host:
             }
             match outcome {
                 Outcome::Recorded { file, note } => {
+                    not_started = 0;
                     let keep_as = file.strip_prefix(&pending_dir).map(Path::to_owned).unwrap_or_else(|_| file.file_name().unwrap_or_default().into());
                     // Survives a close or crash before the upload (see `leftover_uploads`).
                     if let Ok(json) = serde_json::to_string(&Sidecar { item: item.clone(), note: note.clone() }) {
@@ -354,7 +367,14 @@ fn echolot_loop(client: &Client, profile: &Profile, out_dir: &Path, shared_host:
                         paused_for_sound = true;
                         let _ = client.session("pause");
                     }
-                    crossfade |= matches!(other, Outcome::Crossfade);
+                    if matches!(other, Outcome::Crossfade) {
+                        hold = Some(CROSSFADE);
+                    }
+                    not_started = if matches!(&other, Outcome::Failed { detail } if detail == runner::NOT_STARTED) { not_started + 1 } else { 0 };
+                    if not_started == NOT_STARTED_STOP {
+                        hold = Some(NOT_STARTING);
+                        let _ = client.session("pause");
+                    }
                     host.update(RecorderUpdate::Song { job: job.clone(), result: shown(&other, result).into(), detail: detail.clone(), moved: None });
                     match client.result(&item, result, &detail) {
                         Ok(session) => publish(snapshot, host, |s| s.session = session.or(s.session.take())),
@@ -365,6 +385,7 @@ fn echolot_loop(client: &Client, profile: &Profile, out_dir: &Path, shared_host:
             }
         }
         let status = attached.as_ref().and_then(|a| a.status.lock().ok().map(|s| s.clone()));
+        show_lagging(snapshot, host, &status.clone().unwrap_or_default());
         let current = status.as_ref().and_then(|s| s.job.clone());
 
         // 2. Busy with a song: only a heartbeat now and then.
@@ -404,7 +425,7 @@ fn echolot_loop(client: &Client, profile: &Profile, out_dir: &Path, shared_host:
             std::thread::sleep(Duration::from_millis(200));
             continue;
         }
-        let (state, detail) = match (&setup.1.clone().or_else(|| crossfade.then(|| CROSSFADE.to_owned())), spotify) {
+        let (state, detail) = match (&setup.1.clone().or_else(|| hold.map(str::to_owned)), spotify) {
             (Some(problem), _) => (DeviceState::Setup, problem.clone()),
             (None, Spotify::Playing) => (DeviceState::Busy, BUSY.into()),
             (None, _) => (DeviceState::Idle, String::new()),
@@ -426,7 +447,8 @@ fn echolot_loop(client: &Client, profile: &Profile, out_dir: &Path, shared_host:
                 let session_running = poll.session.as_ref().is_some_and(SessionInfo::running);
                 if session_running {
                     paused_for_sound = false;
-                    crossfade = false;
+                    hold = None;
+                    not_started = 0;
                 }
                 publish(snapshot, host, |s| {
                     s.connection = "connected".into();
@@ -509,7 +531,6 @@ fn clock(ms: u64) -> String {
 fn result_of(outcome: &Outcome) -> (&'static str, String) {
     match outcome {
         Outcome::Recorded { .. } => ("filed", String::new()),
-        Outcome::LossyOnly { detail } => ("lossy_only", detail.clone()),
         Outcome::WrongSong { detail } => ("wrong_song", detail.clone()),
         Outcome::TookOver { detail } => ("took_over", detail.clone()),
         Outcome::Stalled { detail } => ("stalled", detail.clone()),
@@ -605,6 +626,7 @@ pub fn run_list(export: Export, profile: Profile, out_dir: PathBuf, host: Arc<dy
                     return;
                 }
             };
+            let mut not_started = 0;
             'jobs: for job in jobs {
                 if pause.load(Ordering::Relaxed) {
                     publish(snapshot, host, |s| {
@@ -630,7 +652,10 @@ pub fn run_list(export: Export, profile: Profile, out_dir: PathBuf, host: Arc<dy
                             host.detach();
                             break 'jobs;
                         }
-                        Err(mpsc::RecvTimeoutError::Timeout) => {}
+                        Err(mpsc::RecvTimeoutError::Timeout) => {
+                            let status = attached.status.lock().map(|s| s.clone()).unwrap_or_default();
+                            show_lagging(snapshot, host, &status);
+                        }
                         Err(mpsc::RecvTimeoutError::Disconnected) => break 'jobs,
                     }
                 };
@@ -643,6 +668,11 @@ pub fn run_list(export: Export, profile: Profile, out_dir: PathBuf, host: Arc<dy
                 publish(snapshot, host, |s| s.done += 1);
                 if matches!(outcome, Outcome::TookOver { .. } | Outcome::NoSound | Outcome::Crossfade) {
                     publish(snapshot, host, |s| s.error = Some(format!("Stopped: {detail}")));
+                    break;
+                }
+                not_started = if matches!(&outcome, Outcome::Failed { detail } if detail == runner::NOT_STARTED) { not_started + 1 } else { 0 };
+                if not_started == NOT_STARTED_STOP {
+                    publish(snapshot, host, |s| s.error = Some(format!("Stopped: {NOT_STARTING}")));
                     break;
                 }
             }

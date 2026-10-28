@@ -147,7 +147,7 @@ impl Watcher {
         op.and_then(|op| op.join()).map(|_| ()).map_err(|e| e.to_string())
     }
 
-    // TODO(windows): SMTC has AutoRepeatMode and TryChangeAutoRepeatModeAsync; unmeasured with Spotify, so unused.
+    // TODO(windows): Spotify reports IsRepeatEnabled and AutoRepeatMode (19 Oct); setting it is unmeasured, so unused.
     pub fn repeat(&self) -> std::result::Result<Repeat, String> {
         Err("not supported on Windows yet".into())
     }

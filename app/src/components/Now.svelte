@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { clock, num } from "../lib/api";
+  import { clock } from "../lib/api";
   import { session } from "../lib/session.svelte";
   import Meter from "./Meter.svelte";
   import Panel from "./Panel.svelte";
@@ -58,7 +58,7 @@
       {@const exact = status.grid.bit24 === 1}
       <div class="proof mono" class:ok={exact} class:warn={!exact} title="Share of the audio that arrives as exact 24-bit values">
         <span class="dot"></span>
-        {exact ? "Lossless · arriving bit-exact" : `Not lossless · ${num(status.grid.bit24 * 100)} % exact`}
+        {exact ? "Lossless · arriving bit-exact" : "Not lossless · lossy or altered"}
       </div>
     {/if}
     <Meter rms={status?.rms ?? [0, 0]} peak={status?.level ?? [0, 0]} />

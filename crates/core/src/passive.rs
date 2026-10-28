@@ -21,7 +21,9 @@ const MIN_INITIAL_SILENCE_MS: u64 = 1_000;
 const RELEASE_START_MS: u64 = 3_000;
 /// A master's leading digital silence is kept when the player's stream starts right before it.
 const MAX_LEAD_MS: u64 = 3_000;
-const LOOKBACK_MS: u64 = 6_000;
+/// From the link to Spotify showing the song playing: up to 16.9 s (Windows, 14 to 20 Oct). The song's start must
+/// still be here then.
+const LOOKBACK_MS: u64 = 20_000;
 const WAIT_MS: u64 = 5_000;
 const START_TOLERANCE_MS: i64 = 3_000;
 const POSITION_MATCH_MS: i64 = 1_500;
@@ -160,11 +162,12 @@ enum State {
     Idle,
     /// `target`: where the clean start should lie (from the shown position).
     Waiting { track: Track, until: u64, target: i64 },
+    Armed { track: Track },
     /// `tail_off`: off-grid frames past `expected`, counted only if the end search keeps them. `gap`: the first frame
     /// past `expected` without packets; silence from there on proves no end. `tail_empty`: per frame past `expected`,
     /// whether the player rendered it as an empty buffer. `jump`: the frame and off-grid count where the player jumped,
     /// while the audio after it is judged ([`JUDGE_MS`]).
-    Recording { track: Track, expected: usize, samples: Vec<i32>, off_grid: usize, off_span: Option<(usize, usize)>, tail_off: Vec<usize>, tail_empty: Vec<bool>, gap: Option<usize>, start: u64, jump: Option<(usize, usize)> },
+    Recording { track: Track, expected: usize, samples: Vec<i32>, off_grid: usize, off_span: Option<(usize, usize)>, tail_off: Vec<usize>, tail_empty: Vec<bool>, gap: Option<usize>, start: u64, jump: Option<(usize, usize)>, synced: bool },
 }
 
 pub struct Passive {
@@ -187,6 +190,8 @@ pub struct Passive {
     render_start: Option<u64>,
     /// Clean starts still inside the ring.
     starts: VecDeque<u64>,
+    /// The player was told to start a song and its audio stayed silent up to the starts since.
+    requested: bool,
     /// Finished or given up: not taken again until it changes or starts over.
     done: Option<Track>,
     last_position_ms: i64,
@@ -217,6 +222,7 @@ impl Passive {
             silent_run: 0,
             render_start: None,
             starts: VecDeque::new(),
+            requested: false,
             done: None,
             last_position_ms: 0,
             late: None,
@@ -286,10 +292,16 @@ impl Passive {
                 if self.zero_run >= min_silence && !initial {
                     let start = self.render_start.take().filter(|r| self.frame - r <= max_lead).unwrap_or(self.frame);
                     self.starts.push_back(start);
-                    if let State::Waiting { track, .. } = &self.state {
-                        let track = track.clone();
-                        self.start_recording(track, start, &mut events);
+                    if let State::Waiting { track, .. } | State::Armed { track } = &self.state {
+                        let (track, synced) = (track.clone(), matches!(self.state, State::Waiting { .. }));
+                        self.start_recording(track, start, synced, &mut events);
                     }
+                } else {
+                    // Seen once in 38 Plays: Spotify played on through the rewind.
+                    if matches!(self.state, State::Armed { .. }) {
+                        self.state = State::Idle;
+                    }
+                    self.requested &= !self.starts.is_empty();
                 }
                 self.zero_run = 0;
             }
@@ -302,6 +314,7 @@ impl Passive {
                 self.ring_first += 1;
                 while self.starts.front().is_some_and(|s| *s < self.ring_first) {
                     self.starts.pop_front();
+                    self.requested = false;
                 }
             }
 
@@ -365,14 +378,20 @@ impl Passive {
             *expected = ms_to_frames(shown.duration_ms, self.rate);
             *track = shown.clone();
         }
+        // After the runner's Play the player showed it playing over 1.5 s late in 14 of 38 Plays (up to 4.4 s,
+        // Windows), until then paused or at the old position.
+        if let State::Recording { track, samples, synced, .. } = &mut self.state {
+            let elapsed_ms = frames_to_ms(samples.len() / self.channels, self.rate) as i64;
+            *synced |= m.playing && m.track.as_ref() == Some(track) && (m.position_ms - elapsed_ms).abs() <= SEEK_TOLERANCE_MS;
+        }
         match &self.state {
             // A real pause at the end still ends it: the audio stops (silent packets, an underrun).
-            State::Recording { track, expected, samples, off_grid, tail_off, jump, .. } if frames_to_ms(expected.saturating_sub(samples.len() / self.channels), self.rate) > END_MARGIN_MS => {
+            State::Recording { track, expected, samples, off_grid, tail_off, jump, synced, .. } if frames_to_ms(expected.saturating_sub(samples.len() / self.channels), self.rate) > END_MARGIN_MS => {
                 let recorded = samples.len() / self.channels;
                 let (elapsed_ms, left_ms) = (frames_to_ms(recorded, self.rate) as i64, frames_to_ms(expected - recorded, self.rate));
                 // No track at all: its metadata is being updated (seen 35 s before the end); a real change shows the
                 // other track within a moment.
-                if !m.playing {
+                if !m.playing && *synced {
                     crate::log!("paused with {left_ms} ms left");
                     self.drop_recording(Reason::Paused, &mut events);
                 } else if let Some(shown) = m.track.as_ref().filter(|t| *t != track) {
@@ -380,7 +399,7 @@ impl Passive {
                         crate::log!("track changed with {left_ms} ms left: recording {track:?}, the player shows {shown:?} at {} ms", m.position_ms);
                         self.drop_recording(Reason::TrackChanged, &mut events);
                     }
-                } else if m.track.is_some() && jump.is_none() && (m.position_ms - elapsed_ms).abs() > SEEK_TOLERANCE_MS {
+                } else if *synced && m.track.is_some() && jump.is_none() && (m.position_ms - elapsed_ms).abs() > SEEK_TOLERANCE_MS {
                     crate::log!("seeked with {left_ms} ms left: recorded {elapsed_ms} ms, the player is at {} ms", m.position_ms);
                     // Audio off the grid already (a lossy stream, the app volume moved) can't show a crossfade.
                     let judge = ms_to_frames(JUDGE_MS, self.rate);
@@ -400,7 +419,7 @@ impl Passive {
                     self.state = State::Idle;
                 }
             }
-            State::Recording { .. } | State::Idle => {}
+            State::Recording { .. } | State::Armed { .. } | State::Idle => {}
         }
 
         if let (State::Idle, true, Some(track)) = (&self.state, m.playing, &m.track) {
@@ -427,6 +446,23 @@ impl Passive {
     /// song before played for a moment before the pause took effect, and its start was taken for the next song's.
     pub fn forget_starts(&mut self) {
         self.starts.clear();
+        self.requested = true;
+    }
+
+    pub fn arm(&mut self, track: Track) {
+        if !self.recording() {
+            self.state = State::Armed { track };
+        }
+    }
+
+    pub fn disarm(&mut self) {
+        if matches!(self.state, State::Armed { .. }) {
+            self.state = State::Idle;
+        }
+    }
+
+    pub fn armed(&self) -> bool {
+        matches!(self.state, State::Armed { .. })
     }
 
     pub fn stop(&mut self) -> Vec<Event> {
@@ -450,7 +486,7 @@ impl Passive {
     pub fn status(&mut self) -> Status {
         let (phase, track) = match &self.state {
             State::Idle => (Phase::Idle, None),
-            State::Waiting { track, .. } => (Phase::Waiting, Some(track.clone())),
+            State::Waiting { track, .. } | State::Armed { track } => (Phase::Waiting, Some(track.clone())),
             State::Recording { track, .. } => (Phase::Recording, Some(track.clone())),
         };
         let level = std::mem::take(&mut self.level);
@@ -478,17 +514,28 @@ impl Passive {
             }
             return;
         }
+        // After the link Windows showed the song playing late, its position then behind the audio: 14 of 15 failed
+        // starts (14 to 20 Oct) first showed 0.5 s or more, none of 36 starts that showed less failed. A position
+        // ahead of the only start since is a song resumed where it was.
+        if self.requested
+            && self.starts.len() == 1
+            && position_ms <= frames_to_ms((self.frame - self.starts[0]) as usize, self.rate) as i64 + POSITION_MATCH_MS
+        {
+            self.late = None;
+            self.start_recording(track, self.starts[0], false, events);
+            return;
+        }
         self.late = None;
         // The audio may already be running: its clean start lies `position` ago.
         let target = self.frame as i64 - ms_to_frames(position_ms.max(0) as u64, self.rate) as i64;
         let tolerance = ms_to_frames(POSITION_MATCH_MS as u64, self.rate) as i64;
         match self.starts.iter().rev().find(|s| (**s as i64 - target).abs() <= tolerance) {
-            Some(&start) => self.start_recording(track, start, events),
+            Some(&start) => self.start_recording(track, start, true, events),
             None => self.state = State::Waiting { track, until: self.frame + ms_to_frames(WAIT_MS, self.rate) as u64, target },
         }
     }
 
-    fn start_recording(&mut self, track: Track, start: u64, events: &mut Vec<Event>) {
+    fn start_recording(&mut self, track: Track, start: u64, synced: bool, events: &mut Vec<Event>) {
         let expected = ms_to_frames(track.duration_ms, self.rate);
         let mut samples = Vec::with_capacity(expected * self.channels);
         let first = (start - self.ring_first) as usize;
@@ -498,10 +545,11 @@ impl Passive {
         let (off_grid, off_span) = (off.len(), off.first().zip(off.last()).map(|(a, b)| (*a, *b)));
         // A start belongs to exactly one track.
         self.starts.retain(|s| *s > start);
+        self.requested = false;
         events.push(Event::Started(track.clone()));
         let complete = samples.len() >= (expected + self.end_search()) * self.channels;
         let tail_empty = vec![false; (samples.len() / self.channels).saturating_sub(expected)];
-        self.state = State::Recording { track, expected, samples, off_grid, off_span, tail_off, tail_empty, gap: None, start, jump: None };
+        self.state = State::Recording { track, expected, samples, off_grid, off_span, tail_off, tail_empty, gap: None, start, jump: None, synced };
         if complete {
             self.complete(events);
         }
@@ -728,23 +776,44 @@ mod tests {
     }
 
     #[test]
-    fn a_start_before_the_player_was_told_to_start_is_not_taken() {
-        let (old, new) = (track(1_000), Track { title: "Next".into(), ..track(1_000) });
-        let (_, raw) = master(ms_to_frames(1_000, RATE), 17);
+    fn an_armed_song_starts_with_the_sound_and_ignores_the_players_late_report() {
+        let new = Track { title: "Next".into(), ..track(6_000) };
+        let (orig, song) = master(ms_to_frames(6_000, RATE), 19);
         let mut p = Passive::new(RATE, 2, GAIN);
-        let mut ev = p.media(playing(&old, 0));
+        let mut ev = Vec::new();
+        silence(&mut p, 1_000, &mut ev);
+        p.arm(new.clone());
+        ev.extend(p.media(Media { playing: false, track: Some(new.clone()), position_ms: 12_400 }));
         silence(&mut p, 100, &mut ev);
-        feed(&mut p, &raw, &mut ev);
+        let second = ms_to_frames(1_000, RATE) * 2;
+        feed(&mut p, &song[..second], &mut ev);
+        assert!(ev.iter().any(|e| matches!(e, Event::Started(t) if t.title == "Next")), "{ev:?}");
+        // Seen: still paused at the old position, then playing from 0:00 4.4 s late.
+        ev.extend(p.media(Media { playing: false, track: Some(new.clone()), position_ms: 600 }));
+        feed(&mut p, &song[second..second * 4], &mut ev);
+        ev.extend(p.media(playing(&new, 0)));
+        feed(&mut p, &song[second * 4..], &mut ev);
         zeros(&mut p, 500, &mut ev);
-        feed(&mut p, &raw[..ms_to_frames(100, RATE) * 2], &mut ev); // the repeat plays for a moment
+        let done = ev.iter().find_map(|e| match e { Event::Completed { track, samples, .. } if track.title == "Next" => Some(samples), _ => None });
+        assert_eq!(done.expect("completed")[..], orig[..], "{ev:?}");
+    }
+
+    /// Measured (Windows): after the link Spotify showed the song playing 1.7 s after its sound began, at 0.6 s.
+    #[test]
+    fn after_the_link_the_first_start_is_the_songs_though_the_position_lags() {
+        let t = track(6_000);
+        let (orig, song) = master(ms_to_frames(6_000, RATE), 23);
+        let mut p = Passive::new(RATE, 2, GAIN);
+        let mut ev = Vec::new();
         silence(&mut p, 1_000, &mut ev);
         p.forget_starts();
-        ev.extend(p.media(playing(&new, 0)));
-        assert!(!ev.iter().any(|e| matches!(e, Event::Started(t) if t.title == "Next")), "{ev:?}");
         silence(&mut p, 100, &mut ev);
-        feed(&mut p, &raw, &mut ev);
+        let lag = ms_to_frames(2_300, RATE) * 2;
+        feed(&mut p, &song[..lag], &mut ev);
+        ev.extend(p.media(playing(&t, 600)));
+        feed(&mut p, &song[lag..], &mut ev);
         zeros(&mut p, 500, &mut ev);
-        assert!(ev.iter().any(|e| matches!(e, Event::Completed { track, end_proven: true, .. } if track.title == "Next")), "{ev:?}");
+        assert_eq!(completed(&ev).0[..], orig[..], "{ev:?}");
     }
 
     #[test]

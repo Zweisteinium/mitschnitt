@@ -60,6 +60,7 @@ pub struct QueueStatus {
     pub recorded_ms: u64,
     /// The player plays anything.
     pub playing: bool,
+    pub lagging: bool,
 }
 
 /// `raw.f32` (interleaved as captured, silent packets as zeros) and `events.tsv` (frame, kind, details); replayed by
@@ -312,11 +313,15 @@ struct QueueRun {
     stage: &'static str,
     /// What the player showed as last logged while a song starts: a failed start is explained by it.
     shown: (bool, Option<crate::passive::Track>),
+    track: Option<crate::passive::Track>,
 }
 
 impl QueueRun {
     fn log_stage(&mut self, media: Option<&crate::passive::Media>) -> Option<&'static str> {
         let stage = self.runner.stage();
+        if let Some(t) = media.and_then(|m| m.track.clone()) {
+            self.track = Some(t);
+        }
         if let Some(m) = media
             && matches!(stage, "Starting" | "Playing" | "Rewind")
             && self.shown != (m.playing, m.track.clone())
@@ -437,7 +442,7 @@ impl Session {
 
     fn attach(&mut self, queue: Queue) {
         self.detach(Outcome::Stalled { detail: "replaced by another list".into() });
-        self.queue = Some(QueueRun { queue, runner: Runner::new(Instant::now()), quiet: None, stage: "Idle", shown: (false, None) });
+        self.queue = Some(QueueRun { queue, runner: Runner::new(Instant::now()), quiet: None, stage: "Idle", shown: (false, None), track: None });
     }
 
     fn detach(&mut self, outcome: Outcome) {
@@ -458,13 +463,18 @@ impl Session {
         if let Ok(mut status) = run.queue.status.lock() {
             *status = QueueStatus::default();
         }
-        self.sync_repeat("Idle");
+        self.stage_changed("Idle");
     }
 
     fn act(&mut self, actions: &[Action], job: Option<&Job>) {
         for action in actions {
             if matches!(action, Action::Open | Action::Restart) {
                 self.passive.forget_starts();
+            }
+            if *action == Action::Play
+                && let Some(track) = self.queue.as_ref().and_then(|q| q.track.clone()).filter(|t| job.is_some_and(|j| crate::runner::matches(j, t).is_ok()))
+            {
+                self.passive.arm(track);
             }
             crate::log!("runner {action:?} {}", job.map(Job::label).unwrap_or_default());
             let result = match action {
@@ -668,12 +678,19 @@ impl Session {
         }
         let job = run.runner.job().cloned();
         if let Ok(mut s) = run.queue.status.lock() {
-            *s = QueueStatus { job: job.clone(), recording: run.runner.recording(), recorded_ms: self.passive.recorded_ms(), playing: media.playing };
+            *s = QueueStatus { job: job.clone(), recording: run.runner.recording(), recorded_ms: self.passive.recorded_ms(), playing: media.playing, lagging: run.runner.lagging() };
         }
         if let Some(stage) = changed {
-            self.sync_repeat(stage);
+            self.stage_changed(stage);
         }
         self.act(&actions, job.as_ref());
+    }
+
+    fn stage_changed(&mut self, stage: &'static str) {
+        if !matches!(stage, "Starting" | "Playing") {
+            self.passive.disarm();
+        }
+        self.sync_repeat(stage);
     }
 
     /// Repeat-one while a queue song records: no other title then follows early, and the player pauses before the
@@ -738,7 +755,7 @@ impl Session {
                 self.act(&actions, job.as_ref());
             }
             if let Some(stage) = changed {
-                self.sync_repeat(stage);
+                self.stage_changed(stage);
             }
             match event {
                 Event::Started(track) => {
@@ -798,7 +815,8 @@ impl Session {
 type Proof = (usize, Option<(usize, usize)>, bool);
 
 /// Only Linux is measured: there Spotify pauses after every song, and the end check needs that pause.
-// TODO(windows): measure the pause after songs and before a repeat on Windows, then prove the end there too.
+// TODO(windows): without repeat-one Spotify plays on into the next song: 37 of 104 ends had no silence within 50 ms.
+// Spotify offers repeat over SMTC (IsRepeatEnabled, 19 Oct); measure its pause before the repeat, then prove the end.
 const PROVES_END: bool = cfg!(target_os = "linux");
 
 struct Checked {
@@ -811,8 +829,9 @@ struct Checked {
     lossy: Option<Lossy>,
 }
 
-/// Off the grid in a share this small: a glitch (worth another try), not a lossy stream.
-const GLITCH_SHARE: f64 = 0.001;
+/// Lossy streams were 99.9 % off the grid; a stuttering start after quick skips was 0.2 % (Schleini, 28 Oct) and got
+/// uploaded as "lossy". Anything below this is a glitch, worth another try.
+const LOSSY_SHARE: f64 = 0.5;
 
 fn check(samples: Vec<i32>, (off_grid, off_span, end_proven): Proof, rate: u32, lossless: bool) -> Checked {
     let audio = Audio { rate, channels: CHANNELS as usize, bits: 24, samples };
@@ -821,7 +840,7 @@ fn check(samples: Vec<i32>, (off_grid, off_span, end_proven): Proof, rate: u32, 
     let mut report = analyze::analyze_with(&audio, exact || fade.is_some());
     let mut faded = None;
     let share = off_grid as f64 / audio.frames().max(1) as f64;
-    let stream = lossless && !exact && fade.is_none() && share > GLITCH_SHARE;
+    let stream = lossless && !exact && fade.is_none() && share > LOSSY_SHARE;
     let lossy = stream.then_some(Lossy::Stream);
     if !exact && lossless {
         let text = match fade {
@@ -896,17 +915,14 @@ fn finish(track: Track, tags: Tags, samples: Vec<i32>, proof: Proof, rate: u32, 
     }
 }
 
-/// Only exact recordings (or exact after the fade-in) are handed on for upload; damaged ones go to "Not taken".
+/// Exact recordings (or exact after the fade-in) and lossy streams are handed on for upload: Echolot rates a lossy one
+/// with its spectrum check, and a FLAC holds what arrived without a second lossy encode. Damaged ones go to "Not taken".
 #[allow(clippy::too_many_arguments)]
 fn finish_job(track: Track, tags: Tags, samples: Vec<i32>, proof: Proof, rate: u32, lossless: bool, settings: &Settings, notify: &Notify) -> Written {
     let mut checked = check(samples, proof, rate, lossless);
-    if checked.lossy == Some(Lossy::Stream) {
-        let detail = checked.report.issues.first().map(|i| i.text.clone()).unwrap_or_default();
-        notify(Update::Failed { track, error: format!("lossy, not kept: {detail}") });
-        return Written::Lossy { detail };
-    }
+    let stream = checked.lossy == Some(Lossy::Stream);
     // A short altered stretch is a glitch, not the stream: played again like a damaged one.
-    let glitch = lossless && !checked.exact && checked.faded.is_none() || checked.unproven_end;
+    let glitch = lossless && !checked.exact && checked.faded.is_none() && !stream || checked.unproven_end;
     let in_master = lossless && !glitch && checked.report.verdict == Severity::Corrupt && dropouts_in_master(&track, &mut checked);
     if checked.report.verdict == Severity::Corrupt || glitch {
         let detail = checked.report.issues.iter().filter(|i| i.severity == Severity::Corrupt || glitch).map(|i| i.text.as_str()).collect::<Vec<_>>().join("; ");
@@ -917,7 +933,7 @@ fn finish_job(track: Track, tags: Tags, samples: Vec<i32>, proof: Proof, rate: u
     }
     match output::write(&checked.audio, &tags, settings) {
         Ok(path) => {
-            let mut note = checked.faded.clone();
+            let mut note = checked.faded.clone().or_else(|| stream.then(|| checked.report.issues[0].text.clone()));
             if in_master {
                 let master = checked.report.issues.iter().filter(|i| i.text.starts_with("dropout in the master")).map(|i| i.text.as_str());
                 note = Some(note.as_deref().into_iter().chain(master).collect::<Vec<_>>().join("; "));
@@ -987,7 +1003,7 @@ mod tests {
     }
 
     #[test]
-    fn a_short_altered_stretch_is_a_glitch_and_a_mostly_altered_stream_is_lossy() {
+    fn a_short_altered_stretch_is_a_glitch_and_a_lossy_stream_is_handed_on() {
         let rate = 44_100;
         let samples: Vec<i32> = (0..rate as usize * 2 * 2).map(|i| ((i as f64 * 0.03).sin() * 4_000_000.0) as i32 | 1).collect();
         let dir = std::env::temp_dir().join(format!("mitschnitt-glitch-{}", std::process::id()));
@@ -998,8 +1014,7 @@ mod tests {
         let glitch = finish_job(track.clone(), Tags::default(), samples.clone(), (5, Some((44_100, 44_104)), true), rate, true, &settings, &notify);
         assert!(matches!(&glitch, Written::Corrupt { detail } if detail.contains("0:01.000")), "{glitch:?}");
         let lossy = finish_job(track, Tags::default(), samples, (60_000, Some((0, 88_199)), true), rate, true, &settings, &notify);
-        assert!(matches!(lossy, Written::Lossy { .. }));
-        assert!(!dir.join("Echolot").exists(), "nothing waits for an upload");
+        assert!(matches!(&lossy, Written::Saved { note: Some(n), .. } if n.starts_with("lossy stream")), "{lossy:?}");
         let _ = std::fs::remove_dir_all(dir);
     }
 

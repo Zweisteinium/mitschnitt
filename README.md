@@ -119,8 +119,8 @@ that might be a different edit.
 [Echolot](https://github.com/Zweisteinium/echolot) is my other project, a self-hosted music library that syncs your
 playlists and likes and keeps each song in the best quality it can get. Connected to it, Mitschnitt records the
 songs Echolot is still missing. It starts each one in Spotify, checks that the right song plays, records it and
-uploads it. EXACT and FINE recordings go up, and so do ones with a lossy master, which Echolot judges with its own
-spectrum check. A damaged recording is tried again, and a song Spotify only streams lossy is left out.
+uploads it. EXACT and FINE recordings go up, and so do lossy ones (a lossy master, or a song Spotify only streams
+lossy), which Echolot judges with its own spectrum check. A damaged recording is tried again.
 
 While a song records, Spotify is set to repeat it. The pause before the repeat proves where the song ends, even on
 gapless albums, and your repeat setting comes back afterwards. If crossfade is on, Mitschnitt hears it, pauses the

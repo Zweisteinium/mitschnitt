@@ -80,6 +80,7 @@
   {/if}
   {#if s.uploads > 0}<div class="muted small">Uploading {s.uploads}…</div>{/if}
 
+  {#if s.lagging}<div class="hint small">Spotify reports what plays 6 s or more late. Consider a restart.</div>{/if}
   {#if echolot.error || s.error}<div class="error small">{echolot.error ?? s.error}</div>{/if}
 
   {#if echolot.results.length > 0}
@@ -216,6 +217,10 @@
     letter-spacing: 0.06em;
     text-transform: uppercase;
     color: var(--muted);
+  }
+
+  .tag.bad {
+    color: var(--bad);
   }
 
   .song {

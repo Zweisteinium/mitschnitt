@@ -72,6 +72,7 @@ export type RecorderSnapshot = {
   done: number;
   total: number;
   paused: boolean;
+  lagging: boolean;
 };
 export type RecorderUpdate = { kind: "snapshot"; snapshot: RecorderSnapshot } | { kind: "song"; job: Track; result: string; detail: string; moved: [string, string | null] | null };
 type CardState = { snapshot: RecorderSnapshot; list: RecorderSnapshot | null; url: string; pairing: boolean };

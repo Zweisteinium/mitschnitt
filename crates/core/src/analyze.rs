@@ -66,10 +66,9 @@ pub fn analyze(a: &Audio) -> Report {
     report
 }
 
-/// Spotify fades some starts in: over 10 ms on Windows, over 10.9 to 12.2 ms on Linux (three starts from a link). Not
-/// every start: songs at full level from their first sample came out exact (Linux, 4 of 48 faded, trigger unknown).
-/// Longer is damage, not a fade.
-// TODO(windows): this also widens the limit there from 10 ms; check that Windows starts never fade in for longer.
+/// Spotify fades some starts in: over 10 ms on Windows (14 of 14 fades, 14 to 19 Oct), over 10.9 to 12.2 ms on Linux
+/// (three starts from a link). Not every start: songs at full level from their first sample came out exact (Linux, 4
+/// of 48 faded; Windows, 14 of 167; trigger unknown). Longer is damage, not a fade.
 pub fn fade_in_frames(rate: u32) -> usize {
     rate as usize * 15 / 1000
 }

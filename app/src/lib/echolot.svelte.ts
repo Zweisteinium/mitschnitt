@@ -18,7 +18,7 @@ export const resultText: Record<string, string> = {
   failed: "failed",
 };
 
-const empty: RecorderSnapshot = { connection: "", user: "", host: "", device: "", state: null, detail: "", session: null, current: null, uploads: 0, error: null, done: 0, total: 0, paused: false };
+const empty: RecorderSnapshot = { connection: "", user: "", host: "", device: "", state: null, detail: "", session: null, current: null, uploads: 0, error: null, done: 0, total: 0, paused: false, lagging: false };
 
 class Echolot {
   snapshot = $state<RecorderSnapshot>(empty);

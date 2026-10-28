@@ -24,12 +24,18 @@ const SEEK_WAIT: Duration = Duration::from_secs(1);
 const POSITION_SETTLE: Duration = Duration::from_millis(1_500);
 const LENGTH_TOLERANCE_MS: u64 = 2_000;
 const BUSY_TIMEOUT: Duration = Duration::from_secs(10);
+/// From the link to playing (Windows, 220 starts, 14 to 19 Oct): mostly under 3 s, single ones up to 6.9 s. Two or more
+/// in a row at 6 s or more (up to 16.9 s) came in four phases only, which held 4 of the 6 clusters of failed starts.
+/// Cause unknown: the last phase began after Spotify sat idle for 75 min, 2.3 h after it was started. With the screen
+/// locked the median was 6.4 s (7 links, 20 Oct), unlocked 1.9 s (45).
+const SLOW_START: Duration = Duration::from_secs(6);
 /// A song picked in Spotify while one records: its audio stopped 0.15 s before Spotify showed it (Linux), so the
 /// stall can arrive first. Wait this long for the player to show whether the user took over.
-// TODO(windows): measured on Linux only.
+// TODO(windows): measured on Linux only; no stall came in Windows runs (14 to 19 Oct).
 const STALL_WAIT: Duration = Duration::from_millis(500);
 /// An album may start one track off: next, then back past the original to the previous one.
 const CORRECTIONS: [Action; 3] = [Action::Next, Action::Previous, Action::Previous];
+pub const NOT_STARTED: &str = "Spotify didn't start it";
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Job {
@@ -73,9 +79,8 @@ pub enum Action {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Outcome {
-    /// `note` explains anything not bit-exact (the player's fade-in).
+    /// `note` explains anything not bit-exact (the player's fade-in, a lossy stream).
     Recorded { file: PathBuf, note: Option<String> },
-    LossyOnly { detail: String },
     WrongSong { detail: String },
     TookOver { detail: String },
     /// Buffering, a glitch, no clean start: worth another try.
@@ -92,7 +97,6 @@ pub enum Outcome {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Written {
     Saved { file: PathBuf, note: Option<String> },
-    Lossy { detail: String },
     /// Damaged: never uploaded, worth another try.
     Corrupt { detail: String },
     Failed { error: String },
@@ -118,11 +122,12 @@ pub struct Runner {
     stage: Stage,
     first: bool,
     done: Vec<(Job, Outcome)>,
+    slow_starts: u32,
 }
 
 impl Runner {
     pub fn new(now: Instant) -> Runner {
-        Runner { stage: Stage::Idle { since: now }, first: true, done: Vec::new() }
+        Runner { stage: Stage::Idle { since: now }, first: true, done: Vec::new(), slow_starts: 0 }
     }
 
     pub fn ready(&self, now: Instant) -> bool {
@@ -151,6 +156,10 @@ impl Runner {
 
     pub fn recording(&self) -> bool {
         matches!(self.stage, Stage::Recording { .. })
+    }
+
+    pub fn lagging(&self) -> bool {
+        self.slow_starts >= 2
     }
 
     pub fn writing(&self) -> bool {
@@ -265,9 +274,11 @@ impl Runner {
                     }
                     let (job, retried) = (job.clone(), *retried);
                     self.stage = Stage::Rewind { job, since: now, retried, seeked: false };
-                    return Vec::new();
+                    // Seen: it started on its own 0.6 s later.
+                    return vec![Action::Pause];
                 }
-                let showing = media.track.as_ref().filter(|_| media.playing);
+                // Windows showed the new title with the previous song's length (seen twice).
+                let showing = media.track.as_ref().filter(|t| media.playing && (matches(job, t).is_ok() || !same_title(job, t)));
                 let Some(track) = showing.filter(|t| wrong.as_ref() != Some(*t)) else {
                     if now.duration_since(*at) < if wrong.is_some() { CORRECTION_TIMEOUT } else { *timeout } {
                         return Vec::new();
@@ -277,7 +288,7 @@ impl Runner {
                     if let Some(w) = wrong.clone() {
                         return self.correct(job, w, now);
                     }
-                    return self.finish(job, Outcome::Failed { detail: "Spotify didn't start it".into() }, now, true);
+                    return self.finish(job, Outcome::Failed { detail: NOT_STARTED.into() }, now, true);
                 };
                 if media.position_ms > MAX_START_POSITION_MS && wrong.is_none() && *corrections == 0 {
                     // Beyond the start for longer than a stale position lasts: the player resumed the song somewhere.
@@ -298,6 +309,9 @@ impl Runner {
                 }
                 *late = None;
                 if matches(job, track).is_ok() {
+                    if *timeout == START_TIMEOUT && *corrections == 0 && !*rewound {
+                        self.slow_starts = if now.duration_since(*at) >= SLOW_START { self.slow_starts + 1 } else { 0 };
+                    }
                     let (job, retried) = (job.clone(), *retried);
                     self.stage = Stage::Playing { job, at: now, retried };
                     return Vec::new();
@@ -391,7 +405,6 @@ impl From<Written> for Outcome {
     fn from(result: Written) -> Outcome {
         match result {
             Written::Saved { file, note } => Outcome::Recorded { file, note },
-            Written::Lossy { detail } => Outcome::LossyOnly { detail },
             Written::Corrupt { detail } => Outcome::Stalled { detail },
             Written::Failed { error } => Outcome::Failed { detail: error },
         }
@@ -422,10 +435,14 @@ fn base_title(s: &str) -> String {
     norm(cut.map_or(out.as_str(), |i| &out[..i]))
 }
 
+fn same_title(job: &Job, track: &Track) -> bool {
+    norm(&job.title) == norm(&track.title) || !base_title(&job.title).is_empty() && base_title(&job.title) == base_title(&track.title)
+}
+
 /// The player shows the job's song: the title (additions tolerated), one of the artists, the length within 2 s.
 pub fn matches(job: &Job, track: &Track) -> Result<(), String> {
     let (a, b) = (norm(&job.title), norm(&track.title));
-    if a != b && (base_title(&job.title).is_empty() || base_title(&job.title) != base_title(&track.title)) {
+    if !same_title(job, track) {
         return Err(format!("wrong song: \"{}\"", track.title));
     }
     if job.duration_ms > 0 && track.duration_ms.abs_diff(job.duration_ms) > LENGTH_TOLERANCE_MS {
@@ -542,6 +559,16 @@ mod tests {
         assert!(r.tick(t + Duration::from_secs(2), &playing(&right, 50)).is_empty());
         r.event(t + Duration::from_secs(2), &Event::Started(right));
         assert!(r.recording());
+    }
+
+    #[test]
+    fn the_title_with_the_previous_songs_length_is_waited_for() {
+        let t = Instant::now();
+        let mut r = Runner::new(t - GAP);
+        r.assign(job(), t, &Media::default());
+        assert!(r.tick(t + Duration::from_secs(1), &playing(&track("Feel It", "NYCO", 150_458), 100)).is_empty());
+        assert!(r.tick(t + Duration::from_secs(3), &playing(&track("Feel It", "NYCO", 225_000), 2_100)).is_empty());
+        assert_eq!(r.stage(), "Playing");
     }
 
     #[test]
@@ -681,7 +708,7 @@ mod tests {
         r.assign(job(), t, &Media::default());
         let resumed = Media { playing: false, track: Some(song.clone()), position_ms: 9_700 };
         assert!(r.tick(t + Duration::from_secs(1), &resumed).is_empty());
-        assert!(r.tick(t + Duration::from_millis(2_600), &resumed).is_empty());
+        assert_eq!(r.tick(t + Duration::from_millis(2_600), &resumed), vec![Action::Pause], "it may still start on its own");
         assert_eq!(r.tick(t + Duration::from_millis(3_900), &resumed), vec![Action::Restart]);
         assert_eq!(r.tick(t + Duration::from_millis(4_000), &Media { position_ms: 0, ..resumed }), vec![Action::Play]);
     }

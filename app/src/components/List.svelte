@@ -29,6 +29,7 @@
   {/if}
   <p class="muted small" title={folder}>Recordings wait in the Echolot folder for Echolot's upload.</p>
 
+  {#if l.lagging}<p class="warn small">Spotify reports what plays 6 s or more late. Consider a restart.</p>{/if}
   {#if l.error}<div class="error small">{l.error}</div>{/if}
 
   {#if echolot.listResults.length > 0}
