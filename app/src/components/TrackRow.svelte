@@ -17,7 +17,7 @@
       {#if note}<span class="muted">{note}</span>{/if}
       {#if facts}<span class="facts mono">{facts}</span>{/if}
       <span class="info" tabindex="0" role="button" aria-label="Details">
-        i
+        <svg viewBox="0 0 14 14" aria-hidden="true"><circle cx="7" cy="4.1" r="0.95" /><rect x="6.2" y="5.9" width="1.6" height="4.6" rx="0.8" /></svg>
         <span class="card" role="tooltip">
           {#if card.findings.length}
             <span class="findings">{#each card.findings as line}<span>{line}</span>{/each}</span>
@@ -98,8 +98,13 @@
     border: 1px solid var(--muted);
     border-radius: 50%;
     color: var(--muted);
-    font: italic 600 9px/1 serif;
     cursor: help;
+  }
+
+  .info > svg {
+    width: 12px;
+    height: 12px;
+    fill: currentColor;
   }
 
   .info:hover,

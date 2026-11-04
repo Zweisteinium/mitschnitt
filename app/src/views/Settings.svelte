@@ -5,11 +5,18 @@
   import { session } from "../lib/session.svelte";
 
   const s = $derived(session.settings);
-  const formats: { value: Format; label: string; note: string }[] = [
-    { value: "flac", label: "FLAC", note: "lossless, compressed, tagged – 16-bit for 16-bit masters, else 24-bit; lossy recordings as MP3" },
-    { value: "wav", label: "WAV", note: "lossless, uncompressed, no tags – 16-bit for 16-bit masters, else 24-bit; lossy recordings as MP3" },
-    { value: "mp3", label: "MP3", note: "320 kbit/s, tagged – lossy, encoded from the verified recording" },
+  type Choice = { value: Format; label: string; note: string; m4a?: boolean };
+  const losslessFormats: Choice[] = [
+    { value: "flac", label: "FLAC", note: "Every sample as it arrived – 16-bit for 16-bit masters, else 24-bit. Plays almost everywhere but Apple Music." },
+    { value: "alac", label: "ALAC", note: "Lossless like FLAC, as .m4a for Apple Music and iPhone – by Windows' own encoder.", m4a: true },
   ];
+  const lossyFormats: Choice[] = [
+    { value: "flac", label: "FLAC", note: "Keeps the stream exactly as it arrived, about four times the size of Opus." },
+    { value: "opus", label: "Opus", note: "256 kbit/s – the best sound per size. Plays in VLC, foobar2000, browsers and on Android; not in Apple Music." },
+    { value: "aac", label: "AAC", note: "192 kbit/s .m4a – plays everywhere, Apple and car stereos too. Windows' own encoder.", m4a: true },
+    { value: "mp3", label: "MP3", note: "320 kbit/s – plays on anything, the weakest sound of these at its size." },
+  ];
+  const extOf: Record<Format, string> = { flac: "flac", alac: "m4a", opus: "opus", aac: "m4a", mp3: "mp3" };
 
   const sample = { artist: "Daft Punk", title: "Digital Love", album: "Discovery" };
   /** Saved when the field is left. */
@@ -17,7 +24,7 @@
   const preview = $derived.by(() => {
     if (!s) return "";
     const filled = (draft ?? s.template).split("/").map((part) => part.replaceAll("{artist}", sample.artist).replaceAll("{title}", sample.title).replaceAll("{album}", sample.album));
-    return `${filled.join(" / ")}.${s.format}`;
+    return `${filled.join(" / ")}.${extOf[s.lossless_format]}`;
   });
 
   function set<K extends keyof Settings>(key: K, value: Settings[K]) {
@@ -25,6 +32,19 @@
     session.save();
   }
 </script>
+
+{#snippet choose(settings: Settings, key: "lossless_format" | "lossy_format", name: string, choices: Choice[])}
+  <div class="field">
+    <span class="name mono">{name}</span>
+    <div class="seg">
+      {#each choices as f}
+        {@const off = f.m4a && !session.platform?.m4a}
+        <button class:on={settings[key] === f.value} disabled={off} title={off ? "Windows only: it has the encoder built in" : undefined} onclick={() => set(key, f.value)}>{f.label}</button>
+      {/each}
+    </div>
+    <span class="note muted">{choices.find((f) => f.value === settings[key])?.note}</span>
+  </div>
+{/snippet}
 
 {#if s}
   <div class="grid">
@@ -37,15 +57,14 @@
         </div>
       </label>
 
-      <div class="field">
-        <span class="name mono">Format</span>
-        <div class="seg">
-          {#each formats as f}
-            <button class:on={s.format === f.value} onclick={() => set("format", f.value)}>{f.label}</button>
-          {/each}
-        </div>
-        <span class="note muted">{formats.find((f) => f.value === s.format)?.note}</span>
-      </div>
+      {@render choose(s, "lossless_format", "Lossless songs", losslessFormats)}
+      {@render choose(s, "lossy_format", "Lossy songs", lossyFormats)}
+      {#if s.lossy_format !== "flac"}
+        <p class="info">
+          Spotify streams these lossy already, or their master was made from a lossy file. Saving them as {lossyFormats.find((f) => f.value === s.lossy_format)?.label} encodes them a second time:
+          not audible, but no longer exactly what arrived. FLAC keeps them exactly. Echolot always gets FLAC.
+        </p>
+      {/if}
 
       <label class="field">
         <span class="name mono">File name</span>
@@ -62,7 +81,7 @@
         <span class="note mono preview">→ {preview}</span>
       </label>
 
-      <p class="muted rate">Sample rate: original (no resampling – required for bit-exact files).</p>
+      <p class="muted rate">Sample rate: original (no resampling – required for bit-exact files). Opus is always 48 kHz.</p>
       <div class="log">
         <span class="muted">What happened while listening, for tracking down problems.</span>
         <button class="btn" onclick={() => api.openLog()}>Show log</button>
@@ -236,8 +255,23 @@
     font-weight: 700;
   }
 
+  .seg button:disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
+
   .note {
     font-size: 12px;
+  }
+
+  .info {
+    margin: -4px 0 14px;
+    padding: 8px 10px;
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--cyan);
+    border: 1px solid var(--line);
+    background: rgba(34, 211, 238, 0.06);
   }
 
   code {

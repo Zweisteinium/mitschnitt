@@ -163,7 +163,10 @@ fn listen(app: String, dry: bool, trace: Option<PathBuf>) -> ExitCode {
                     Phase::Recording => "RECORDING",
                 };
                 let peak = status.level[0].max(status.level[1]);
-                let title = status.track.map(|t| format!("{} - {}", t.artist, t.title)).unwrap_or_default();
+                let mut title = status.track.map(|t| format!("{} - {}", t.artist, t.title)).unwrap_or_default();
+                if let Some(volume) = grid.volume {
+                    title = format!("player volume {:.1} %  {title}", volume * 100.0);
+                }
                 println!(
                     "{phase} exact24 {:>6.2} %  16-bit grid {:>6.2} %  peak {:>6.1} dB  {title}",
                     grid.bit24 * 100.0,
@@ -185,7 +188,7 @@ fn listen(app: String, dry: bool, trace: Option<PathBuf>) -> ExitCode {
             Update::Exists { track, file } => println!("--- {} - {}: already recorded ({file})", track.artist, track.title),
             Update::Failed { track, error } => println!("!!! {} - {}: {error}", track.artist, track.title),
             Update::KeyBlocked { count } => println!("--- media key blocked to protect the recording ({count} so far)"),
-            Update::MonitorVolume { .. } => {}
+            Update::MonitorVolume { .. } | Update::Player { .. } => {}
             Update::MonitorMuted { muted } => println!("--- monitor {}", if muted { "muted: output device changed" } else { "unmuted" }),
             Update::Stopped { error: e } => {
                 error = e;

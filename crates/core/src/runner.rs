@@ -9,7 +9,7 @@ use serde::Serialize;
 
 use crate::passive::{Event, Media, Reason, Track};
 
-const GAP: Duration = Duration::from_millis(1_200);
+pub(crate) const GAP: Duration = Duration::from_millis(1_200);
 const START_TIMEOUT: Duration = Duration::from_secs(12);
 /// The player may still be launching.
 const FIRST_START_TIMEOUT: Duration = Duration::from_secs(25);
@@ -18,8 +18,8 @@ const CORRECTION_TIMEOUT: Duration = Duration::from_secs(4);
 const SOUND_TIMEOUT: Duration = Duration::from_secs(6);
 const MAX_START_POSITION_MS: i64 = 3_000;
 /// Play once the seek to 0:00 shows, or after `SEEK_WAIT`: seek and play at once resumed where it was for a moment.
-const SEEKED_MS: i64 = 1_000;
-const SEEK_WAIT: Duration = Duration::from_secs(1);
+pub(crate) const SEEKED_MS: i64 = 1_000;
+pub(crate) const SEEK_WAIT: Duration = Duration::from_secs(1);
 /// A new song may briefly show the previous position.
 const POSITION_SETTLE: Duration = Duration::from_millis(1_500);
 const LENGTH_TOLERANCE_MS: u64 = 2_000;

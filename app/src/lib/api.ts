@@ -2,8 +2,9 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
 export type Track = { title: string; artist: string; album: string; duration_ms: number };
-/** `grid.bit24`: share of the audio arriving as exact 24-bit values (1 = untouched lossless source). */
-export type Status = { phase: "idle" | "waiting" | "recording"; track: Track | null; recorded_ms: number; level: [number, number]; rms: [number, number]; grid: { bit24: number } | null };
+/** `grid.bit24`: share of the audio arriving as exact 24-bit values (1 = untouched lossless source). `grid.volume`: an
+ * exact 16-bit master arrives scaled by it (the player's volume below maximum). */
+export type Status = { phase: "idle" | "waiting" | "recording"; track: Track | null; recorded_ms: number; level: [number, number]; rms: [number, number]; grid: { bit24: number; volume: number | null } | null };
 export type Severity = "info" | "altered" | "corrupt";
 export type Master = "bit16_exact" | "bit16_partly" | "bit24";
 /** Lossy content: streamed lossy, or a lossless stream of a master made from a lossy file. */
@@ -12,9 +13,10 @@ export type Lossy = "stream" | "source";
 export type Update =
   | { kind: "status"; status: Status }
   | { kind: "started"; track: Track; cover: string | null }
+  | { kind: "player"; track: Track | null; playing: boolean; position_ms: number; cover: string | null }
   | { kind: "dropped"; track: Track; message: string }
   | { kind: "exists"; track: Track; file: string }
-  | { kind: "saved"; track: Track; file: string | null; size: number; verdict: Severity; master: Master; exact: boolean; faded: boolean; lossy: Lossy | null; issues: string[]; echolot: boolean; frames: number; peak_dbfs: number | null }
+  | { kind: "saved"; track: Track; file: string | null; size: number; format: Format; verdict: Severity; master: Master; exact: boolean; faded: boolean; lossy: Lossy | null; issues: string[]; echolot: boolean; frames: number; peak_dbfs: number | null }
   | { kind: "failed"; track: Track; error: string }
   | { kind: "key_blocked" }
   | { kind: "monitor_muted"; muted: boolean }
@@ -24,10 +26,13 @@ export type Update =
 export type Source = { id: string; name: string; running: boolean; playing: boolean; title: string; artist: string };
 export type SourceInfo = { app: string; device: string; rate: number };
 
-export type Format = "flac" | "wav" | "mp3";
+export type Format = "flac" | "alac" | "opus" | "aac" | "mp3";
 export type Settings = {
   out_dir: string;
-  format: Format;
+  /** Songs that arrive bit-exact. */
+  lossless_format: Format;
+  /** Lossy streams and lossy masters: a lossy format encodes them a second time. */
+  lossy_format: Format;
   template: string;
   keep_flagged: boolean;
   skip_existing: boolean;
@@ -37,7 +42,7 @@ export type Settings = {
   echolot_url: string;
 };
 
-export type Platform = { os: string; monitor: boolean; media_keys: boolean; gain: number };
+export type Platform = { os: string; monitor: boolean; media_keys: boolean; gain: number; m4a: boolean };
 
 export type CheckState = "ok" | "warn" | "bad" | "check";
 export type Check = { id: string; title: string; state: CheckState; detail: string; fix: string | null };
@@ -77,7 +82,7 @@ export type RecorderSnapshot = {
 export type RecorderUpdate = { kind: "snapshot"; snapshot: RecorderSnapshot } | { kind: "song"; job: Track; result: string; detail: string; moved: [string, string | null] | null };
 type CardState = { snapshot: RecorderSnapshot; list: RecorderSnapshot | null; url: string; pairing: boolean };
 /** `at`: Unix ms. `result`: Echolot's answer to the upload. */
-export type HistoryRecord = { at: number; track: Track; file: string; size: number; verdict: Severity; master: Master; exact: boolean; faded: boolean; lossy: Lossy | null; echolot: boolean; result: string | null; issues: string[]; frames: number | null; peak_dbfs: number | null; exists: boolean };
+export type HistoryRecord = { at: number; track: Track; file: string; size: number; format: Format | null; verdict: Severity; master: Master; exact: boolean; faded: boolean; lossy: Lossy | null; echolot: boolean; result: string | null; issues: string[]; frames: number | null; peak_dbfs: number | null; exists: boolean };
 
 export const api = {
   sources: () => invoke<Source[]>("sources"),
@@ -85,6 +90,7 @@ export const api = {
   listening: () => invoke<SourceInfo | null>("listening"),
   stop: () => invoke<void>("stop"),
   stopAfterTrack: () => invoke<void>("stop_after_track"),
+  recordFromStart: () => invoke<void>("record_from_start"),
   release: () => invoke<void>("release"),
   unmuteMonitor: () => invoke<void>("unmute_monitor"),
   setMonitorVolume: (volume: number) => invoke<void>("set_monitor_volume", { volume }),

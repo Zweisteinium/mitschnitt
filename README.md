@@ -29,11 +29,12 @@ Large parts of the code were written with AI assistance (Claude Code).
 - **Labeled.** Each file is decoded again, compared with the recording and gets a label with the reason.
   - **EXACT.** Every sample with sound is bit-exact.
   - **FINE.** Bit-exact apart from Spotify's fade-in at the very start (see [Limits](#limits)).
-  - **LOSSY.** The song only exists lossy, as Spotify's stream or in its master. Saved as MP3 when you record
-    yourself.
+  - **LOSSY.** The song only exists lossy, as Spotify's stream or in its master. Saved in your format for lossy
+    songs when you record yourself (Opus by default, FLAC keeps it exactly as it arrived).
   - **ALT.** Something isn't original, or the end couldn't be proven.
   - **BAD.** Damaged, for example by a dropout.
-- **Formats and tags.** FLAC in 16 or 24 bit as the source was, WAV or MP3. Tags and cover are filled in, file names
+- **Formats and tags.** Lossless songs as FLAC or ALAC in 16 or 24 bit as the source was, lossy ones as FLAC, Opus,
+  AAC or MP3 (ALAC and AAC with Windows' own encoders). Tags and cover are filled in, file names
   follow your template, and songs you already have are skipped.
 - **Auto setup.** Checks [Spotify's settings](#spotify-settings). On Windows it also installs VB-Cable and routes
   Spotify into it.
@@ -87,7 +88,7 @@ arrive bit-exact, a banner asks you to look at these settings.
 ## Good to know
 
 - **Spotify Premium is recommended.** Only Premium streams lossless, which means the file holds exactly the audio
-  Spotify sends. Without it, Mitschnitt still records, labels the file LOSSY and saves it as MP3.
+  Spotify sends. Without it, Mitschnitt still records, labels the file LOSSY and saves it in your format for lossy songs.
 - **Recording takes as long as the song.** A 3 minute song takes 3 minutes.
 - **Play songs from the start and let them finish.** A song you skip, seek in or pause isn't saved, so no broken file
   ends up in your library.

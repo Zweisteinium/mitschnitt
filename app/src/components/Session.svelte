@@ -8,7 +8,7 @@
   function summary(e: Entry): Quality {
     if (e.outcome === "exists") return { tone: "muted", tag: "have", text: "Already have it" };
     if (e.outcome !== "saved") return e.outcome === "dropped" ? { tone: "muted", tag: "skip", text: headline(e.message) } : { tone: "bad", tag: "fail", text: headline(e.message) };
-    const q = quality(e.verdict, e.master, e.exact, e.faded, e.lossy, e.file, e.issues);
+    const q = quality(e.verdict, e.master, e.exact, e.faded, e.lossy, e.file, e.issues, e.format);
     return e.file === null ? { ...q, text: `${q.text} · removed` } : q;
   }
 

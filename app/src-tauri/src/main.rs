@@ -49,8 +49,8 @@ async fn start(app: String, handle: AppHandle, state: State<'_, App>) -> Result<
 }
 
 pub(crate) fn notify(handle: &AppHandle, update: Update) {
-    if let Update::Saved { track, file: Some(file), size, verdict, master, exact, faded, lossy, issues, echolot, frames, peak_dbfs } = &update {
-        let record = Record { at: history::now_ms(), track: track.clone(), file: file.clone(), size: *size, verdict: *verdict, master: *master, exact: *exact, faded: *faded, lossy: *lossy, echolot: *echolot, result: None, issues: issues.clone(), frames: Some(*frames), peak_dbfs: *peak_dbfs, exists: true };
+    if let Update::Saved { track, file: Some(file), size, format, verdict, master, exact, faded, lossy, issues, echolot, frames, peak_dbfs } = &update {
+        let record = Record { at: history::now_ms(), track: track.clone(), file: file.clone(), size: *size, format: Some(*format), verdict: *verdict, master: *master, exact: *exact, faded: *faded, lossy: *lossy, echolot: *echolot, result: None, issues: issues.clone(), frames: Some(*frames), peak_dbfs: *peak_dbfs, exists: true };
         history::add(&history::default_path(), &record);
     }
     let _ = handle.emit("update", &update);
@@ -84,6 +84,14 @@ fn listening(state: State<'_, App>) -> Result<Option<SourceInfo>, String> {
 fn stop_after_track(state: State<'_, App>) -> Result<(), String> {
     if let Some(engine) = lock(&state.engine)?.as_ref() {
         engine.stop_after_track();
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn record_from_start(state: State<'_, App>) -> Result<(), String> {
+    if let Some(engine) = lock(&state.engine)?.as_ref() {
+        engine.record_from_start();
     }
     Ok(())
 }
@@ -155,11 +163,13 @@ struct Platform {
     monitor: bool,
     media_keys: bool,
     gain: f32,
+    /// AAC and ALAC (Windows' encoders).
+    m4a: bool,
 }
 
 #[tauri::command]
 fn platform() -> Platform {
-    Platform { os: std::env::consts::OS, monitor: mitschnitt_core::monitor::SUPPORTED, media_keys: mitschnitt_core::guard::SUPPORTED, gain: engine::GAIN }
+    Platform { os: std::env::consts::OS, monitor: mitschnitt_core::monitor::SUPPORTED, media_keys: mitschnitt_core::guard::SUPPORTED, gain: engine::GAIN, m4a: mitschnitt_core::m4a::SUPPORTED }
 }
 
 fn main() {
@@ -206,6 +216,7 @@ fn main() {
             start,
             stop,
             stop_after_track,
+            record_from_start,
             listening,
             release,
             unmute_monitor,

@@ -5,7 +5,7 @@ FROM node:22-bookworm-slim AS node
 FROM rust:1.92-bookworm
 COPY --from=node /usr/local /usr/local
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        file libayatana-appindicator3-dev libclang-dev libpipewire-0.3-dev librsvg2-dev libwebkit2gtk-4.1-dev \
+        cmake file libayatana-appindicator3-dev libclang-dev libpipewire-0.3-dev librsvg2-dev libwebkit2gtk-4.1-dev \
         libxdo-dev pkg-config \
     && rm -rf /var/lib/apt/lists/*
 ADD --chmod=755 https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage /usr/local/bin/appimagetool

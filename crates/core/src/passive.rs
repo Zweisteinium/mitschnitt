@@ -142,20 +142,44 @@ pub struct Status {
 pub struct Grid {
     pub bit24: f32,
     pub bit16: f32,
+    /// The audio is an exact 16-bit master scaled by this: a volume below maximum in the player.
+    pub volume: Option<f32>,
 }
+
+/// Quiet values (in 16-bit steps) kept per status interval for [`volume_factor`].
+const QUIET_MAX: f32 = 400.0;
+const QUIET_KEPT: usize = 4_000;
 
 #[derive(Default)]
 struct GridCount {
     frames: u64,
     off24: u64,
     off16: u64,
+    quiet: Vec<f32>,
 }
 
 impl GridCount {
     fn take(&mut self) -> Option<Grid> {
         let c = std::mem::take(self);
-        (c.frames > 0).then(|| Grid { bit24: 1.0 - c.off24 as f32 / c.frames as f32, bit16: 1.0 - c.off16 as f32 / c.frames as f32 })
+        let bit16 = 1.0 - c.off16 as f32 / c.frames.max(1) as f32;
+        (c.frames > 0).then(|| Grid { bit24: 1.0 - c.off24 as f32 / c.frames as f32, bit16, volume: (bit16 < 0.99).then(|| volume_factor(&c.quiet)).flatten() })
     }
+}
+
+/// Spotify at 94 % volume (4 Nov) arrived as the 16-bit master × 0.9405 exactly: every value a whole multiple of the
+/// factor. A lossy stream or a 24-bit master fits no factor. Its halves and thirds fit too, so the largest one counts.
+fn volume_factor(quiet: &[f32]) -> Option<f32> {
+    const FIT: f32 = 0.98;
+    let fit = |values: &[f32], g: f32| values.iter().filter(|&&y| (y / g - (y / g).round()).abs() < 0.02).count() as f32 / values.len() as f32;
+    // Coarse on the smallest values, where a factor 0.00025 off still lands within the tolerance.
+    let small: Vec<f32> = quiet.iter().copied().filter(|y| y.abs() <= 40.0).collect();
+    // Loud music had 81 of them in half a second; 50 random values never fit by chance (4 % each).
+    if small.len() < 50 || quiet.len() < 500 {
+        return None;
+    }
+    let coarse = (100..1999).rev().map(|i| i as f32 / 2000.0).find(|&g| fit(&small, g) >= FIT)?;
+    let fine = (-50..=50).map(|i| coarse + i as f32 * 0.00001).max_by(|a, b| fit(quiet, *a).total_cmp(&fit(quiet, *b)))?;
+    (fit(quiet, fine) >= FIT && fine < 0.999).then_some(fine)
 }
 
 enum State {
@@ -288,6 +312,10 @@ impl Passive {
                 self.grid.frames += 1;
                 self.grid.off24 += off24 as u64;
                 self.grid.off16 += off16 as u64;
+                if off16 && self.grid.quiet.len() < QUIET_KEPT {
+                    let quiet = self.scratch.iter().map(|v| *v as f32 / 256.0).filter(|y| *y != 0.0 && y.abs() <= QUIET_MAX);
+                    self.grid.quiet.extend(quiet);
+                }
                 let initial = self.zero_from == 0 && !self.zero_silent && self.zero_run < ms_to_frames(MIN_INITIAL_SILENCE_MS, self.rate) as u64;
                 if self.zero_run >= min_silence && !initial {
                     let start = self.render_start.take().filter(|r| self.frame - r <= max_lead).unwrap_or(self.frame);
@@ -1016,6 +1044,27 @@ mod tests {
             ev.extend(interrupt(&mut p, &t));
             assert!(ev.iter().any(|e| matches!(e, Event::Dropped { reason: r, .. } if *r == reason)), "{reason:?}: {ev:?}");
         }
+    }
+
+    #[test]
+    fn spotify_below_full_volume_is_named_with_its_factor() {
+        // A quiet 16-bit master (values of a few hundred steps), as Spotify hands it over at `GAIN` times `volume`.
+        let at = |volume: f64, noise: bool| -> Option<f32> {
+            let mut p = Passive::new(RATE, 2, GAIN);
+            let raw: Vec<f32> = (0..RATE as i64 * 2)
+                .map(|i| {
+                    let m = ((i * 7919) % 601 - 300) as f64 + if noise { (i % 7) as f64 * 0.37 } else { 0.0 };
+                    (m * 256.0 * volume / 8_388_608.0 * GAIN as f64) as f32
+                })
+                .collect();
+            let mut ev = Vec::new();
+            feed(&mut p, &raw, &mut ev);
+            p.status().grid.and_then(|g| g.volume)
+        };
+        let found = at(0.9405, false).expect("measured on 4 Nov");
+        assert!((found - 0.9405).abs() < 0.0002, "{found}");
+        assert_eq!(at(1.0, false), None, "exact needs no factor");
+        assert_eq!(at(1.0, true), None, "a lossy stream fits none");
     }
 
     /// Don't Worry (2 Nov): its sound began 3.9 s after Spotify showed 0:00, which then ran 3.9 s ahead all song. That

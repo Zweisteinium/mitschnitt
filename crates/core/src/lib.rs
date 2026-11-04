@@ -11,6 +11,7 @@ pub mod history;
 pub mod log;
 pub mod media;
 pub mod monitor;
+mod ogg_opus;
 pub mod output;
 pub mod passive;
 pub mod platform;
@@ -22,7 +23,7 @@ pub mod settings;
 pub mod setup;
 pub mod spectrum;
 
-pub use platform::os::{desktop, guard, init_thread, power};
+pub use platform::os::{desktop, guard, init_thread, m4a, power};
 
 /// At most one decimal, none when it is zero: `12`, `31.5`, `-0.1`.
 pub fn number(x: f64) -> String {

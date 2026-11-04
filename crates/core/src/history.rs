@@ -21,6 +21,9 @@ pub struct Record {
     /// Where the file is now (a deleted file keeps its last place).
     pub file: String,
     pub size: u64,
+    /// What the file holds; older lines have none (their extension tells, .m4a didn't exist then).
+    #[serde(default)]
+    pub format: Option<crate::settings::Format>,
     pub verdict: Severity,
     pub master: Master,
     pub exact: bool,
@@ -122,6 +125,7 @@ mod tests {
             track: Track { title: title.into(), artist: "A".into(), album: String::new(), duration_ms: 1000 },
             file: file.into(),
             size: 1,
+            format: None,
             verdict: Severity::Info,
             master: Master::Bit24,
             exact: true,

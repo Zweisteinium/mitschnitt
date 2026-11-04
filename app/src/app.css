@@ -66,7 +66,7 @@ button {
   font-size: 12px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  transition: background 120ms, color 120ms;
+  transition: background 120ms, color 120ms, filter 120ms;
 }
 
 .btn:hover:not(:disabled) {
@@ -80,13 +80,20 @@ button {
   font-weight: 700;
 }
 
+/* Stays filled and only lightens, as the outlined ones do: the plain hover's tint would otherwise replace the gradient
+   (its selector weighs more). */
 .btn.primary:hover:not(:disabled) {
+  background: var(--edge);
   filter: brightness(1.1);
 }
 
 .btn.danger {
   border-color: rgba(244, 63, 94, 0.6);
   color: var(--rec);
+}
+
+.btn.danger:hover:not(:disabled) {
+  background: rgba(244, 63, 94, 0.1);
 }
 
 .btn:disabled {

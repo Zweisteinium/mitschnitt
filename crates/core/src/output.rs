@@ -6,7 +6,8 @@ use crate::audio::Audio;
 use crate::flac::{self, Tags};
 use crate::settings::{Format, Settings};
 
-const EXTENSIONS: [&str; 3] = ["flac", "wav", "mp3"];
+/// WAV: written by earlier versions.
+const EXTENSIONS: [&str; 5] = ["flac", "m4a", "opus", "mp3", "wav"];
 
 /// A recording of this track with the same name, in any format.
 pub fn existing(tags: &Tags, settings: &Settings) -> Option<PathBuf> {
@@ -14,24 +15,49 @@ pub fn existing(tags: &Tags, settings: &Settings) -> Option<PathBuf> {
     EXTENSIONS.iter().map(|ext| with_ext(&base, ext)).find(|p| p.exists())
 }
 
-pub fn write(audio: &Audio, tags: &Tags, settings: &Settings) -> Result<PathBuf, String> {
-    let ext = match settings.format {
-        Format::Flac => "flac",
-        Format::Wav => "wav",
-        Format::Mp3 => "mp3",
-    };
-    let path = unique_path(&settings.out_dir, &file_stem(&settings.template, tags), ext);
+pub fn write(audio: &Audio, tags: &Tags, settings: &Settings, format: Format) -> Result<PathBuf, String> {
+    let path = unique_path(&settings.out_dir, &file_stem(&settings.template, tags), format.ext());
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("folder {}: {e}", dir.display()))?;
     }
     // 16 bit when every sample lies on the 16-bit grid (a 16-bit master): lossless and smaller. Otherwise 24 bit.
     let out = is_16bit(audio).then(|| to_16bit(audio));
-    match settings.format {
-        Format::Flac => flac::write(&path, out.as_ref().unwrap_or(audio), tags)?,
-        Format::Wav => write_wav(&path, out.as_ref().unwrap_or(audio))?,
+    let exact = out.as_ref().unwrap_or(audio);
+    match format {
+        Format::Flac => flac::write(&path, exact, tags)?,
+        Format::Alac | Format::Aac => via_part(&path, "m4a.part", |part| {
+            crate::platform::os::m4a::write(part, exact, format == Format::Alac)?;
+            m4a_tags(part, tags)
+        })?,
+        Format::Opus => crate::ogg_opus::write(&path, audio, tags)?,
         Format::Mp3 => write_mp3(&path, audio, tags)?,
     }
     Ok(path)
+}
+
+/// iTunes-style tags, written into the finished file.
+fn m4a_tags(path: &Path, tags: &Tags) -> Result<(), String> {
+    use mp4ameta::{Data, FreeformIdent, Img};
+    let mut tag = mp4ameta::Tag::read_from_path(path).map_err(|e| format!("m4a tags: {e}"))?;
+    tag.set_title(&tags.title);
+    tag.set_artist(&tags.artist);
+    if !tags.album.is_empty() {
+        tag.set_album(&tags.album);
+    }
+    if !tags.album_artist.is_empty() {
+        tag.set_album_artist(&tags.album_artist);
+    }
+    if tags.track_number > 0 {
+        tag.set_track_number(tags.track_number as u16);
+    }
+    if let Some(cover) = &tags.cover {
+        tag.set_artwork(if cover.mime == "image/png" { Img::png(cover.data.clone()) } else { Img::jpeg(cover.data.clone()) });
+    }
+    for (key, value) in &tags.extra {
+        tag.set_data(FreeformIdent::new_borrowed("com.apple.iTunes", key), Data::Utf8(value.clone()));
+    }
+    tag.set_encoder("Mitschnitt");
+    tag.write_to_path(path).map_err(|e| format!("m4a tags: {e}"))
 }
 
 /// From the full-resolution samples.
@@ -109,13 +135,23 @@ pub fn data_url(mime: &str, data: &[u8]) -> String {
 
 /// The cover a recording carries, read from its tags only.
 pub fn cover_url(path: &Path) -> Option<String> {
-    if path.extension()? == "mp3" {
-        let tag = id3::Tag::read_from_path(path).ok()?;
-        let picture = tag.pictures().next()?;
-        return Some(data_url(&picture.mime_type, &picture.data));
+    match path.extension()?.to_str()? {
+        "mp3" => {
+            let tag = id3::Tag::read_from_path(path).ok()?;
+            let picture = tag.pictures().next()?;
+            Some(data_url(&picture.mime_type, &picture.data))
+        }
+        "m4a" => {
+            let tag = mp4ameta::Tag::read_from_path(path).ok()?;
+            let image = tag.artwork()?;
+            Some(data_url(if image.fmt == mp4ameta::ImgFmt::Png { "image/png" } else { "image/jpeg" }, image.data))
+        }
+        "opus" => crate::ogg_opus::cover(path).map(|(mime, data)| data_url(&mime, &data)),
+        _ => {
+            let picture = flac_codec::metadata::block::<_, flac_codec::metadata::Picture>(path).ok()??;
+            Some(data_url(&picture.media_type, &picture.data))
+        }
     }
-    let picture = flac_codec::metadata::block::<_, flac_codec::metadata::Picture>(path).ok()??;
-    Some(data_url(&picture.media_type, &picture.data))
 }
 
 /// The 24-bit capture holds a 16-bit master exactly.
@@ -129,27 +165,6 @@ fn to_16bit(audio: &Audio) -> Audio {
     let half = if shift > 0 { 1i64 << (shift - 1) } else { 0 };
     let samples = audio.samples.iter().map(|s| ((*s as i64 + half) >> shift).clamp(-32_768, 32_767) as i32).collect();
     Audio { rate: audio.rate, channels: audio.channels, bits: 16, samples }
-}
-
-fn write_wav(path: &Path, audio: &Audio) -> Result<(), String> {
-    let spec = hound::WavSpec {
-        channels: audio.channels as u16,
-        sample_rate: audio.rate,
-        bits_per_sample: audio.bits as u16,
-        sample_format: hound::SampleFormat::Int,
-    };
-    via_part(path, "wav.part", |part| {
-        let mut writer = hound::WavWriter::create(part, spec).map_err(|e| format!("wav: {e}"))?;
-        for s in &audio.samples {
-            writer.write_sample(*s).map_err(|e| format!("wav: {e}"))?;
-        }
-        writer.finalize().map_err(|e| format!("wav: {e}"))?;
-        let back: Result<Vec<i32>, _> = hound::WavReader::open(part).map_err(|e| format!("verify: {e}"))?.samples::<i32>().collect();
-        if back.map_err(|e| format!("verify: {e}"))? != audio.samples {
-            return Err("verify: written WAV differs from the recording".to_owned());
-        }
-        Ok(())
-    })
 }
 
 /// Only `/` in the template creates folders, so "AC/DC" stays one name.
@@ -209,40 +224,80 @@ mod tests {
     }
 
     #[test]
-    fn wav_round_trip_is_exact() {
-        let audio = Audio { rate: 44_100, channels: 2, bits: 24, samples: (0..20_000).map(|i| (i * 977 % 8_000_000) - 4_000_000).collect() };
-        let dir = std::env::temp_dir().join(format!("mitschnitt-wav-{}", std::process::id()));
-        let settings = Settings { out_dir: dir.clone(), format: Format::Wav, ..Settings::default() };
-        let path = write(&audio, &track(), &settings).unwrap();
-        let back: Vec<i32> = hound::WavReader::open(&path).unwrap().samples::<i32>().map(Result::unwrap).collect();
-        assert_eq!(back, audio.samples);
-        assert_eq!(existing(&track(), &settings), Some(path));
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
     fn a_dot_in_the_name_is_kept() {
         let dir = std::env::temp_dir().join(format!("mitschnitt-dot-{}", std::process::id()));
-        let settings = Settings { out_dir: dir.clone(), format: Format::Wav, ..Settings::default() };
+        let settings = Settings { out_dir: dir.clone(), ..Settings::default() };
         let tags = Tags { title: "Hell's River".into(), artist: "Abr.".into(), ..Tags::default() };
         let audio = Audio { rate: 44_100, channels: 2, bits: 16, samples: vec![0; 4] };
-        let names: Vec<_> = (0..2).map(|_| write(&audio, &tags, &settings).unwrap().file_name().unwrap().to_owned()).collect();
-        assert_eq!(names, ["Abr. - Hell's River.wav", "Abr. - Hell's River (2).wav"]);
+        let names: Vec<_> = (0..2).map(|_| write(&audio, &tags, &settings, Format::Flac).unwrap().file_name().unwrap().to_owned()).collect();
+        assert_eq!(names, ["Abr. - Hell's River.flac", "Abr. - Hell's River (2).flac"]);
+        assert_eq!(existing(&tags, &settings), Some(dir.join("Abr. - Hell's River.flac")));
         std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
     fn a_flacs_cover_is_read_back_from_its_metadata() {
         let dir = std::env::temp_dir().join(format!("mitschnitt-cover-{}", std::process::id()));
-        let settings = Settings { out_dir: dir.clone(), format: Format::Flac, ..Settings::default() };
-        // The smallest JPEG header that names its size: the writer leaves out an image it can't measure.
-        let jpeg = vec![0xFF, 0xD8, 0xFF, 0xC0, 0, 17, 8, 0, 64, 0, 64, 3, 1, 0x11, 0, 2, 0x11, 1, 3, 0x11, 1];
+        let settings = Settings { out_dir: dir.clone(), ..Settings::default() };
+        let jpeg = JPEG.to_vec();
         let tags = Tags { cover: Some(flac::Cover { mime: "image/jpeg", data: jpeg.clone() }), ..track() };
         let audio = Audio { rate: 44_100, channels: 2, bits: 24, samples: vec![256; 8_820] };
-        let path = write(&audio, &tags, &settings).unwrap();
+        let path = write(&audio, &tags, &settings, Format::Flac).unwrap();
         assert_eq!(cover_url(&path), Some(data_url("image/jpeg", &jpeg)));
-        let bare = write(&audio, &Tags { cover: None, ..tags }, &settings).unwrap();
+        let bare = write(&audio, &Tags { cover: None, ..tags }, &settings, Format::Flac).unwrap();
         assert_eq!(cover_url(&bare), None);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// The smallest JPEG header that names its size: the writers leave out an image they can't measure.
+    const JPEG: [u8; 21] = [0xFF, 0xD8, 0xFF, 0xC0, 0, 17, 8, 0, 64, 0, 64, 3, 1, 0x11, 0, 2, 0x11, 1, 3, 0x11, 1];
+
+    fn second_of_sound(bits: u32) -> Audio {
+        let samples = (0..88_200).map(|i| ((i as f64 * 0.05).sin() * 3e6) as i32 >> (24 - bits)).collect();
+        Audio { rate: 44_100, channels: 2, bits, samples }
+    }
+
+    #[test]
+    fn opus_ends_where_the_song_ends_and_carries_its_cover() {
+        let dir = std::env::temp_dir().join(format!("mitschnitt-opus-{}", std::process::id()));
+        let settings = Settings { out_dir: dir.clone(), ..Settings::default() };
+        let tags = Tags { cover: Some(flac::Cover { mime: "image/jpeg", data: JPEG.to_vec() }), ..track() };
+        let path = write(&second_of_sound(24), &tags, &settings, Format::Opus).unwrap();
+        let mut reader = ogg::PacketReader::new(std::fs::File::open(&path).unwrap());
+        let (mut end, mut decoded) = (0, Vec::new());
+        let mut decoder = opus::Decoder::new(48_000, opus::Channels::Stereo).unwrap();
+        while let Some(packet) = reader.read_packet().unwrap() {
+            if !packet.data.starts_with(b"Opus") {
+                let mut frame = [0.0f32; 960 * 2];
+                let n = decoder.decode_float(&packet.data, &mut frame, false).unwrap();
+                decoded.extend_from_slice(&frame[..n * 2]);
+            }
+            end = packet.absgp_page();
+        }
+        let pre_skip = { let head = std::fs::read(&path).unwrap(); let at = head.windows(8).position(|w| w == b"OpusHead").unwrap(); u16::from_le_bytes([head[at + 10], head[at + 11]]) as u64 };
+        assert_eq!(end - pre_skip, 48_000, "1 s at 48 kHz, the padding of the last frame cut");
+        assert!(decoded.len() / 2 >= (pre_skip + 48_000) as usize, "the song's end is encoded too: {} frames", decoded.len() / 2);
+        let rms = |x: &[f32]| (x.iter().map(|v| (v * v) as f64).sum::<f64>() / x.len() as f64).sqrt();
+        let input: Vec<f32> = second_of_sound(24).samples.iter().map(|s| *s as f32 / 8_388_608.0).collect();
+        let level = rms(&decoded[pre_skip as usize * 2..]) / rms(&input);
+        assert!((level - 1.0).abs() < 0.05, "the same level after encoding: {level}");
+        assert_eq!(cover_url(&path), Some(data_url("image/jpeg", &JPEG)));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn m4a_holds_aac_or_alac_with_tags_and_cover() {
+        let dir = std::env::temp_dir().join(format!("mitschnitt-m4a-{}", std::process::id()));
+        let settings = Settings { out_dir: dir.clone(), ..Settings::default() };
+        let tags = Tags { track_number: 3, cover: Some(flac::Cover { mime: "image/jpeg", data: JPEG.to_vec() }), extra: vec![("ISRC".into(), "DEUM72401234".into())], ..track() };
+        for (format, bits) in [(Format::Aac, 24), (Format::Alac, 24), (Format::Alac, 16)] {
+            let path = write(&second_of_sound(bits), &tags, &settings, format).unwrap();
+            let tag = mp4ameta::Tag::read_from_path(&path).unwrap();
+            assert_eq!((tag.title(), tag.artist(), tag.track_number()), (Some("What? Now"), Some("AC/DC"), Some(3)), "{format:?}");
+            assert!((tag.info.duration.as_secs_f64() - 1.0).abs() < 0.05, "{format:?}: {:?}", tag.info.duration);
+            assert_eq!(cover_url(&path), Some(data_url("image/jpeg", &JPEG)), "{format:?}");
+        }
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -250,9 +305,9 @@ mod tests {
     fn mp3_is_written_with_tags() {
         let audio = Audio { rate: 44_100, channels: 2, bits: 24, samples: (0..88_200).map(|i| ((i as f64 * 0.05).sin() * 3e6) as i32).collect() };
         let dir = std::env::temp_dir().join(format!("mitschnitt-mp3-{}", std::process::id()));
-        let settings = Settings { out_dir: dir.clone(), format: Format::Mp3, ..Settings::default() };
+        let settings = Settings { out_dir: dir.clone(), ..Settings::default() };
         let tags = Tags { track_number: 3, cover: Some(flac::Cover { mime: "image/png", data: vec![0x89, b'P', b'N', b'G'] }), ..track() };
-        let path = write(&audio, &tags, &settings).unwrap();
+        let path = write(&audio, &tags, &settings, Format::Mp3).unwrap();
         let tag = id3::Tag::read_from_path(&path).unwrap();
         use id3::TagLike;
         assert_eq!((tag.artist(), tag.track(), tag.pictures().count()), (Some("AC/DC"), Some(3), 1));

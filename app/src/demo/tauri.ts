@@ -1,4 +1,5 @@
 // `npm run demo`: Vite points `@tauri-apps/api/{core,event,app}` here, for the README screenshot.
+import { version } from "../../package.json";
 import type { Check, EcholotSession, HistoryRecord, RecorderSnapshot, Settings, Status, Track } from "../lib/api";
 
 type Handler = (event: { payload: unknown }) => void;
@@ -58,7 +59,8 @@ const rick: Track = { title: "Never Gonna Give You Up", artist: "Rick Astley", a
 const out = "C:\\Users\\Anna\\Music\\Mitschnitt";
 const settings: Settings = {
   out_dir: out,
-  format: "flac",
+  lossless_format: "flac",
+  lossy_format: "opus",
   template: "{artist} - {title}",
   keep_flagged: true,
   skip_existing: true,
@@ -119,6 +121,7 @@ const record = (daysAgo: number, artist: string, title: string, length: [number,
   track: { title, artist, album: "", duration_ms: (length[0] * 60 + length[1]) * 1000 },
   file: `${out}\\${artist} - ${title}.flac`,
   size: mb(length[0], length[1], bits),
+  format: "flac",
   verdict: faded ? "altered" : "info",
   master: faded ? "bit16_partly" : bits === 16 ? "bit16_exact" : "bit24",
   exact: !faded,
@@ -159,7 +162,7 @@ function start() {
     earlier(ago, () => {
       emit("update", { kind: "started", track, cover: covers[track.artist] ?? null });
       const kept = saved.verdict === "info" || saved.faded;
-      emit("update", { kind: "saved", track, file: `${out}\\${kept ? "" : "Not taken\\"}${track.artist} - ${track.title}.flac`, size: Math.round((track.duration_ms / 1000) * 112_000), ...saved, echolot: true, frames: Math.round(track.duration_ms * 44.1), peak_dbfs: -0.3 });
+      emit("update", { kind: "saved", format: "flac", track, file: `${out}\\${kept ? "" : "Not taken\\"}${track.artist} - ${track.title}.flac`, size: Math.round((track.duration_ms / 1000) * 112_000), ...saved, echolot: true, frames: Math.round(track.duration_ms * 44.1), peak_dbfs: -0.3 });
       emit("echolot", { kind: "song", job: track, result, detail });
     });
   }
@@ -181,7 +184,7 @@ function start() {
       recorded_ms: recorded,
       level: [0.8 * wobble(), 0.75 * wobble()],
       rms: [0.63 * wobble(), 0.6 * wobble()],
-      grid: { bit24: 1 },
+      grid: { bit24: 1, volume: null },
     };
     emit("update", { kind: "status", status });
   }, 50);
@@ -194,7 +197,7 @@ function setSession(state: EcholotSession["state"]) {
 
 const commands: Record<string, (args: Record<string, unknown>) => unknown> = {
   sources: () => [{ id: "spotify", name: "Spotify", running: true, playing: true, title: rick.title, artist: rick.artist }],
-  platform: () => (linux ? { os: "linux", monitor: false, media_keys: false, gain: 1 } : { os: "windows", monitor: true, media_keys: true, gain: 0.5 }),
+  platform: () => (linux ? { os: "linux", monitor: false, media_keys: false, gain: 1, m4a: false } : { os: "windows", monitor: true, media_keys: true, gain: 0.5, m4a: true }),
   get_settings: () => settings,
   save_settings: (a) => Object.assign(settings, a.settings),
   health: () => checks,
@@ -219,7 +222,7 @@ export async function listen<T>(event: string, handler: (event: { payload: T }) 
 }
 
 export async function getVersion(): Promise<string> {
-  return "0.5.1";
+  return version;
 }
 
 // Once both stores have subscribed. `?idle`: before Start.

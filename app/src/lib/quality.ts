@@ -1,4 +1,4 @@
-import { clock, megabytes, readable, type Lossy, type Master, type Severity, type Track } from "./api";
+import { clock, megabytes, readable, type Format, type Lossy, type Master, type Severity, type Track } from "./api";
 
 export type Tone = "ok" | "lossy" | "warn" | "bad" | "muted";
 export type Quality = { tone: Tone; tag: string; text: string };
@@ -17,16 +17,24 @@ export function headline(issue: string | undefined): string {
 
 const bits = (master: Master) => (master === "bit24" ? "24-bit" : "16-bit");
 
-function format(file: string | null): string | null {
+export const formatNames: Record<Format, string> = { flac: "FLAC", alac: "ALAC", opus: "Opus 256", aac: "AAC 192", mp3: "MP3 320" };
+export const lossless = (f: Format) => f === "flac" || f === "alac";
+
+/** What a file holds: older history lines know only their extension (and had no .m4a). */
+export function formatOf(file: string | null, format: Format | null | undefined): Format | null {
+  if (format) return format;
   const ext = file?.split(".").pop()?.toLowerCase();
-  return !ext ? null : ext === "mp3" ? "MP3 320" : ext.toUpperCase();
+  return ext === "mp3" || ext === "opus" || ext === "flac" ? ext : null;
 }
 
 /** Every saved song reads the same way: what arrived, the master's bit depth, the file's format. A lossy stream has no
  * master depth to tell, a damaged take only its damage. */
-export function quality(verdict: Severity, master: Master, exact: boolean, faded: boolean, lossy: Lossy | null, file: string | null, issues: string[]): Quality {
+export function quality(verdict: Severity, master: Master, exact: boolean, faded: boolean, lossy: Lossy | null, file: string | null, issues: string[], format?: Format | null): Quality {
   if (verdict === "corrupt") return { tone: "bad", tag: "bad", text: issues.length ? `Damaged · ${headline(issues[0])}` : "Damaged" };
-  const text = (what: string, depth = true) => [what, depth && !file?.endsWith(".mp3") ? bits(master) : null, format(file)].filter(Boolean).join(" · ");
+  const f = file ? formatOf(file, format) : null;
+  // WAV, from earlier versions: lossless, named by its extension.
+  const name = f ? formatNames[f] : file?.split(".").pop()?.toUpperCase();
+  const text = (what: string, depth = true) => [what, depth && (!f || lossless(f)) ? bits(master) : null, name].filter(Boolean).join(" · ");
   if (lossy === "stream") return { tone: "lossy", tag: "lossy", text: text("Lossy stream", false) };
   if (lossy) return { tone: "lossy", tag: "lossy", text: text("Lossy master") };
   if (faded) return { tone: "ok", tag: "fine", text: text("Fade-in, rest bit-exact") };
@@ -36,7 +44,7 @@ export function quality(verdict: Severity, master: Master, exact: boolean, faded
 
 export const facts = (durationMs: number, size: number) => `${clock(durationMs)} · ${megabytes(size)}`;
 
-export type Saved = { track: Track; file: string | null; size: number; master: Master; exact: boolean; faded: boolean; lossy: Lossy | null; issues: string[]; frames: number | null; peak_dbfs: number | null };
+export type Saved = { track: Track; file: string | null; size: number; format?: Format | null; master: Master; exact: boolean; faded: boolean; lossy: Lossy | null; issues: string[]; frames: number | null; peak_dbfs: number | null };
 
 /** A card line, left out without a value. */
 const fact = (label: string, value: string | null | undefined): [string, string][] => (value ? [[label, value]] : []);
@@ -49,12 +57,19 @@ export const songFacts = (track: Track, at: Date): [string, string][] => [
 
 /** Everything about a file, for its info card. */
 export function fileCard(f: Saved, at: Date, origin: string): Card {
-  const ext = f.file?.split(".").pop()?.toUpperCase();
+  const format = formatOf(f.file, f.format);
+  const formatText: Record<Format, string> = {
+    flac: `FLAC, ${f.master === "bit16_exact" ? 16 : 24}-bit`,
+    alac: `ALAC, ${f.master === "bit16_exact" ? 16 : 24}-bit`,
+    opus: "Opus, 256 kbps, 48 kHz",
+    aac: "AAC, 192 kbps",
+    mp3: "MP3, 320 kbps",
+  };
   const facts = [
     ...fact("Origin", origin),
     ...fact("Master", f.lossy === "source" ? "made from a lossy file" : f.master === "bit16_exact" ? "16-bit" : f.master === "bit16_partly" ? "16-bit, altered in places" : "24-bit"),
     ...fact("Stream", f.exact ? "every sample arrived untouched" : f.faded ? "untouched after Spotify's fade-in" : f.lossy === "stream" ? "lossy" : "not every sample proven untouched"),
-    ...fact("Format", ext && (ext === "MP3" ? "MP3, 320 kbps" : `${ext}, ${f.master === "bit16_exact" ? 16 : 24}-bit`)),
+    ...fact("Format", format ? formatText[format] + (lossless(format) ? "" : " – encoded again from what arrived: not audible, but no longer exact") : f.file?.split(".").pop()?.toUpperCase()),
     ...songFacts(f.track, at),
     ...fact("Samples", f.frames ? `${f.frames.toLocaleString()} per channel` : null),
     ...fact("Peak", f.peak_dbfs !== null ? `${f.peak_dbfs.toFixed(2)} dBFS` : null),

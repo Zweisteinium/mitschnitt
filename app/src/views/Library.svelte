@@ -35,7 +35,7 @@
     void api
       .history()
       .then((records) => {
-        rows = records.map((r) => ({ r, q: quality(r.verdict, r.master, r.exact, r.faded, r.lossy, r.file, r.issues ?? []), at: new Date(r.at), origin: origin(r), text: `${r.track.artist} ${r.track.title} ${r.track.album}`.toLowerCase() }));
+        rows = records.map((r) => ({ r, q: quality(r.verdict, r.master, r.exact, r.faded, r.lossy, r.file, r.issues ?? [], r.format), at: new Date(r.at), origin: origin(r), text: `${r.track.artist} ${r.track.title} ${r.track.album}`.toLowerCase() }));
       })
       .catch((e) => (session.error = String(e)));
   });

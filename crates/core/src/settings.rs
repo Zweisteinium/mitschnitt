@@ -17,17 +17,43 @@ pub fn state_dir() -> PathBuf {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Format {
+    /// Earlier settings' WAV: lossless too, and with tags and a cover.
+    #[serde(alias = "wav")]
     Flac,
-    Wav,
+    /// Apple Lossless in .m4a, by Windows' own encoder.
+    Alac,
+    /// 256 kbit/s VBR, at 48 kHz (Opus always is).
+    Opus,
+    /// 192 kbit/s in .m4a, by Windows' own encoder (it goes no higher).
+    Aac,
     /// 320 kbit/s CBR.
     Mp3,
+}
+
+impl Format {
+    pub fn ext(self) -> &'static str {
+        match self {
+            Format::Flac => "flac",
+            Format::Alac | Format::Aac => "m4a",
+            Format::Opus => "opus",
+            Format::Mp3 => "mp3",
+        }
+    }
+
+    pub fn lossless(self) -> bool {
+        matches!(self, Format::Flac | Format::Alac)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     pub out_dir: PathBuf,
-    pub format: Format,
+    /// For songs that arrive bit-exact (earlier settings had one `format` for all).
+    #[serde(alias = "format")]
+    pub lossless_format: Format,
+    /// For lossy streams: a lossy format encodes them a second time.
+    pub lossy_format: Format,
     /// File name without extension; `{artist}`, `{title}`, `{album}`; `/` creates folders.
     pub template: String,
     /// Keep files the forensic check marks as altered or corrupt.
@@ -48,7 +74,8 @@ impl Default for Settings {
         let music = dirs::audio_dir().or_else(|| dirs::home_dir().map(|h| h.join("Music"))).unwrap_or_default();
         Settings {
             out_dir: music.join("Mitschnitt"),
-            format: Format::Flac,
+            lossless_format: Format::Flac,
+            lossy_format: Format::Opus,
             template: "{artist} - {title}".into(),
             keep_flagged: true,
             skip_existing: true,
@@ -62,7 +89,15 @@ impl Default for Settings {
 
 impl Settings {
     pub fn load(path: &Path) -> Settings {
-        std::fs::read_to_string(path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+        std::fs::read_to_string(path).ok().and_then(|s| serde_json::from_str::<Settings>(&s).ok()).map(Settings::migrated).unwrap_or_default()
+    }
+
+    /// One format for all (earlier versions) that was lossy: it becomes the lossy songs' one, the exact ones get FLAC.
+    fn migrated(self) -> Settings {
+        if self.lossless_format.lossless() {
+            return self;
+        }
+        Settings { lossy_format: self.lossless_format, lossless_format: Format::Flac, ..self }
     }
 
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
@@ -84,7 +119,9 @@ mod tests {
     #[test]
     fn partial_json_falls_back_to_defaults() {
         let s: Settings = serde_json::from_str(r#"{ "format": "wav" }"#).unwrap();
-        assert_eq!(s.format, Format::Wav);
+        assert_eq!((s.lossless_format, s.lossy_format), (Format::Flac, Format::Opus), "WAV is gone, the old field still counts");
         assert_eq!(s.template, "{artist} - {title}");
+        let mp3: Settings = serde_json::from_str::<Settings>(r#"{ "format": "mp3" }"#).unwrap().migrated();
+        assert_eq!((mp3.lossless_format, mp3.lossy_format), (Format::Flac, Format::Mp3));
     }
 }

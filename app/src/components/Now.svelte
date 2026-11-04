@@ -1,18 +1,27 @@
 <script lang="ts">
-  import { clock } from "../lib/api";
+  import { clock, type Track } from "../lib/api";
+  import { echolot } from "../lib/echolot.svelte";
   import { session } from "../lib/session.svelte";
   import Cover from "./Cover.svelte";
   import Meter from "./Meter.svelte";
   import Panel from "./Panel.svelte";
 
   const status = $derived(session.status);
-  const track = $derived(status?.track ?? null);
+  const player = $derived(session.player);
   const phase = $derived(session.listening ? (status?.phase ?? "idle") : "off");
-  const progress = $derived(track && status ? Math.min(1, status.recorded_ms / track.duration_ms) : 0);
+  /** The song being recorded, else what the player shows (outside a run: what the source list says). */
+  const source = $derived(session.sources.find((s) => s.id === session.selected));
+  const track = $derived<Track | null>(
+    status?.track ?? player?.track ?? (!session.listening && source?.title ? { title: source.title, artist: source.artist, album: "", duration_ms: 0 } : null),
+  );
+  const recorded = $derived(!!status?.track);
+  const elapsed = $derived(recorded ? (status?.recorded_ms ?? 0) : (player?.position_ms ?? 0));
+  const progress = $derived(track?.duration_ms ? Math.min(1, elapsed / track.duration_ms) : 0);
+  const playing = $derived(recorded || (session.listening ? !!player?.playing : !!source?.playing));
 
   const labels = {
     off: "Not recording",
-    idle: "Ready – waiting for a track",
+    idle: "Ready – waiting for a song from its start",
     waiting: "Armed – waiting for sound",
     recording: "Recording",
   };
@@ -28,6 +37,10 @@
       <div class="state {phase}">
         <span class="dot"></span>
         <span class="mono">{labels[phase]}</span>
+        {#if track && !recorded}<span class="mono muted">· {playing ? "playing" : "paused"}, not recorded</span>{/if}
+        {#if session.listening && player?.track && !recorded && !echolot.active && !echolot.listing}
+          <button class="btn again" onclick={() => session.recordFromStart()} title="Pauses, jumps to 0:00 and plays it again: a song started inside an album (gapless) or mid-song has no clean start to record from.">Record from start</button>
+        {/if}
         {#if session.listening && session.keyBlockedAt}
           <span class="chip mono" title="The recording continues. To pause, use Spotify's own pause button.">Media key blocked</span>
         {/if}
@@ -38,11 +51,13 @@
           <div class="title">{track.title}</div>
           <div class="muted">{track.artist}{track.album ? ` · ${track.album}` : ""}</div>
         </div>
-        <div class="bar" class:rec={phase === "recording"}><div class="fill" style:width="{progress * 100}%"></div></div>
-        <div class="times mono muted">
-          <span>{clock(status?.recorded_ms ?? 0)}</span>
-          <span>{clock(track.duration_ms)}</span>
-        </div>
+        {#if track.duration_ms}
+          <div class="bar" class:rec={phase === "recording"}><div class="fill" style:width="{progress * 100}%"></div></div>
+          <div class="times mono muted">
+            <span>{clock(elapsed)}</span>
+            <span>{clock(track.duration_ms)}</span>
+          </div>
+        {/if}
       {:else}
         <p class="muted hint">
           {session.listening
@@ -63,9 +78,18 @@
     <div class="signal">
       {#if status?.grid}
         {@const exact = status.grid.bit24 === 1}
-        <div class="proof mono" class:ok={exact} class:warn={!exact} title="Share of the audio that arrives as exact 24-bit values">
+        {@const volume = status.grid.volume}
+        <div
+          class="proof mono"
+          class:ok={exact}
+          class:warn={!exact}
+          title={exact
+            ? "Every sample arrives exactly as Spotify's lossless stream carries it."
+            : volume
+              ? "The lossless stream arrives exactly, only scaled: Spotify's own volume slider isn't at maximum. Set it to full – the monitor keeps the level you hear."
+              : "Samples arrive changed: a lossy stream, or something in between – Spotify's volume below 100 %, normalization, the equalizer, crossfade."}>
           <span class="dot"></span>
-          {exact ? "Lossless · arriving bit-exact" : "Not lossless · lossy or altered"}
+          {exact ? "Lossless · arriving bit-exact" : volume ? `Spotify's volume at ${Math.round(volume * 1000) / 10} % · set it to maximum` : "Not lossless · lossy or altered"}
         </div>
       {/if}
       <Meter rms={status?.rms ?? [0, 0]} peak={status?.level ?? [0, 0]} />
@@ -190,6 +214,12 @@
     border-color: rgba(251, 191, 36, 0.45);
     background: rgba(251, 191, 36, 0.06);
     color: var(--warn);
+  }
+
+  .again {
+    margin-left: auto;
+    padding: 3px 10px;
+    font-size: 11px;
   }
 
   .chip {

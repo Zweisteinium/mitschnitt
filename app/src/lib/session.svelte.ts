@@ -1,7 +1,7 @@
-import { api, type Check, type Lossy, type Master, type Platform, type Settings, type Severity, type Source, type SourceInfo, type Status, type Track, type Update } from "./api";
+import { api, type Check, type Format, type Lossy, type Master, type Platform, type Settings, type Severity, type Source, type SourceInfo, type Status, type Track, type Update } from "./api";
 
 type Outcome =
-  | { outcome: "saved"; file: string | null; size: number; verdict: Severity; master: Master; exact: boolean; faded: boolean; lossy: Lossy | null; issues: string[]; echolot: boolean; frames: number; peak_dbfs: number | null }
+  | { outcome: "saved"; file: string | null; size: number; format: Format; verdict: Severity; master: Master; exact: boolean; faded: boolean; lossy: Lossy | null; issues: string[]; echolot: boolean; frames: number; peak_dbfs: number | null }
   | { outcome: "exists"; file: string }
   | { outcome: "dropped" | "failed"; message: string };
 
@@ -20,6 +20,8 @@ class Session {
   history = $state<Entry[]>([]);
   /** The player's cover per song of this run, by artist and title. */
   covers = $state<Record<string, string>>({});
+  /** What the player shows while listening, recorded or not. */
+  player = $state<{ track: Track | null; playing: boolean; position_ms: number } | null>(null);
   settings = $state<Settings | null>(null);
   platform = $state<Platform | null>(null);
   checks = $state<Check[]>([]);
@@ -51,7 +53,7 @@ class Session {
     const keys = this.checks.find((c) => c.id === "spotify_keys");
     if (keys) return keys.detail;
     if (this.altered >= ALTERED_IN_ROW) {
-      return `Your last ${this.altered} recordings didn't arrive bit-exact. A Spotify setting may be changing the sound: check Playback (crossfade, normalization, equalizer) and Audio quality (Lossless).`;
+      return `Your last ${this.altered} recordings didn't arrive bit-exact. A Spotify setting may be changing the sound: its volume slider must be at maximum, and check Playback (crossfade, normalization, equalizer) and Audio quality (Lossless).`;
     }
     return null;
   }
@@ -135,6 +137,10 @@ class Session {
     await this.#try(() => api.unmuteMonitor());
   }
 
+  async recordFromStart() {
+    await this.#try(() => api.recordFromStart());
+  }
+
   async stopAfterTrack() {
     this.stopping = true;
     await this.#try(() => api.stopAfterTrack());
@@ -161,10 +167,15 @@ class Session {
       case "started":
         if (u.cover) this.covers[key(u.track)] = u.cover;
         break;
+      case "player":
+        this.player = { track: u.track, playing: u.playing, position_ms: u.position_ms };
+        // Read again 2 s after a change: right after it the player may still show the previous one.
+        if (u.track && u.cover) this.covers[key(u.track)] = u.cover;
+        break;
       case "saved":
         if (u.lossy === "stream") this.altered++;
         else if (u.exact || u.faded) this.altered = 0;
-        this.#log(u.track, { outcome: "saved", file: u.file, size: u.size, verdict: u.verdict, master: u.master, exact: u.exact, faded: u.faded, lossy: u.lossy, issues: u.issues, echolot: u.echolot, frames: u.frames, peak_dbfs: u.peak_dbfs });
+        this.#log(u.track, { outcome: "saved", file: u.file, size: u.size, format: u.format, verdict: u.verdict, master: u.master, exact: u.exact, faded: u.faded, lossy: u.lossy, issues: u.issues, echolot: u.echolot, frames: u.frames, peak_dbfs: u.peak_dbfs });
         break;
       case "key_blocked": {
         const at = Date.now();
@@ -192,6 +203,7 @@ class Session {
       case "stopped":
         this.source = null;
         this.status = null;
+        this.player = null;
         this.stopping = false;
         this.monitorMuted = false;
         this.monitorVolume = null;

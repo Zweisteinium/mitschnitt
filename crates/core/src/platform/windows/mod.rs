@@ -5,6 +5,7 @@ pub mod desktop;
 pub mod devices;
 pub mod guard;
 pub mod keys;
+pub mod m4a;
 pub mod media;
 pub mod monitor;
 pub mod own_session;

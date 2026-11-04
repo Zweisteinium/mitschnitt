@@ -34,6 +34,7 @@ const MEDIA_POLL: Duration = Duration::from_millis(100);
 /// (Linux sends nothing then). While it shows playing, it is a stall: that proves no end.
 const STREAM_STOPPED: Duration = Duration::from_millis(300);
 const VOLUME_POLL: Duration = Duration::from_millis(500);
+const COVER_AGAIN: Duration = Duration::from_secs(2);
 /// Queue mode: the player may still be starting.
 const FIND_SESSION: Duration = Duration::from_secs(1);
 
@@ -123,12 +124,15 @@ pub enum Update {
     Status { status: Status },
     /// `cover`: a data URL of the player's cover.
     Started { track: Track, cover: Option<String> },
+    /// What the player shows, recorded or not: with `cover` when the track changed.
+    Player { track: Option<Track>, playing: bool, position_ms: i64, cover: Option<String> },
     Dropped { track: Track, reason: Reason, message: String },
     Exists { track: Track, file: String },
     /// `file`: `None` when a flagged file was removed. `exact`: every sample arrived untouched. `faded`: all but the
     /// player's fade-in did. `lossy`: saved as MP3 (manual) or uploaded as it came (Echolot judges it itself).
     /// `peak_dbfs`: `None` for digital silence.
-    Saved { track: Track, file: Option<String>, size: u64, verdict: Severity, master: Master, exact: bool, faded: bool, lossy: Option<Lossy>, issues: Vec<String>, echolot: bool, frames: u64, peak_dbfs: Option<f64> },
+    /// `format`: what the file holds (.m4a is AAC or ALAC).
+    Saved { track: Track, file: Option<String>, size: u64, format: Format, verdict: Severity, master: Master, exact: bool, faded: bool, lossy: Option<Lossy>, issues: Vec<String>, echolot: bool, frames: u64, peak_dbfs: Option<f64> },
     Failed { track: Track, error: String },
     KeyBlocked { count: u32 },
     /// The default output changed.
@@ -143,6 +147,7 @@ enum Msg {
     Packet(Packet),
     CaptureError(String),
     StopAfterTrack,
+    RecordFromStart,
     Attach(Queue),
     Detach,
     Written(Written),
@@ -200,6 +205,11 @@ impl Engine {
 
     pub fn stop_after_track(&self) {
         let _ = self.tx.send(Msg::StopAfterTrack);
+    }
+
+    /// The song playing unrecorded (started gapless, or mid-song) once more from 0:00, recorded.
+    pub fn record_from_start(&self) {
+        let _ = self.tx.send(Msg::RecordFromStart);
     }
 
     /// Gives the queue back when the engine has stopped meanwhile.
@@ -354,6 +364,12 @@ struct Session {
     find_at: Instant,
     /// Read when the current recording started.
     extra: Option<(Track, Extra)>,
+    /// The last media snapshot.
+    player: crate::passive::Media,
+    /// When the player's cover is read once more: right after a change it may still show the previous one.
+    cover_again: Option<Instant>,
+    /// "Record from start": paused at the first instant, seeked to 0:00 at the second.
+    rewind: Option<(Instant, Option<Instant>)>,
     trace: Option<Trace>,
     guard: Option<Guard>,
     restore: Restore,
@@ -427,6 +443,9 @@ impl Session {
             watcher: session.map(Watcher::new),
             find_at: Instant::now(),
             extra: None,
+            player: crate::passive::Media::default(),
+            cover_again: None,
+            rewind: None,
             guard: config.settings.protect_media_keys.then(Guard::start).and_then(Result::ok),
             trace: match &config.trace {
                 Some(dir) => Some(Trace::open(dir).map_err(|e| format!("trace: {e}"))?),
@@ -531,6 +550,14 @@ impl Session {
                     stop_after = true;
                     Vec::new()
                 }
+                // The queue starts its songs itself.
+                Ok(Msg::RecordFromStart) => {
+                    if self.queue.is_none() && !self.passive.recording() {
+                        self.control(Control::Pause);
+                        self.rewind = Some((Instant::now(), None));
+                    }
+                    Vec::new()
+                }
                 Ok(Msg::Attach(queue)) => {
                     self.attach(queue);
                     Vec::new()
@@ -575,6 +602,14 @@ impl Session {
                         let events = self.passive.media(media.clone());
                         self.dispatch(events, settings, notify);
                         self.drive(now, &media);
+                        self.rewind_step(now, &media);
+                        let changed = media.track != self.player.track;
+                        if changed || self.cover_again.is_some_and(|at| now >= at) {
+                            self.cover_again = changed.then(|| now + COVER_AGAIN);
+                            let cover = media.track.as_ref().and(self.watcher.as_ref()).and_then(|w| w.extra().cover).map(|c| output::data_url(c.mime, &c.data));
+                            notify(Update::Player { track: media.track.clone(), playing: media.playing, position_ms: media.position_ms, cover });
+                        }
+                        self.player = media;
                     }
                     // Gone for a moment, or with the app (on Linux its session goes first; the check below says so).
                     Some(Err(e)) => {
@@ -616,6 +651,8 @@ impl Session {
                     }
                 }
                 notify(Update::Status { status: self.passive.status() });
+                let player = &self.player;
+                notify(Update::Player { track: player.track.clone(), playing: player.playing, position_ms: player.position_ms, cover: None });
                 if let Some(count) = self.guard.as_ref().map(Guard::blocked).filter(|c| *c != blocked) {
                     blocked = count;
                     crate::log!("media keys blocked: {count}");
@@ -685,6 +722,33 @@ impl Session {
             self.stage_changed(stage);
         }
         self.act(&actions, job.as_ref());
+    }
+
+    fn control(&self, control: Control) {
+        if let Some(Err(e)) = self.watcher.as_ref().map(|w| w.control(control)) {
+            crate::log!("control {control:?} failed: {e}");
+        }
+    }
+
+    /// The queue's rewind for a song played by hand: pause, the gap, 0:00, then play with the recording armed, so the
+    /// start is clean (a song started gapless inside an album has none, 4 Nov).
+    fn rewind_step(&mut self, now: Instant, media: &crate::passive::Media) {
+        match self.rewind {
+            Some((paused, None)) if now >= paused + crate::runner::GAP => {
+                self.passive.forget_starts();
+                self.control(Control::Restart);
+                self.rewind = Some((paused, Some(now)));
+            }
+            Some((_, Some(seeked))) if media.position_ms <= crate::runner::SEEKED_MS || now >= seeked + crate::runner::SEEK_WAIT => {
+                if let Some(track) = media.track.clone() {
+                    crate::log!("record from start: {} - {}", track.artist, track.title);
+                    self.passive.arm(track);
+                }
+                self.control(Control::Play);
+                self.rewind = None;
+            }
+            _ => {}
+        }
     }
 
     fn stage_changed(&mut self, stage: &'static str) {
@@ -792,7 +856,7 @@ impl Session {
                             if let Some(job) = &job {
                                 tags.extra = vec![("SPOTIFY_TRACK_ID".into(), job.track_id().into()), ("ISRC".into(), job.isrc.clone())];
                             }
-                            let settings = Settings { out_dir: run.queue.out_dir.clone(), format: Format::Flac, keep_flagged: true, skip_existing: false, ..settings.clone() };
+                            let settings = Settings { out_dir: run.queue.out_dir.clone(), keep_flagged: true, skip_existing: false, ..settings.clone() };
                             let (tx, done) = (self.tx.clone(), run.queue.done.clone());
                             std::thread::spawn(move || {
                                 let written = finish_job(track, tags, samples, (off_grid, off_span, end_proven), rate, lossless, &settings, &notify);
@@ -874,7 +938,7 @@ fn file_size(path: &std::path::Path) -> u64 {
     std::fs::metadata(path).map_or(0, |m| m.len())
 }
 
-fn saved(track: Track, file: Option<PathBuf>, size: u64, checked: Checked, echolot: bool) -> Update {
+fn saved(track: Track, file: Option<PathBuf>, size: u64, format: Format, checked: Checked, echolot: bool) -> Update {
     let Checked { audio, mut report, exact, faded, lossy, .. } = checked;
     // The row shows the first one.
     report.issues.sort_by_key(|i| std::cmp::Reverse(i.severity));
@@ -882,6 +946,7 @@ fn saved(track: Track, file: Option<PathBuf>, size: u64, checked: Checked, echol
         track,
         file: file.map(|f| f.display().to_string()),
         size,
+        format,
         verdict: report.verdict,
         master: report.master,
         exact,
@@ -901,8 +966,8 @@ fn finish(track: Track, tags: Tags, samples: Vec<i32>, proof: Proof, rate: u32, 
     }
     let checked = check(samples, proof, rate, lossless);
     // Lossy content in a lossless file would only pretend to be more: MP3 320 holds what arrived.
-    let settings = &Settings { format: if checked.lossy.is_some() { Format::Mp3 } else { settings.format }, ..settings.clone() };
-    match output::write(&checked.audio, &tags, settings) {
+    let format = if checked.lossy.is_some() { settings.lossy_format } else { settings.lossless_format };
+    match output::write(&checked.audio, &tags, settings, format) {
         Ok(path) => {
             let size = file_size(&path);
             // Labelled and saved for what it is: nothing to hide.
@@ -911,7 +976,7 @@ fn finish(track: Track, tags: Tags, samples: Vec<i32>, proof: Proof, rate: u32, 
                 let _ = std::fs::remove_file(&path);
             }
             let file = (!flagged || settings.keep_flagged).then_some(path);
-            notify(saved(track, file, size, checked, false));
+            notify(saved(track, file, size, format, checked, false));
         }
         Err(error) => notify(Update::Failed { track, error }),
     }
@@ -928,21 +993,22 @@ fn finish_job(track: Track, tags: Tags, samples: Vec<i32>, proof: Proof, rate: u
     let in_master = lossless && !glitch && checked.report.verdict == Severity::Corrupt && dropouts_in_master(&track, &mut checked);
     if checked.report.verdict == Severity::Corrupt || glitch {
         let detail = checked.report.issues.iter().filter(|i| i.severity == Severity::Corrupt || glitch).map(|i| i.text.as_str()).collect::<Vec<_>>().join("; ");
-        let file = settings.keep_flagged.then(|| Settings { out_dir: settings.out_dir.with_file_name(crate::recorder::NOT_TAKEN_DIR), ..settings.clone() }).and_then(|s| output::write(&checked.audio, &tags, &s).ok());
+        let file = settings.keep_flagged.then(|| Settings { out_dir: settings.out_dir.with_file_name(crate::recorder::NOT_TAKEN_DIR), ..settings.clone() }).and_then(|s| output::write(&checked.audio, &tags, &s, Format::Flac).ok());
         let size = file.as_deref().map_or(0, file_size);
         // A glitch alone stays "altered" in the report, and the history showed a paused take as "Lossy master".
         checked.report.verdict = Severity::Corrupt;
-        notify(saved(track, file, size, checked, true));
+        notify(saved(track, file, size, Format::Flac, checked, true));
         return Written::Corrupt { detail: format!("damaged: {detail}") };
     }
-    match output::write(&checked.audio, &tags, settings) {
+    // Echolot judges what arrived: always the exact samples.
+    match output::write(&checked.audio, &tags, settings, Format::Flac) {
         Ok(path) => {
             let mut note = checked.faded.clone().or_else(|| stream.then(|| checked.report.issues[0].text.clone()));
             if in_master {
                 let master = checked.report.issues.iter().filter(|i| i.text.starts_with("dropout in the master")).map(|i| i.text.as_str());
                 note = Some(note.as_deref().into_iter().chain(master).collect::<Vec<_>>().join("; "));
             }
-            notify(saved(track, Some(path.clone()), file_size(&path), checked, true));
+            notify(saved(track, Some(path.clone()), file_size(&path), Format::Flac, checked, true));
             Written::Saved { file: path, note }
         }
         Err(error) => {
@@ -987,7 +1053,7 @@ mod tests {
         let gap = rate as usize;
         samples[gap * 2..(gap + rate as usize * 315 / 10_000) * 2].fill(0);
         let dir = std::env::temp_dir().join(format!("mitschnitt-corrupt-{}", std::process::id()));
-        let settings = Settings { out_dir: dir.join("Echolot"), format: Format::Flac, keep_flagged: true, ..Settings::default() };
+        let settings = Settings { out_dir: dir.join("Echolot"), keep_flagged: true, ..Settings::default() };
         let track = Track { title: "Revolution".into(), artist: "Artist".into(), album: String::new(), duration_ms: 2_000 };
         let tags = Tags { title: track.title.clone(), artist: track.artist.clone(), ..Tags::default() };
         let notify: Notify = Arc::new(|_| {});
@@ -1011,7 +1077,7 @@ mod tests {
         let rate = 44_100;
         let samples: Vec<i32> = (0..rate as usize * 2 * 2).map(|i| ((i as f64 * 0.03).sin() * 4_000_000.0) as i32 | 1).collect();
         let dir = std::env::temp_dir().join(format!("mitschnitt-glitch-{}", std::process::id()));
-        let settings = Settings { out_dir: dir.join("Echolot"), format: Format::Flac, keep_flagged: false, ..Settings::default() };
+        let settings = Settings { out_dir: dir.join("Echolot"), keep_flagged: false, ..Settings::default() };
         let track = Track { title: "Song".into(), artist: "Artist".into(), album: String::new(), duration_ms: 2_000 };
         let notify: Notify = Arc::new(|_| {});
         // Five samples a second in: not the player's fade-in, not a lossy stream.
@@ -1023,11 +1089,11 @@ mod tests {
     }
 
     #[test]
-    fn a_lossy_stream_is_kept_as_mp3_not_as_a_lossless_file() {
+    fn a_lossy_stream_is_kept_in_the_lossy_format_not_as_a_lossless_file() {
         let rate = 44_100;
         let samples: Vec<i32> = (0..rate as usize * 2 * 2).map(|i| ((i as f64 * 0.03).sin() * 4_000_000.0) as i32 | 1).collect();
         let dir = std::env::temp_dir().join(format!("mitschnitt-lossy-{}", std::process::id()));
-        let settings = Settings { out_dir: dir.clone(), format: Format::Flac, keep_flagged: false, skip_existing: false, ..Settings::default() };
+        let settings = Settings { out_dir: dir.clone(), keep_flagged: false, skip_existing: false, ..Settings::default() };
         let track = Track { title: "Song".into(), artist: "Artist".into(), album: String::new(), duration_ms: 2_000 };
         let tags = Tags { title: track.title.clone(), artist: track.artist.clone(), ..Tags::default() };
         let saved = Arc::new(Mutex::new(None));
@@ -1040,7 +1106,7 @@ mod tests {
         finish(track, tags, samples, (60_000, Some((0, 88_199)), true), rate, true, &settings, &notify);
         let (file, lossy) = saved.lock().unwrap().take().expect("saved");
         assert_eq!(lossy, Some(Lossy::Stream));
-        assert!(file.is_some_and(|f| f.ends_with(".mp3")), "kept despite keep_flagged = false, as MP3");
+        assert!(file.is_some_and(|f| f.ends_with(".opus")), "kept despite keep_flagged = false, as Opus (the default for lossy songs)");
         let _ = std::fs::remove_dir_all(dir);
     }
 }
