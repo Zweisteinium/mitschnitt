@@ -3,6 +3,16 @@
 pub use crate::platform::os::media::{Watcher, find, sources};
 
 use crate::flac::Cover;
+use crate::profile::Profile;
+
+/// What an app's player shows outside a recording (ads left out), with its cover when asked: reading it costs.
+pub fn now_playing(profile: &Profile, cover: bool) -> Option<(crate::passive::Media, Option<Cover>)> {
+    let mut watcher = Watcher::new(find(profile).ok().flatten()?);
+    let mut media = watcher.snapshot().ok()?;
+    media.track = media.track.filter(|t| !(profile.is_ad)(t));
+    let cover = if cover && media.track.is_some() { watcher.extra().cover } else { None };
+    Some((media, cover))
+}
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Source {

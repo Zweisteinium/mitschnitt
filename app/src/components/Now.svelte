@@ -17,7 +17,7 @@
   const recorded = $derived(!!status?.track);
   const elapsed = $derived(recorded ? (status?.recorded_ms ?? 0) : (player?.position_ms ?? 0));
   const progress = $derived(track?.duration_ms ? Math.min(1, elapsed / track.duration_ms) : 0);
-  const playing = $derived(recorded || (session.listening ? !!player?.playing : !!source?.playing));
+  const playing = $derived(recorded || !!(player?.playing ?? source?.playing));
 
   const labels = {
     off: "Not recording",
@@ -37,7 +37,7 @@
       <div class="state {phase}">
         <span class="dot"></span>
         <span class="mono">{labels[phase]}</span>
-        {#if track && !recorded}<span class="mono muted">· {playing ? "playing" : "paused"}, not recorded</span>{/if}
+        {#if track && !recorded}<span class="mono muted">· {playing ? "playing" : "paused"}{session.listening ? ", not recorded" : ""}</span>{/if}
         {#if session.listening && player?.track && !recorded && !echolot.active && !echolot.listing}
           <button class="btn again" onclick={() => session.recordFromStart()} title="Pauses, jumps to 0:00 and plays it again: a song started inside an album (gapless) or mid-song has no clean start to record from.">Record from start</button>
         {/if}

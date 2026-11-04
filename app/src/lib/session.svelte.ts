@@ -20,7 +20,7 @@ class Session {
   history = $state<Entry[]>([]);
   /** The player's cover per song of this run, by artist and title. */
   covers = $state<Record<string, string>>({});
-  /** What the player shows while listening, recorded or not. */
+  /** What the player shows, recorded or not (outside a session: polled). */
   player = $state<{ track: Track | null; playing: boolean; position_ms: number } | null>(null);
   settings = $state<Settings | null>(null);
   platform = $state<Platform | null>(null);
@@ -43,6 +43,9 @@ class Session {
   readonly startedAt = Date.now();
   #nextId = 0;
   #polling = false;
+  #shown = "";
+  /** Polls that still read the cover: right after a change the player may still show the previous one. */
+  #coverReads = 0;
 
   get listening(): boolean {
     return this.source !== null;
@@ -84,6 +87,17 @@ class Session {
     this.#polling = true;
     try {
       this.#setSources(await api.sources());
+      const app = this.sources.find((s) => s.id === this.selected && s.running);
+      const shown = app ? `${app.artist}
+${app.title}` : "";
+      if (shown !== this.#shown) [this.#shown, this.#coverReads] = [shown, 3];
+      const player = app && (await api.player(app.id, this.#coverReads > 0));
+      this.#coverReads = Math.max(0, this.#coverReads - 1);
+      // Started meanwhile: the engine reports it now.
+      if (!this.listening) {
+        this.player = player ? { track: player.track, playing: player.playing, position_ms: player.position_ms } : null;
+        if (player?.track && player.cover) this.covers[key(player.track)] = player.cover;
+      }
     } catch {}
     this.#polling = false;
   }

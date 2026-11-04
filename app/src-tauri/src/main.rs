@@ -31,6 +31,27 @@ async fn sources() -> Result<Vec<Source>, String> {
     media::sources().map_err(|e| e.to_string())
 }
 
+#[derive(serde::Serialize)]
+struct Player {
+    track: Option<mitschnitt_core::passive::Track>,
+    playing: bool,
+    position_ms: i64,
+    cover: Option<String>,
+}
+
+/// What the player shows while Mitschnitt doesn't listen (while listening the engine reports it).
+#[tauri::command]
+async fn player(app: String, cover: bool) -> Result<Option<Player>, String> {
+    mitschnitt_core::init_thread();
+    let profile = supported(&app)?;
+    Ok(media::now_playing(profile, cover).map(|(m, c)| Player {
+        track: m.track,
+        playing: m.playing,
+        position_ms: m.position_ms,
+        cover: c.map(|c| mitschnitt_core::output::data_url(c.mime, &c.data)),
+    }))
+}
+
 fn supported(app: &str) -> Result<&'static Profile, String> {
     profile::get(app).ok_or_else(|| format!("\"{app}\" is not supported"))
 }
@@ -212,6 +233,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             sources,
+            player,
             cover,
             start,
             stop,

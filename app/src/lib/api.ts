@@ -104,6 +104,8 @@ export const api = {
   play: (file: string) => invoke<void>("play", { file }),
   platform: () => invoke<Platform>("platform"),
   history: () => invoke<HistoryRecord[]>("history"),
+  /** What the player shows while not listening; `cover` reads its cover too (a data URL). */
+  player: (app: string, cover: boolean) => invoke<{ track: Track | null; playing: boolean; position_ms: number; cover: string | null } | null>("player", { app, cover }),
   /** The cover a recording carries, as a data URL. */
   cover: (file: string) => invoke<string | null>("cover", { file }),
   echolotState: () => invoke<CardState>("echolot_state"),
