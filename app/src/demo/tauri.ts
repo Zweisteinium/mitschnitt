@@ -26,6 +26,33 @@ function earlier(minutes: number, action: () => void) {
   }
 }
 
+/** Made-up cover art: two colours and a shape, as a data URL. */
+function art(a: string, b: string, shape: "sun" | "rings" | "stripes" | "grid" | "wave"): string {
+  const shapes = {
+    sun: `<circle cx="50" cy="62" r="22" fill="${b}"/><rect y="62" width="100" height="38" fill="${a}" opacity=".85"/>`,
+    rings: [34, 26, 18, 10].map((r) => `<circle cx="50" cy="50" r="${r}" fill="none" stroke="${b}" stroke-width="3"/>`).join(""),
+    stripes: [0, 20, 40, 60, 80, 100, 120].map((x) => `<path d="M${x - 40} 100 L${x} 0 L${x + 10} 0 L${x - 30} 100Z" fill="${b}"/>`).join(""),
+    grid: Array.from({ length: 36 }, (_, i) => `<circle cx="${14 + (i % 6) * 14.4}" cy="${14 + Math.floor(i / 6) * 14.4}" r="${1.5 + (i % 6) * 0.5}" fill="${b}"/>`).join(""),
+    wave: [30, 45, 60, 75].map((y, i) => `<path d="M0 ${y} Q25 ${y - 12} 50 ${y} T100 ${y} V100 H0Z" fill="${b}" opacity="${0.3 + i * 0.2}"/>`).join(""),
+  };
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><defs><linearGradient id="g" x2="1" y2="1"><stop offset="0" stop-color="${a}"/><stop offset="1" stop-color="#0a0e13"/></linearGradient></defs><rect width="100" height="100" fill="url(#g)"/>${shapes[shape]}</svg>`;
+  return `data:image/svg+xml,${encodeURIComponent(svg)}`;
+}
+
+const covers: Record<string, string> = {
+  "Rick Astley": art("#22d3ee", "#a78bfa", "wave"),
+  Darude: art("#f59e0b", "#fde68a", "sun"),
+  "DJ Satomi": art("#6366f1", "#22d3ee", "grid"),
+  TheFatRat: art("#84cc16", "#0a0e13", "stripes"),
+  "Tears for Fears": art("#f43f5e", "#fbbf24", "sun"),
+  Eurythmics: art("#a78bfa", "#f0abfc", "rings"),
+  "Daft Punk": art("#ec4899", "#fde68a", "grid"),
+  Kraftwerk: art("#ef4444", "#fecaca", "stripes"),
+  "New Order": art("#0ea5e9", "#e0f2fe", "rings"),
+  Moderat: art("#14b8a6", "#99f6e4", "wave"),
+};
+const coverOf = (file: string) => Object.entries(covers).find(([artist]) => file.includes(`\\${artist} - `))?.[1] ?? null;
+
 const rick: Track = { title: "Never Gonna Give You Up", artist: "Rick Astley", album: "Whenever You Need Somebody", duration_ms: 213_573 };
 
 const out = "C:\\Users\\Anna\\Music\\Mitschnitt";
@@ -87,7 +114,7 @@ let snapshot: RecorderSnapshot = {
 
 const mb = (minutes: number, seconds: number, bits: 16 | 24) => Math.round((minutes * 60 + seconds) * (bits === 16 ? 112_000 : 168_000));
 const day = 86_400_000;
-const record = (daysAgo: number, artist: string, title: string, length: [number, number], bits: 16 | 24, echolot: string | null, exists = true, faded = false): HistoryRecord => ({
+const record = (daysAgo: number, artist: string, title: string, length: [number, number], bits: 16 | 24, echolot: string | null, exists = true, faded = false, more: Partial<HistoryRecord> = {}): HistoryRecord => ({
   at: Date.now() - daysAgo * day,
   track: { title, artist, album: "", duration_ms: (length[0] * 60 + length[1]) * 1000 },
   file: `${out}\\${artist} - ${title}.flac`,
@@ -103,6 +130,7 @@ const record = (daysAgo: number, artist: string, title: string, length: [number,
   frames: (length[0] * 60 + length[1]) * 44_100,
   peak_dbfs: -0.12,
   exists,
+  ...more,
 });
 const history: HistoryRecord[] = [
   record(1, "Tears for Fears", "Everybody Wants to Rule the World", [4, 11], 16, "filed"),
@@ -110,6 +138,8 @@ const history: HistoryRecord[] = [
   record(1, "Talk Talk", "It's My Life", [3, 53], 16, "not_better", false),
   record(2, "Daft Punk", "Digital Love", [5, 1], 24, null),
   record(3, "Kraftwerk", "Computer Love", [7, 15], 24, null),
+  record(4, "Moderat", "A New Error", [5, 52], 16, "not_better", true, false, { lossy: "source", issues: ["lossy master (~256 kbps / V0): spectrum ends at 20 kHz"] }),
+  record(5, "Kraftwerk", "The Model", [3, 38], 16, "stalled", true, false, { verdict: "corrupt", exact: true, file: `${out}\\Not taken\\Kraftwerk - The Model.flac`, issues: ["dropout at 2:01.330 (12.5 ms of silence)"] }),
   record(6, "New Order", "Blue Monday", [7, 29], 16, "filed"),
 ];
 
@@ -127,11 +157,13 @@ function start() {
   emit("listening", listening);
   for (const [ago, track, saved, result, detail] of earlierSongs) {
     earlier(ago, () => {
+      emit("update", { kind: "started", track, cover: covers[track.artist] ?? null });
       const kept = saved.verdict === "info" || saved.faded;
       emit("update", { kind: "saved", track, file: `${out}\\${kept ? "" : "Not taken\\"}${track.artist} - ${track.title}.flac`, size: Math.round((track.duration_ms / 1000) * 112_000), ...saved, echolot: true, frames: Math.round(track.duration_ms * 44.1), peak_dbfs: -0.3 });
       emit("echolot", { kind: "song", job: track, result, detail });
     });
   }
+  emit("update", { kind: "started", track: rick, cover: covers[rick.artist] });
   emit("update", { kind: "monitor_volume", volume: 0.42 });
   emit("echolot", { kind: "snapshot", snapshot });
 
@@ -167,6 +199,7 @@ const commands: Record<string, (args: Record<string, unknown>) => unknown> = {
   save_settings: (a) => Object.assign(settings, a.settings),
   health: () => checks,
   history: () => history,
+  cover: (a) => coverOf(a.file as string),
   echolot_state: () => ({ snapshot, url: settings.echolot_url, pairing: false }),
   echolot_session: (a) => setSession(a.action === "pause" ? "paused" : a.action === "stop" ? "stopped" : "running"),
   set_monitor_volume: (a) => emit("update", { kind: "monitor_volume", volume: a.volume }),
@@ -189,8 +222,8 @@ export async function getVersion(): Promise<string> {
   return "0.5.1";
 }
 
-// Once both stores have subscribed.
-setTimeout(start, 300);
+// Once both stores have subscribed. `?idle`: before Start.
+if (!new URLSearchParams(location.search).has("idle")) setTimeout(start, 300);
 
 // `?click=Setup&click=History`: click those buttons (by their text) once the demo runs, for screenshots of them.
 setTimeout(async () => {

@@ -1,12 +1,12 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
 
-  let { label, index, actions, children }: { label: string; index?: string; actions?: Snippet; children: Snippet } = $props();
+  let { label, actions, children }: { label: string; actions?: Snippet; children: Snippet } = $props();
 </script>
 
 <section class="panel">
   <header>
-    <h2>{#if index}<span class="index">{index}</span>{/if}{label}</h2>
+    <h2>{label}</h2>
     {#if actions}<div class="actions">{@render actions()}</div>{/if}
   </header>
   {@render children()}
@@ -49,6 +49,9 @@
   }
 
   h2 {
+    display: flex;
+    align-items: center;
+    gap: 10px;
     margin: 0;
     font: 600 11px/1 var(--mono);
     letter-spacing: 0.16em;
@@ -56,13 +59,18 @@
     color: var(--muted);
   }
 
-  .index {
-    color: var(--cyan);
-    margin-right: 10px;
+  /* The brand's mark, small: the accent the numbers gave. */
+  h2::before {
+    content: "";
+    width: 6px;
+    height: 6px;
+    background: var(--cyan);
+    box-shadow: 0 0 8px var(--cyan);
   }
 
   .actions {
     display: flex;
-    gap: 8px;
+    align-items: center;
+    gap: 12px;
   }
 </style>

@@ -171,7 +171,7 @@ fn listen(app: String, dry: bool, trace: Option<PathBuf>) -> ExitCode {
                     20.0 * peak.max(1e-6).log10()
                 );
             }
-            Update::Started { track } => println!("--> recording {} - {}", track.artist, track.title),
+            Update::Started { track, .. } => println!("--> recording {} - {}", track.artist, track.title),
             Update::Dropped { track, message, .. } => println!("--- skipped {} - {}: {message}", track.artist, track.title),
             Update::Saved { track, file, verdict, exact, issues, .. } => {
                 println!("==> {} - {}: {verdict:?}, exact source: {exact}", track.artist, track.title);
@@ -357,7 +357,7 @@ mod queue {
             };
             let config = Config { profile: SPOTIFY, settings: self.settings.clone(), trace: None, queue: Some(queue) };
             let (engine, info) = Engine::start(config, |u| match u {
-                Update::Started { track } => println!("  --> recording {} - {}", track.artist, track.title),
+                Update::Started { track, .. } => println!("  --> recording {} - {}", track.artist, track.title),
                 Update::Dropped { track, message, .. } => println!("  --- {} - {}: {message}", track.artist, track.title),
                 Update::Saved { track, verdict, exact, .. } => println!("  ==> {} - {}: {verdict:?}, exact source: {exact}", track.artist, track.title),
                 Update::Failed { track, error } => println!("  !!! {} - {}: {error}", track.artist, track.title),

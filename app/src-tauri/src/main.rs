@@ -62,6 +62,11 @@ async fn history() -> Vec<Record> {
 }
 
 #[tauri::command]
+async fn cover(file: String) -> Option<String> {
+    mitschnitt_core::output::cover_url(std::path::Path::new(&file))
+}
+
+#[tauri::command]
 async fn stop(state: State<'_, App>) -> Result<(), String> {
     state.for_queue.store(false, Ordering::Relaxed);
     let engine = lock(&state.engine)?.take();
@@ -197,6 +202,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             sources,
+            cover,
             start,
             stop,
             stop_after_track,

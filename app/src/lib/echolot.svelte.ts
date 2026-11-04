@@ -118,7 +118,7 @@ class Echolot {
     await this.#try(async () => {
       this.listResults = [];
       await api.echolotList(await file.text());
-      session.tab = "listen";
+      session.tab = "record";
     });
   }
 

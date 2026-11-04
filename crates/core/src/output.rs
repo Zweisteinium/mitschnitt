@@ -101,6 +101,23 @@ fn id3_tags(tags: &Tags) -> id3::Tag {
     tag
 }
 
+/// An image for the window: `data:<mime>;base64,…`.
+pub fn data_url(mime: &str, data: &[u8]) -> String {
+    use base64::Engine as _;
+    format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(data))
+}
+
+/// The cover a recording carries, read from its tags only.
+pub fn cover_url(path: &Path) -> Option<String> {
+    if path.extension()? == "mp3" {
+        let tag = id3::Tag::read_from_path(path).ok()?;
+        let picture = tag.pictures().next()?;
+        return Some(data_url(&picture.mime_type, &picture.data));
+    }
+    let picture = flac_codec::metadata::block::<_, flac_codec::metadata::Picture>(path).ok()??;
+    Some(data_url(&picture.media_type, &picture.data))
+}
+
 /// The 24-bit capture holds a 16-bit master exactly.
 pub fn is_16bit(audio: &Audio) -> bool {
     audio.bits <= 16 || audio.samples.iter().all(|s| s % (1 << (audio.bits - 16)) == 0)
@@ -215,6 +232,21 @@ mod tests {
     }
 
     #[test]
+    fn a_flacs_cover_is_read_back_from_its_metadata() {
+        let dir = std::env::temp_dir().join(format!("mitschnitt-cover-{}", std::process::id()));
+        let settings = Settings { out_dir: dir.clone(), format: Format::Flac, ..Settings::default() };
+        // The smallest JPEG header that names its size: the writer leaves out an image it can't measure.
+        let jpeg = vec![0xFF, 0xD8, 0xFF, 0xC0, 0, 17, 8, 0, 64, 0, 64, 3, 1, 0x11, 0, 2, 0x11, 1, 3, 0x11, 1];
+        let tags = Tags { cover: Some(flac::Cover { mime: "image/jpeg", data: jpeg.clone() }), ..track() };
+        let audio = Audio { rate: 44_100, channels: 2, bits: 24, samples: vec![256; 8_820] };
+        let path = write(&audio, &tags, &settings).unwrap();
+        assert_eq!(cover_url(&path), Some(data_url("image/jpeg", &jpeg)));
+        let bare = write(&audio, &Tags { cover: None, ..tags }, &settings).unwrap();
+        assert_eq!(cover_url(&bare), None);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn mp3_is_written_with_tags() {
         let audio = Audio { rate: 44_100, channels: 2, bits: 24, samples: (0..88_200).map(|i| ((i as f64 * 0.05).sin() * 3e6) as i32).collect() };
         let dir = std::env::temp_dir().join(format!("mitschnitt-mp3-{}", std::process::id()));
@@ -224,6 +256,7 @@ mod tests {
         let tag = id3::Tag::read_from_path(&path).unwrap();
         use id3::TagLike;
         assert_eq!((tag.artist(), tag.track(), tag.pictures().count()), (Some("AC/DC"), Some(3), 1));
+        assert_eq!(cover_url(&path).as_deref(), Some("data:image/png;base64,iVBORw=="));
         assert!(std::fs::metadata(&path).unwrap().len() > 20_000, "about 40 kB for 1 s at 320 kbit/s");
         std::fs::remove_dir_all(dir).unwrap();
     }

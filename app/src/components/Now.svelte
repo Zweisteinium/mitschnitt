@@ -1,6 +1,7 @@
 <script lang="ts">
   import { clock } from "../lib/api";
   import { session } from "../lib/session.svelte";
+  import Cover from "./Cover.svelte";
   import Meter from "./Meter.svelte";
   import Panel from "./Panel.svelte";
 
@@ -10,8 +11,8 @@
   const progress = $derived(track && status ? Math.min(1, status.recorded_ms / track.duration_ms) : 0);
 
   const labels = {
-    off: "Not listening",
-    idle: "Listening – waiting for a track",
+    off: "Not recording",
+    idle: "Ready – waiting for a track",
     waiting: "Armed – waiting for sound",
     recording: "Recording",
   };
@@ -20,32 +21,37 @@
   const position = $derived(Math.cbrt(session.monitorVolume ?? 1));
 </script>
 
-<Panel label="Now" index="02">
-  <div class="state {phase}">
-    <span class="dot"></span>
-    <span class="mono">{labels[phase]}</span>
-    {#if session.listening && session.keyBlockedAt}
-      <span class="chip mono" title="The recording continues. To pause, use Spotify's own pause button.">Media key blocked</span>
-    {/if}
-  </div>
+<Panel label="Now">
+  <div class="hero">
+    <Cover src={track ? session.coverOf(track) : null} size={148} />
+    <div class="body">
+      <div class="state {phase}">
+        <span class="dot"></span>
+        <span class="mono">{labels[phase]}</span>
+        {#if session.listening && session.keyBlockedAt}
+          <span class="chip mono" title="The recording continues. To pause, use Spotify's own pause button.">Media key blocked</span>
+        {/if}
+      </div>
 
-  {#if track}
-    <div class="track">
-      <div class="title">{track.title}</div>
-      <div class="muted">{track.artist}{track.album ? ` · ${track.album}` : ""}</div>
+      {#if track}
+        <div class="track">
+          <div class="title">{track.title}</div>
+          <div class="muted">{track.artist}{track.album ? ` · ${track.album}` : ""}</div>
+        </div>
+        <div class="bar" class:rec={phase === "recording"}><div class="fill" style:width="{progress * 100}%"></div></div>
+        <div class="times mono muted">
+          <span>{clock(status?.recorded_ms ?? 0)}</span>
+          <span>{clock(track.duration_ms)}</span>
+        </div>
+      {:else}
+        <p class="muted hint">
+          {session.listening
+            ? "Play a track from its start. It is kept whole: pausing, skipping or seeking discards it."
+            : "Pick a source above and start recording."}
+        </p>
+      {/if}
     </div>
-    <div class="bar" class:rec={phase === "recording"}><div class="fill" style:width="{progress * 100}%"></div></div>
-    <div class="times mono muted">
-      <span>{clock(status?.recorded_ms ?? 0)}</span>
-      <span>{clock(track.duration_ms)}</span>
-    </div>
-  {:else}
-    <p class="muted hint">
-      {session.listening
-        ? "Play a track from its start. It is kept whole: pausing, skipping or seeking discards it."
-        : "Pick a source and start listening."}
-    </p>
-  {/if}
+  </div>
 
   {#if session.listening}
     {#if session.monitorMuted}
@@ -54,25 +60,42 @@
         <button class="link mono" onclick={() => session.unmuteMonitor()}>Unmute here</button>
       </div>
     {/if}
-    {#if status?.grid}
-      {@const exact = status.grid.bit24 === 1}
-      <div class="proof mono" class:ok={exact} class:warn={!exact} title="Share of the audio that arrives as exact 24-bit values">
-        <span class="dot"></span>
-        {exact ? "Lossless · arriving bit-exact" : "Not lossless · lossy or altered"}
-      </div>
-    {/if}
-    <Meter rms={status?.rms ?? [0, 0]} peak={status?.level ?? [0, 0]} />
-    {#if session.platform?.monitor && session.settings?.monitor && session.monitorVolume !== null}
-      <label class="volume" title="Mitschnitt in the {session.platform.os === 'windows' ? 'Windows volume mixer' : 'system mixer'}, on a loudness scale">
-        <span class="mono muted">Monitor</span>
-        <input type="range" min="0" max="1" step="0.01" value={position} oninput={(e) => session.setMonitorVolume(Math.pow(+e.currentTarget.value, 3))} />
-        <span class="mono">{Math.round(position * 100)}</span>
-      </label>
-    {/if}
+    <div class="signal">
+      {#if status?.grid}
+        {@const exact = status.grid.bit24 === 1}
+        <div class="proof mono" class:ok={exact} class:warn={!exact} title="Share of the audio that arrives as exact 24-bit values">
+          <span class="dot"></span>
+          {exact ? "Lossless · arriving bit-exact" : "Not lossless · lossy or altered"}
+        </div>
+      {/if}
+      <Meter rms={status?.rms ?? [0, 0]} peak={status?.level ?? [0, 0]} />
+      {#if session.platform?.monitor && session.settings?.monitor && session.monitorVolume !== null}
+        <label class="volume" title="Mitschnitt in the {session.platform.os === 'windows' ? 'Windows volume mixer' : 'system mixer'}, on a loudness scale">
+          <span class="mono muted">Monitor</span>
+          <input type="range" min="0" max="1" step="0.01" value={position} oninput={(e) => session.setMonitorVolume(Math.pow(+e.currentTarget.value, 3))} />
+          <span class="mono">{Math.round(position * 100)}</span>
+        </label>
+      {/if}
+    </div>
   {/if}
 </Panel>
 
 <style>
+  .hero {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 20px;
+    align-items: center;
+  }
+
+  .body {
+    min-width: 0;
+  }
+
+  .signal {
+    margin-top: 6px;
+  }
+
   .state {
     display: flex;
     align-items: center;
@@ -112,7 +135,7 @@
   }
 
   .title {
-    font-size: 22px;
+    font-size: 26px;
     font-weight: 650;
     letter-spacing: -0.01em;
     line-height: 1.2;

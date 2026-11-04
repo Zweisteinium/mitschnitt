@@ -9,15 +9,17 @@ export type Entry = { id: number; at: Date; track: Track } & Outcome;
 
 const ALTERED_IN_ROW = 2;
 
-export type Tab = "listen" | "setup" | "settings";
+export type Tab = "record" | "library" | "setup" | "settings";
 
 class Session {
-  tab = $state<Tab>("listen");
+  tab = $state<Tab>("record");
   sources = $state<Source[]>([]);
   selected = $state<string | null>(null);
   source = $state<SourceInfo | null>(null);
   status = $state<Status | null>(null);
   history = $state<Entry[]>([]);
+  /** The player's cover per song of this run, by artist and title. */
+  covers = $state<Record<string, string>>({});
   settings = $state<Settings | null>(null);
   platform = $state<Platform | null>(null);
   checks = $state<Check[]>([]);
@@ -76,7 +78,7 @@ class Session {
   }
 
   async #poll() {
-    if (this.#polling || this.listening || this.tab !== "listen" || document.hidden) return;
+    if (this.#polling || this.listening || this.tab !== "record" || document.hidden) return;
     this.#polling = true;
     try {
       this.#setSources(await api.sources());
@@ -156,6 +158,9 @@ class Session {
       case "status":
         this.status = u.status;
         break;
+      case "started":
+        if (u.cover) this.covers[key(u.track)] = u.cover;
+        break;
       case "saved":
         if (u.lossy === "stream") this.altered++;
         else if (u.exact || u.faded) this.altered = 0;
@@ -196,6 +201,10 @@ class Session {
     }
   }
 
+  coverOf(track: Track): string | null {
+    return this.covers[key(track)] ?? null;
+  }
+
   /** Echolot's answer moved a recording out of the waiting folder (`to`: null when it was deleted). */
   moved(from: string, to: string | null) {
     this.history = this.history.map((e) => (e.outcome === "saved" && e.file === from ? { ...e, file: to } : e));
@@ -205,5 +214,8 @@ class Session {
     this.history = [{ id: this.#nextId++, at: new Date(), track, ...outcome }, ...this.history].slice(0, 200);
   }
 }
+
+const key = (t: Track) => `${t.artist}
+${t.title}`;
 
 export const session = new Session();

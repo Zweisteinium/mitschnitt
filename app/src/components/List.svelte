@@ -8,7 +8,7 @@
   const folder = $derived(session.settings ? `${session.settings.out_dir}/Echolot` : undefined);
 </script>
 
-<Panel label="List" index="05">
+<Panel label="List">
   <div class="title">{l.detail}</div>
   <div class="bar"><span style:width="{l.total > 0 ? (l.done / l.total) * 100 : 0}%"></span></div>
   <div class="counts mono small">

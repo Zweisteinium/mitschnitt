@@ -11,7 +11,7 @@ export type Lossy = "stream" | "source";
 
 export type Update =
   | { kind: "status"; status: Status }
-  | { kind: "started"; track: Track }
+  | { kind: "started"; track: Track; cover: string | null }
   | { kind: "dropped"; track: Track; message: string }
   | { kind: "exists"; track: Track; file: string }
   | { kind: "saved"; track: Track; file: string | null; size: number; verdict: Severity; master: Master; exact: boolean; faded: boolean; lossy: Lossy | null; issues: string[]; echolot: boolean; frames: number; peak_dbfs: number | null }
@@ -98,6 +98,8 @@ export const api = {
   play: (file: string) => invoke<void>("play", { file }),
   platform: () => invoke<Platform>("platform"),
   history: () => invoke<HistoryRecord[]>("history"),
+  /** The cover a recording carries, as a data URL. */
+  cover: (file: string) => invoke<string | null>("cover", { file }),
   echolotState: () => invoke<CardState>("echolot_state"),
   echolotConnect: (url: string) => invoke<void>("echolot_connect", { url }),
   echolotCode: (code: string) => invoke<void>("echolot_code", { code }),

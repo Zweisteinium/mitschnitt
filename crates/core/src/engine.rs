@@ -121,7 +121,8 @@ pub struct SourceInfo {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Update {
     Status { status: Status },
-    Started { track: Track },
+    /// `cover`: a data URL of the player's cover.
+    Started { track: Track, cover: Option<String> },
     Dropped { track: Track, reason: Reason, message: String },
     Exists { track: Track, file: String },
     /// `file`: `None` when a flagged file was removed. `exact`: every sample arrived untouched. `faded`: all but the
@@ -760,9 +761,10 @@ impl Session {
             match event {
                 Event::Started(track) => {
                     let extra = self.watcher.as_ref().map(Watcher::extra).unwrap_or_default();
+                    let cover = extra.cover.as_ref().map(|c| output::data_url(c.mime, &c.data));
                     self.extra = Some((track.clone(), extra));
                     if target {
-                        notify(Update::Started { track });
+                        notify(Update::Started { track, cover });
                     }
                 }
                 Event::Dropped { track, reason } => {

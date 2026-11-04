@@ -34,7 +34,7 @@
   };
 </script>
 
-<Panel label="Echolot" index="04">
+<Panel label="Echolot">
   <div class="who small" title={s.state === "busy" ? "Waiting while Spotify plays something else, here or on another device" : undefined}>
     <span class="dot" class:offline={s.connection === "offline"}></span>
     {s.connection === "offline" ? "Offline" : "Connected"}{#if s.state}<span class="muted"> · {stateText[s.state] ?? s.state}</span>{/if}

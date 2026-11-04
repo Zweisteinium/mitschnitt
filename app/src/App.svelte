@@ -1,19 +1,23 @@
 <script lang="ts">
   import { getVersion } from "@tauri-apps/api/app";
   import { onMount } from "svelte";
+  import icon from "../icon.svg";
   import Echolot from "./components/Echolot.svelte";
-  import History from "./components/History.svelte";
   import List from "./components/List.svelte";
   import Now from "./components/Now.svelte";
-  import Source from "./components/Source.svelte";
+  import RunControls from "./components/RunControls.svelte";
+  import Session from "./components/Session.svelte";
+  import SourceBar from "./components/SourceBar.svelte";
   import { api } from "./lib/api";
   import { echolot } from "./lib/echolot.svelte";
   import { session, type Tab } from "./lib/session.svelte";
+  import Library from "./views/Library.svelte";
   import Settings from "./views/Settings.svelte";
   import Setup from "./views/Setup.svelte";
 
   const tabs: { id: Tab; label: string }[] = [
-    { id: "listen", label: "Listen" },
+    { id: "record", label: "Record" },
+    { id: "library", label: "Library" },
     { id: "setup", label: "Setup" },
     { id: "settings", label: "Settings" },
   ];
@@ -30,7 +34,7 @@
 <div class="shell">
   <header>
     <div class="brand">
-      <span class="mark"></span>
+      <img class="mark" src={icon} alt="" />
       <span class="mono">MITSCHNITT</span>
       {#if version}<span class="version mono">v{version}</span>{/if}
     </div>
@@ -41,8 +45,11 @@
         </button>
       {/each}
     </nav>
-    <div class="status mono" class:live={session.listening} class:rec={session.status?.phase === "recording"}>
-      <span class="dot"></span>{session.status?.phase === "recording" ? "REC" : session.listening ? "LISTENING" : "IDLE"}
+    <div class="end">
+      <div class="status mono" class:live={session.listening} class:rec={session.status?.phase === "recording"}>
+        <span class="dot"></span>{session.status?.phase === "recording" ? "REC" : session.listening ? "READY" : "IDLE"}
+      </div>
+      <RunControls />
     </div>
   </header>
 
@@ -64,18 +71,21 @@
   {/if}
 
   <main>
-    {#if session.tab === "listen"}
-      <div class="listen">
-        <div class="col">
-          <Source />
-          {#if echolot.list}<List />{/if}
-          {#if echolot.connected}<Echolot />{/if}
-        </div>
-        <div class="col">
-          <Now />
-          <History />
-        </div>
+    {#if session.tab === "record"}
+      <SourceBar />
+      <Now />
+      {@const side = echolot.list || echolot.connected}
+      <div class="below" class:side>
+        <Session />
+        {#if side}
+          <div class="col">
+            {#if echolot.list}<List />{/if}
+            {#if echolot.connected}<Echolot />{/if}
+          </div>
+        {/if}
       </div>
+    {:else if session.tab === "library"}
+      <Library />
     {:else if session.tab === "setup"}
       <Setup />
     {:else}
@@ -110,10 +120,9 @@
   }
 
   .mark {
-    width: 14px;
-    height: 14px;
-    background: var(--edge);
-    box-shadow: 0 0 14px rgba(34, 211, 238, 0.6);
+    width: 20px;
+    height: 20px;
+    filter: drop-shadow(0 0 6px rgba(34, 211, 238, 0.45));
   }
 
   .version {
@@ -158,8 +167,14 @@
     font-weight: 700;
   }
 
-  .status {
+  .end {
     justify-self: end;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+
+  .status {
     display: flex;
     align-items: center;
     gap: 8px;
@@ -192,12 +207,16 @@
     box-shadow: 0 0 10px var(--rec);
   }
 
-  .listen {
+  .below {
     display: grid;
-    /* Room for a long device name and Echolot's three buttons on one line (they need 376 px, measured). */
-    grid-template-columns: clamp(470px, 40%, 520px) minmax(0, 1fr);
     gap: 16px;
     align-items: start;
+    margin-top: 16px;
+  }
+
+  /* Echolot's three buttons need 376 px on one line (measured). */
+  .below.side {
+    grid-template-columns: minmax(0, 1fr) clamp(420px, 34%, 480px);
   }
 
   .col {
@@ -255,7 +274,7 @@
   }
 
   @media (max-width: 960px) {
-    .listen {
+    .below.side {
       grid-template-columns: 1fr;
     }
   }

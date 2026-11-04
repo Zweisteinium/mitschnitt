@@ -28,7 +28,7 @@
 
 {#if s}
   <div class="grid">
-    <Panel label="Output" index="01">
+    <Panel label="Output">
       <label class="field">
         <span class="name mono">Folder</span>
         <div class="row">
@@ -69,7 +69,7 @@
       </div>
     </Panel>
 
-    <Panel label="Behaviour" index="02">
+    <Panel label="Behaviour">
       {#if session.platform?.monitor}
         <label class="toggle">
           <input type="checkbox" checked={s.monitor} onchange={(e) => set("monitor", e.currentTarget.checked)} />
@@ -112,7 +112,7 @@
       <p class="muted rate">Changes apply the next time you start listening{session.platform?.monitor ? "; the monitor volume applies immediately" : ""}.</p>
     </Panel>
 
-    <Panel label="Development" index="03">
+    <Panel label="Development">
       <div class="dev">
         <span>
           <span class="title">Record an exported list</span>
