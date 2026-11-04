@@ -540,7 +540,7 @@ impl Session {
                 }
                 Ok(Msg::Written(result)) => {
                     if let Some(run) = &mut self.queue {
-                        run.runner.written(Instant::now(), result);
+                        run.runner.written(Instant::now(), result, !stop_after);
                     }
                     Vec::new()
                 }
@@ -928,6 +928,8 @@ fn finish_job(track: Track, tags: Tags, samples: Vec<i32>, proof: Proof, rate: u
         let detail = checked.report.issues.iter().filter(|i| i.severity == Severity::Corrupt || glitch).map(|i| i.text.as_str()).collect::<Vec<_>>().join("; ");
         let file = settings.keep_flagged.then(|| Settings { out_dir: settings.out_dir.with_file_name(crate::recorder::NOT_TAKEN_DIR), ..settings.clone() }).and_then(|s| output::write(&checked.audio, &tags, &s).ok());
         let size = file.as_deref().map_or(0, file_size);
+        // A glitch alone stays "altered" in the report, and the history showed a paused take as "Lossy master".
+        checked.report.verdict = Severity::Corrupt;
         notify(saved(track, file, size, checked, true));
         return Written::Corrupt { detail: format!("damaged: {detail}") };
     }

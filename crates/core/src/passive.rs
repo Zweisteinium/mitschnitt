@@ -166,8 +166,8 @@ enum State {
     /// `tail_off`: off-grid frames past `expected`, counted only if the end search keeps them. `gap`: the first frame
     /// past `expected` without packets; silence from there on proves no end. `tail_empty`: per frame past `expected`,
     /// whether the player rendered it as an empty buffer. `jump`: the frame and off-grid count where the player jumped,
-    /// while the audio after it is judged ([`JUDGE_MS`]).
-    Recording { track: Track, expected: usize, samples: Vec<i32>, off_grid: usize, off_span: Option<(usize, usize)>, tail_off: Vec<usize>, tail_empty: Vec<bool>, gap: Option<usize>, start: u64, jump: Option<(usize, usize)>, synced: bool },
+    /// while the audio after it is judged ([`JUDGE_MS`]). `shown`: the player showed the track playing.
+    Recording { track: Track, expected: usize, samples: Vec<i32>, off_grid: usize, off_span: Option<(usize, usize)>, tail_off: Vec<usize>, tail_empty: Vec<bool>, gap: Option<usize>, start: u64, jump: Option<(usize, usize)>, synced: bool, shown: bool },
 }
 
 pub struct Passive {
@@ -293,7 +293,17 @@ impl Passive {
                     let start = self.render_start.take().filter(|r| self.frame - r <= max_lead).unwrap_or(self.frame);
                     self.starts.push_back(start);
                     if let State::Waiting { track, .. } | State::Armed { track } = &self.state {
-                        let (track, synced) = (track.clone(), matches!(self.state, State::Waiting { .. }));
+                        // Only silence since the shown start: the master's own (Don't Worry, 3.9 s), and the
+                        // position runs that far ahead all song, no seek. Sound before a late edge: a gap in the
+                        // song taken for its start, which the seek check drops.
+                        let synced = match self.state {
+                            State::Waiting { target, .. } => {
+                                self.frame as i64 - target <= ms_to_frames(SEEK_TOLERANCE_MS as u64, rate) as i64
+                                    || self.zero_from as i64 > target + ms_to_frames(POSITION_MATCH_MS as u64, rate) as i64
+                            }
+                            _ => false,
+                        };
+                        let track = track.clone();
                         self.start_recording(track, start, synced, &mut events);
                     }
                 } else {
@@ -377,21 +387,29 @@ impl Passive {
             crate::log!("length of \"{}\" changed from {} to {} ms", track.title, track.duration_ms, shown.duration_ms);
             *expected = ms_to_frames(shown.duration_ms, self.rate);
             *track = shown.clone();
+            // Windows showed the new title with the previous song's length first (8 of 59 starts on 3 Nov): the
+            // runner only takes the start with the right one, and waited for sound that was already being recorded.
+            events.push(Event::Started(shown.clone()));
         }
         // After the runner's Play the player showed it playing over 1.5 s late in 14 of 38 Plays (up to 4.4 s,
         // Windows), until then paused or at the old position.
-        if let State::Recording { track, samples, synced, .. } = &mut self.state {
+        if let State::Recording { track, samples, synced, shown, .. } = &mut self.state {
             let elapsed_ms = frames_to_ms(samples.len() / self.channels, self.rate) as i64;
-            *synced |= m.playing && m.track.as_ref() == Some(track) && (m.position_ms - elapsed_ms).abs() <= SEEK_TOLERANCE_MS;
+            let playing = m.playing && m.track.as_ref() == Some(track);
+            *shown |= playing;
+            *synced |= playing && (m.position_ms - elapsed_ms).abs() <= SEEK_TOLERANCE_MS;
         }
         match &self.state {
             // A real pause at the end still ends it: the audio stops (silent packets, an underrun).
-            State::Recording { track, expected, samples, off_grid, tail_off, jump, synced, .. } if frames_to_ms(expected.saturating_sub(samples.len() / self.channels), self.rate) > END_MARGIN_MS => {
+            State::Recording { track, expected, samples, off_grid, tail_off, jump, synced, shown, .. } if frames_to_ms(expected.saturating_sub(samples.len() / self.channels), self.rate) > END_MARGIN_MS => {
                 let recorded = samples.len() / self.channels;
                 let (elapsed_ms, left_ms) = (frames_to_ms(recorded, self.rate) as i64, frames_to_ms(expected - recorded, self.rate));
                 // No track at all: its metadata is being updated (seen 35 s before the end); a real change shows the
                 // other track within a moment.
-                if !m.playing && *synced {
+                // Unsynced, the position ran 3.9 s ahead all song and a pause in it was ignored (Don't Worry, 2 Nov).
+                // Its own pause at the end (repeat-one) shows 0:00 or the end.
+                let mid_song = m.track.as_ref() == Some(track) && m.position_ms > SEEK_TOLERANCE_MS && m.position_ms + (EARLY_ANNOUNCE_MS as i64) < track.duration_ms as i64;
+                if !m.playing && (*synced || *shown && mid_song) {
                     crate::log!("paused with {left_ms} ms left");
                     self.drop_recording(Reason::Paused, &mut events);
                 } else if let Some(shown) = m.track.as_ref().filter(|t| *t != track) {
@@ -549,7 +567,9 @@ impl Passive {
         events.push(Event::Started(track.clone()));
         let complete = samples.len() >= (expected + self.end_search()) * self.channels;
         let tail_empty = vec![false; (samples.len() / self.channels).saturating_sub(expected)];
-        self.state = State::Recording { track, expected, samples, off_grid, off_span, tail_off, tail_empty, gap: None, start, jump: None, synced };
+        // Started from what the player showed playing, or armed before it shows it.
+        let shown = !matches!(self.state, State::Armed { .. });
+        self.state = State::Recording { track, expected, samples, off_grid, off_span, tail_off, tail_empty, gap: None, start, jump: None, synced, shown };
         if complete {
             self.complete(events);
         }
@@ -998,6 +1018,48 @@ mod tests {
         }
     }
 
+    /// Don't Worry (2 Nov): its sound began 3.9 s after Spotify showed 0:00, which then ran 3.9 s ahead all song. That
+    /// was taken for a seek (shown at 0:00 first) or never synced, so a pause 49 s in was recorded as 30 s of silence.
+    #[test]
+    fn a_position_ahead_by_the_masters_leading_silence_is_no_seek_and_a_pause_still_counts() {
+        let t = track(30_000);
+        let (_, raw) = master(ms_to_frames(4_000, RATE), 6);
+        let paused = |ms| Media { playing: false, track: Some(t.clone()), position_ms: ms };
+        for armed in [false, true] {
+            let mut p = Passive::new(RATE, 2, GAIN);
+            let mut ev = Vec::new();
+            zeros(&mut p, 1_000, &mut ev);
+            if armed {
+                p.arm(t.clone());
+                ev.extend(p.media(paused(0)));
+            } else {
+                ev.extend(p.media(playing(&t, 0)));
+            }
+            zeros(&mut p, 3_900, &mut ev);
+            feed(&mut p, &raw, &mut ev);
+            ev.extend(p.media(playing(&t, 7_900)));
+            feed(&mut p, &raw[..ms_to_frames(JUDGE_MS, RATE) * 2], &mut ev);
+            assert!(p.recording(), "armed={armed}: {ev:?}");
+            // Its own pause at the end shows 0:00 or the end: not the user's.
+            ev.extend(p.media(paused(0)));
+            assert!(p.recording(), "armed={armed}: {ev:?}");
+            ev.extend(p.media(paused(10_400)));
+            assert!(ev.iter().any(|e| matches!(e, Event::Dropped { reason: Reason::Paused, .. })), "armed={armed}: {ev:?}");
+        }
+        // Sound before the late edge: a gap in the song was taken for its start, still a seek.
+        let mut p = Passive::new(RATE, 2, GAIN);
+        let mut ev = Vec::new();
+        zeros(&mut p, 1_000, &mut ev);
+        feed(&mut p, &raw, &mut ev);
+        ev.extend(p.media(playing(&t, 0)));
+        feed(&mut p, &raw, &mut ev);
+        zeros(&mut p, 20, &mut ev);
+        feed(&mut p, &raw[..ms_to_frames(100, RATE) * 2], &mut ev);
+        ev.extend(p.media(playing(&t, 4_100)));
+        feed(&mut p, &raw[..ms_to_frames(JUDGE_MS, RATE) * 2], &mut ev);
+        assert!(ev.iter().any(|e| matches!(e, Event::Dropped { reason: Reason::Seeked, .. })), "{ev:?}");
+    }
+
     /// Measured (Linux, Spotify 1.3.4): with crossfade the jump to 0:00 came 9.4 s early and nearly every frame after it
     /// was off the grid; a seek to 0:00 left 35 ms of fade.
     #[test]
@@ -1151,5 +1213,7 @@ mod tests {
         silence(&mut p, 300, &mut ev);
         let done = ev.iter().find_map(|e| match e { Event::Completed { track, samples, .. } => Some((track, samples.len())), _ => None });
         assert_eq!(done, Some((&long, raw.len())), "{ev:?}");
+        // Announced again: the runner waiting for the right length took the first start for another song's (3 Nov).
+        assert!(ev.iter().any(|e| matches!(e, Event::Started(t) if *t == long)), "{ev:?}");
     }
 }

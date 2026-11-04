@@ -28,7 +28,7 @@
     setup: "Fix Setup",
   };
   const pauseText: Record<string, string> = {
-    took_over: "You took over Spotify",
+    took_over: "Paused – stopped, or no sound from Spotify here",
     by_user: "Paused",
     setup: "Paused – fix Setup",
   };

@@ -11,7 +11,7 @@ export const resultText: Record<string, string> = {
   recorded: "recorded",
   lossy_only: "no lossless",
   wrong_song: "wrong song",
-  took_over: "taken over",
+  took_over: "interrupted",
   crossfade: "crossfade on",
   skipped: "skipped by you",
   stalled: "failed",
