@@ -52,7 +52,14 @@ const covers: Record<string, string> = {
   "New Order": art("#0ea5e9", "#e0f2fe", "rings"),
   Moderat: art("#14b8a6", "#99f6e4", "wave"),
 };
-const coverOf = (file: string) => Object.entries(covers).find(([artist]) => file.includes(`\\${artist} - `))?.[1] ?? null;
+/** The real covers when `npm run screenshot` looked them up (src/demo/covers.json, not in git), else made-up art. */
+const real: Record<string, string> = Object.values(import.meta.glob<Record<string, string>>("./covers.json", { eager: true, import: "default" }))[0] ?? {};
+const coverFor = (artist: string, title: string) => real[`${artist} - ${title}`] ?? covers[artist] ?? null;
+/** A library file is named "Artist - Title.flac". */
+function fileCover(file: string) {
+  const [artist, title = ""] = (file.split("\\").pop() ?? "").replace(/\.\w+$/, "").split(" - ");
+  return coverFor(artist, title);
+}
 
 const rick: Track = { title: "Never Gonna Give You Up", artist: "Rick Astley", album: "Whenever You Need Somebody", duration_ms: 213_573 };
 
@@ -160,13 +167,13 @@ function start() {
   emit("listening", listening);
   for (const [ago, track, saved, result, detail] of earlierSongs) {
     earlier(ago, () => {
-      emit("update", { kind: "started", track, cover: covers[track.artist] ?? null });
+      emit("update", { kind: "started", track, cover: coverFor(track.artist, track.title) });
       const kept = saved.verdict === "info" || saved.faded;
       emit("update", { kind: "saved", format: "flac", track, file: `${out}\\${kept ? "" : "Not taken\\"}${track.artist} - ${track.title}.flac`, size: Math.round((track.duration_ms / 1000) * 112_000), ...saved, echolot: true, frames: Math.round(track.duration_ms * 44.1), peak_dbfs: -0.3 });
       emit("echolot", { kind: "song", job: track, result, detail });
     });
   }
-  emit("update", { kind: "started", track: rick, cover: covers[rick.artist] });
+  emit("update", { kind: "started", track: rick, cover: coverFor(rick.artist, rick.title) });
   emit("update", { kind: "monitor_volume", volume: 0.42 });
   emit("echolot", { kind: "snapshot", snapshot });
 
@@ -202,7 +209,7 @@ const commands: Record<string, (args: Record<string, unknown>) => unknown> = {
   save_settings: (a) => Object.assign(settings, a.settings),
   health: () => checks,
   history: () => history,
-  cover: (a) => coverOf(a.file as string),
+  cover: (a) => fileCover(a.file as string),
   echolot_state: () => ({ snapshot, url: settings.echolot_url, pairing: false }),
   echolot_session: (a) => setSession(a.action === "pause" ? "paused" : a.action === "stop" ? "stopped" : "running"),
   set_monitor_volume: (a) => emit("update", { kind: "monitor_volume", volume: a.volume }),

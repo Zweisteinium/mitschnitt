@@ -15,15 +15,17 @@
     <div class="detail">
       <span class={q.tone}>{q.text}</span>
       {#if note}<span class="muted">{note}</span>{/if}
-      {#if facts}<span class="facts mono">{facts}</span>{/if}
-      <span class="info" tabindex="0" role="button" aria-label="Details">
-        <svg viewBox="0 0 14 14" aria-hidden="true"><circle cx="7" cy="4.1" r="0.95" /><rect x="6.2" y="5.9" width="1.6" height="4.6" rx="0.8" /></svg>
-        <span class="card" role="tooltip">
-          {#if card.findings.length}
-            <span class="findings">{#each card.findings as line}<span>{line}</span>{/each}</span>
-          {/if}
-          <span class="facts-list">
-            {#each card.facts as [label, value]}<span class="label mono">{label}</span><span>{value}</span>{/each}
+      <span class="tail">
+        {#if facts}<span class="facts mono">{facts}</span>{/if}
+        <span class="info" tabindex="0" role="button" aria-label="Details">
+          <svg viewBox="0 0 14 14" aria-hidden="true"><circle cx="7" cy="4.1" r="0.95" /><rect x="6.2" y="5.9" width="1.6" height="4.6" rx="0.8" /></svg>
+          <span class="card" role="tooltip">
+            {#if card.findings.length}
+              <span class="findings">{#each card.findings as line}<span>{line}</span>{/each}</span>
+            {/if}
+            <span class="facts-list">
+              {#each card.facts as [label, value]}<span class="label mono">{label}</span><span>{value}</span>{/each}
+            </span>
           </span>
         </span>
       </span>
@@ -81,6 +83,13 @@
     align-items: center;
     column-gap: 10px;
     font-size: 12px;
+  }
+
+  /* Length, size and the info mark wrap as one. */
+  .tail {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
   }
 
   .facts {
