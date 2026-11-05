@@ -42,7 +42,7 @@ export type Settings = {
   echolot_url: string;
 };
 
-export type Platform = { os: string; monitor: boolean; media_keys: boolean; gain: number; m4a: boolean };
+export type Platform = { os: string; monitor: boolean; media_keys: boolean; gain: number; alac: boolean; aac: boolean };
 
 export type CheckState = "ok" | "warn" | "bad" | "check";
 export type Check = { id: string; title: string; state: CheckState; detail: string; fix: string | null };

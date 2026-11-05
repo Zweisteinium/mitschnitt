@@ -966,8 +966,17 @@ fn finish(track: Track, tags: Tags, samples: Vec<i32>, proof: Proof, rate: u32, 
     }
     let checked = check(samples, proof, rate, lossless);
     // Lossy content in a lossless file would only pretend to be more: MP3 320 holds what arrived.
-    let format = if checked.lossy.is_some() { settings.lossy_format } else { settings.lossless_format };
-    match output::write(&checked.audio, &tags, settings, format) {
+    let mut format = if checked.lossy.is_some() { settings.lossy_format } else { settings.lossless_format };
+    // The song is kept whatever happens to an encoder (ffmpeg uninstalled, say): FLAC needs none.
+    let written = output::write(&checked.audio, &tags, settings, format).or_else(|e| {
+        if format == Format::Flac {
+            return Err(e);
+        }
+        crate::log!("{format:?} failed, saved as FLAC: {e}");
+        format = Format::Flac;
+        output::write(&checked.audio, &tags, settings, Format::Flac)
+    });
+    match written {
         Ok(path) => {
             let size = file_size(&path);
             // Labelled and saved for what it is: nothing to hide.

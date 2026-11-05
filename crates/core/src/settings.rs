@@ -20,11 +20,11 @@ pub enum Format {
     /// Earlier settings' WAV: lossless too, and with tags and a cover.
     #[serde(alias = "wav")]
     Flac,
-    /// Apple Lossless in .m4a, by Windows' own encoder.
+    /// Apple Lossless in .m4a: Windows' own encoder, on Linux Mitschnitt's.
     Alac,
     /// 256 kbit/s VBR, at 48 kHz (Opus always is).
     Opus,
-    /// 192 kbit/s in .m4a, by Windows' own encoder (it goes no higher).
+    /// 192 kbit/s in .m4a: Windows' own encoder (it goes no higher), on Linux ffmpeg's.
     Aac,
     /// 320 kbit/s CBR.
     Mp3,

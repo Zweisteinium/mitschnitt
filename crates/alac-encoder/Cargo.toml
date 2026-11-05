@@ -1,0 +1,11 @@
+[package]
+name = "alac-encoder"
+version = "0.3.0"
+description = "Rust port of Apple's open source ALAC library, patched for 24-bit output"
+repository = "https://github.com/LinusU/rust-alac-encoder"
+license = "Apache-2.0 OR MIT"
+edition = "2021"
+publish = false
+
+[dependencies]
+log = "0.4.14"

@@ -34,8 +34,7 @@ Large parts of the code were written with AI assistance (Claude Code).
   - **ALT.** Something isn't original, or the end couldn't be proven.
   - **BAD.** Damaged, for example by a dropout.
 - **Formats and tags.** Lossless songs as FLAC or ALAC in 16 or 24 bit as the source was, lossy ones as FLAC, Opus,
-  AAC or MP3 (ALAC and AAC with Windows' own encoders). Tags and cover are filled in, file names
-  follow your template, and songs you already have are skipped.
+  AAC or MP3. Tags and cover are filled in, file names follow your template, and songs you already have are skipped.
 - **Auto setup.** Checks [Spotify's settings](#spotify-settings). On Windows it also installs VB-Cable and routes
   Spotify into it.
 - **Song lists.** With [Echolot](#echolot), Mitschnitt records a whole list of songs on its own, connected or from a
@@ -63,7 +62,7 @@ Get the latest version from [Releases](https://github.com/Zweisteinium/mitschnit
 - **Linux.** A .deb for Debian 12, Ubuntu 22.04, Mint 21 and newer, and an AppImage for anything else with glibc
   2.36 or newer, like Fedora 37 or Arch. Both need PipeWire, which Ubuntu 22.04 doesn't use by default. The
   AppImage also needs WebKitGTK 4.1, the browser engine the interface runs on (`webkit2gtk4.1` on Fedora,
-  `webkit2gtk-4.1` on Arch). The .deb installs it for you.
+  `webkit2gtk-4.1` on Arch). The .deb installs it for you. AAC uses ffmpeg, if it is installed.
 - **macOS.** Planned, low priority.
 
 ## Spotify settings

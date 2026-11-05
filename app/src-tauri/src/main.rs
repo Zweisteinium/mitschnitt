@@ -184,13 +184,14 @@ struct Platform {
     monitor: bool,
     media_keys: bool,
     gain: f32,
-    /// AAC and ALAC (Windows' encoders).
-    m4a: bool,
+    alac: bool,
+    /// Windows' encoder, on Linux ffmpeg's.
+    aac: bool,
 }
 
 #[tauri::command]
 fn platform() -> Platform {
-    Platform { os: std::env::consts::OS, monitor: mitschnitt_core::monitor::SUPPORTED, media_keys: mitschnitt_core::guard::SUPPORTED, gain: engine::GAIN, m4a: mitschnitt_core::m4a::SUPPORTED }
+    Platform { os: std::env::consts::OS, monitor: mitschnitt_core::monitor::SUPPORTED, media_keys: mitschnitt_core::guard::SUPPORTED, gain: engine::GAIN, alac: mitschnitt_core::m4a::supports(true), aac: mitschnitt_core::m4a::supports(false) }
 }
 
 fn main() {

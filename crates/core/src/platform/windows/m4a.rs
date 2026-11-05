@@ -8,7 +8,10 @@ use windows::core::HSTRING;
 
 use crate::audio::Audio;
 
-pub const SUPPORTED: bool = true;
+/// Windows has both encoders built in.
+pub fn supports(_alac: bool) -> bool {
+    true
+}
 
 const AAC_BYTES_PER_SECOND: u32 = 24_000;
 

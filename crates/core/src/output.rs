@@ -285,13 +285,13 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
-    #[cfg(windows)]
     #[test]
     fn m4a_holds_aac_or_alac_with_tags_and_cover() {
         let dir = std::env::temp_dir().join(format!("mitschnitt-m4a-{}", std::process::id()));
         let settings = Settings { out_dir: dir.clone(), ..Settings::default() };
         let tags = Tags { track_number: 3, cover: Some(flac::Cover { mime: "image/jpeg", data: JPEG.to_vec() }), extra: vec![("ISRC".into(), "DEUM72401234".into())], ..track() };
-        for (format, bits) in [(Format::Aac, 24), (Format::Alac, 24), (Format::Alac, 16)] {
+        // AAC only where it can be written: on Linux, with ffmpeg.
+        for (format, bits) in [(Format::Aac, 24), (Format::Alac, 24), (Format::Alac, 16)].into_iter().filter(|(f, _)| crate::m4a::supports(*f == Format::Alac)) {
             let path = write(&second_of_sound(bits), &tags, &settings, format).unwrap();
             let tag = mp4ameta::Tag::read_from_path(&path).unwrap();
             assert_eq!((tag.title(), tag.artist(), tag.track_number()), (Some("What? Now"), Some("AC/DC"), Some(3)), "{format:?}");

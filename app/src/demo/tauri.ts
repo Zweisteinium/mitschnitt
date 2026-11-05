@@ -204,7 +204,7 @@ function setSession(state: EcholotSession["state"]) {
 
 const commands: Record<string, (args: Record<string, unknown>) => unknown> = {
   sources: () => [{ id: "spotify", name: "Spotify", running: true, playing: true, title: rick.title, artist: rick.artist }],
-  platform: () => (linux ? { os: "linux", monitor: false, media_keys: false, gain: 1, m4a: false } : { os: "windows", monitor: true, media_keys: true, gain: 0.5, m4a: true }),
+  platform: () => (linux ? { os: "linux", monitor: false, media_keys: false, gain: 1, alac: true, aac: true } : { os: "windows", monitor: true, media_keys: true, gain: 0.5, alac: true, aac: true }),
   get_settings: () => settings,
   save_settings: (a) => Object.assign(settings, a.settings),
   health: () => checks,

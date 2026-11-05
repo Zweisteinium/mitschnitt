@@ -1,5 +1,7 @@
 //! Mitschnitt core: everything that doesn't need a UI.
 
+#[cfg(any(target_os = "linux", test))]
+mod alac;
 pub mod analyze;
 pub mod audio;
 pub mod capture;

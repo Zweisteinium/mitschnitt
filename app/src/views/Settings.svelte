@@ -1,19 +1,20 @@
 <script lang="ts">
+  import { onMount } from "svelte";
   import Panel from "../components/Panel.svelte";
   import { api, type Format, type Settings } from "../lib/api";
   import { echolot } from "../lib/echolot.svelte";
   import { session } from "../lib/session.svelte";
 
   const s = $derived(session.settings);
-  type Choice = { value: Format; label: string; note: string; m4a?: boolean };
+  type Choice = { value: Format; label: string; note: string; needs?: "alac" | "aac" };
   const losslessFormats: Choice[] = [
     { value: "flac", label: "FLAC", note: "Every sample as it arrived – 16-bit for 16-bit masters, else 24-bit. Plays almost everywhere but Apple Music." },
-    { value: "alac", label: "ALAC", note: "Lossless like FLAC, as .m4a for Apple Music and iPhone – by Windows' own encoder.", m4a: true },
+    { value: "alac", label: "ALAC", note: "Lossless like FLAC, as .m4a for Apple Music and iPhone.", needs: "alac" },
   ];
   const lossyFormats: Choice[] = [
     { value: "flac", label: "FLAC", note: "Keeps the stream exactly as it arrived, about four times the size of Opus." },
     { value: "opus", label: "Opus", note: "256 kbit/s – the best sound per size. Plays in VLC, foobar2000, browsers and on Android; not in Apple Music." },
-    { value: "aac", label: "AAC", note: "192 kbit/s .m4a – plays everywhere, Apple and car stereos too. Windows' own encoder.", m4a: true },
+    { value: "aac", label: "AAC", note: "192 kbit/s .m4a – plays everywhere, Apple and car stereos too.", needs: "aac" },
     { value: "mp3", label: "MP3", note: "320 kbit/s – plays on anything, the weakest sound of these at its size." },
   ];
   const extOf: Record<Format, string> = { flac: "flac", alac: "m4a", opus: "opus", aac: "m4a", mp3: "mp3" };
@@ -27,6 +28,9 @@
     return `${filled.join(" / ")}.${extOf[s.lossless_format]}`;
   });
 
+  // ffmpeg, for AAC on Linux, may have been installed since the start.
+  onMount(async () => (session.platform = await api.platform()));
+
   function set<K extends keyof Settings>(key: K, value: Settings[K]) {
     session.settings![key] = value;
     session.save();
@@ -34,15 +38,16 @@
 </script>
 
 {#snippet choose(settings: Settings, key: "lossless_format" | "lossy_format", name: string, choices: Choice[])}
+  {@const missing = choices.filter((f) => f.needs !== undefined && session.platform?.[f.needs] === false)}
   <div class="field">
     <span class="name mono">{name}</span>
     <div class="seg">
       {#each choices as f}
-        {@const off = f.m4a && !session.platform?.m4a}
-        <button class:on={settings[key] === f.value} disabled={off} title={off ? "Windows only: it has the encoder built in" : undefined} onclick={() => set(key, f.value)}>{f.label}</button>
+        {@const off = f.needs !== undefined && session.platform?.[f.needs] === false}
+        <button class:on={settings[key] === f.value} disabled={off} title={off ? "Needs ffmpeg, which isn't installed" : undefined} onclick={() => set(key, f.value)}>{f.label}</button>
       {/each}
     </div>
-    <span class="note muted">{choices.find((f) => f.value === settings[key])?.note}</span>
+    <span class="note muted">{choices.find((f) => f.value === settings[key])?.note}{missing.length ? ` ${missing.map((f) => f.label).join(", ")} needs ffmpeg: install it to pick it.` : ""}</span>
   </div>
 {/snippet}
 
