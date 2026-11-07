@@ -126,8 +126,8 @@ While a song records, Spotify is set to repeat it. The pause before the repeat p
 gapless albums, and your repeat setting comes back afterwards. If crossfade is on, Mitschnitt hears it, pauses the
 list and asks you to turn it off.
 
-You can keep using your PC meanwhile. On Windows, when Spotify grabs the focus for a new song, Mitschnitt gives it
-back. On Linux the desktop decides whether Spotify may come to the front.
+You can keep using your PC meanwhile. When Spotify grabs the focus for a new song, Mitschnitt gives it back to your
+window. On Linux that works on KDE and with X11, on other Wayland desktops only Spotify is kept in the background.
 
 ## Coming from Spytify?
 
