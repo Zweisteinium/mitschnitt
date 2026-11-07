@@ -3,9 +3,9 @@
 test:
 	cargo test --workspace
 
-# Silent capture test against the running PipeWire session (Linux).
+# Silent capture and monitor tests against the running PipeWire session (Linux).
 test-live:
-	cargo test -p mitschnitt-core stream_is_captured_bit_exact -- --ignored
+	cargo test -p mitschnitt-core -- --ignored stream_is_captured_bit_exact reopened_streams_go_into_the_monitor
 
 dev:
 	cd app && npm install && npx tauri dev

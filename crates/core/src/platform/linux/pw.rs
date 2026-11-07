@@ -79,6 +79,7 @@ pub struct Conn {
     pub registry: pw::registry::RegistryRc,
     /// Every global, kept because the server announces each one only once.
     objects: Rc<RefCell<Vec<Object>>>,
+    announced: Rc<Cell<u64>>,
     _listener: pw::registry::Listener,
     _context: pw::context::ContextRc,
 }
@@ -93,13 +94,17 @@ impl Conn {
         let core = context.connect_rc(None).map_err(|e| format!("PipeWire is not running ({e})"))?;
         let registry = core.get_registry_rc().map_err(err)?;
         let objects: Rc<RefCell<Vec<Object>>> = Rc::default();
-        let (added, removed) = (objects.clone(), objects.clone());
+        let announced: Rc<Cell<u64>> = Rc::default();
+        let (added, removed, count) = (objects.clone(), objects.clone(), announced.clone());
         let listener = registry
             .add_listener_local()
-            .global(move |g| added.borrow_mut().push(Object { id: g.id, type_: g.type_.clone(), props: dict(g.props) }))
+            .global(move |g| {
+                added.borrow_mut().push(Object { id: g.id, type_: g.type_.clone(), props: dict(g.props) });
+                count.set(count.get() + 1);
+            })
             .global_remove(move |id| removed.borrow_mut().retain(|o| o.id != id))
             .register();
-        let conn = Conn { mainloop, core, registry, objects, _listener: listener, _context: context };
+        let conn = Conn { mainloop, core, registry, objects, announced, _listener: listener, _context: context };
         conn.roundtrip();
         Ok(conn)
     }
@@ -122,6 +127,11 @@ impl Conn {
         while !done.get() {
             self.mainloop.run();
         }
+    }
+
+    /// How many globals the server has announced so far: it changes when a node, link or anything else comes.
+    pub fn announced(&self) -> u64 {
+        self.announced.get()
     }
 
     pub fn objects(&self) -> Vec<Object> {
