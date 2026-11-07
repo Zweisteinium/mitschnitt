@@ -376,6 +376,8 @@ struct Session {
     passive: Passive,
     monitor: Option<Monitor>,
     queue: Option<QueueRun>,
+    /// A run that came while a song was being recorded by hand: it starts the moment that song ends.
+    waiting: Option<Queue>,
     tx: Sender<Msg>,
     _capture: Capture,
 }
@@ -455,6 +457,7 @@ impl Session {
             passive: Passive::new(endpoint.sample_rate, CHANNELS as usize, GAIN),
             monitor,
             queue: None,
+            waiting: None,
             tx,
             _capture: capture,
         })
@@ -559,10 +562,16 @@ impl Session {
                     Vec::new()
                 }
                 Ok(Msg::Attach(queue)) => {
-                    self.attach(queue);
+                    if self.queue.is_none() && self.passive.recording() {
+                        crate::log!("run waits for the song being recorded");
+                        self.waiting = Some(queue);
+                    } else {
+                        self.attach(queue);
+                    }
                     Vec::new()
                 }
                 Ok(Msg::Detach) => {
+                    self.waiting = None;
                     self.detach(Outcome::Stalled { detail: "stopped".into() });
                     Vec::new()
                 }
@@ -822,6 +831,7 @@ impl Session {
             if let Some(stage) = changed {
                 self.stage_changed(stage);
             }
+            let ended = matches!(event, Event::Completed { .. } | Event::Dropped { .. });
             match event {
                 Event::Started(track) => {
                     let extra = self.watcher.as_ref().map(Watcher::extra).unwrap_or_default();
@@ -872,6 +882,14 @@ impl Session {
                         }
                     }
                 }
+            }
+            // Before the next song: it would be recorded by hand too.
+            if ended
+                && self.queue.is_none()
+                && let Some(queue) = self.waiting.take()
+            {
+                crate::log!("run starts after the song recorded by hand");
+                self.attach(queue);
             }
         }
     }

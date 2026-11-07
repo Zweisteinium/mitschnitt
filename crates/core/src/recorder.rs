@@ -23,16 +23,12 @@ pub const PENDING_DIR: &str = "Echolot";
 pub const NOT_TAKEN_DIR: &str = "Not taken";
 
 const LONG_POLL_S: u32 = 25;
-/// Spotify Connect may play on another device while the app here shows "playing".
-const BUSY: &str = "Spotify is playing (here or on another device)";
 const NO_SOUND: &str = "no sound: playing on another device?";
 const CROSSFADE: &str = "Crossfade: on in Spotify, it mixes the end of every song. Turn it off (Settings → Playback → Crossfade), then resume.";
 const NOT_STARTING: &str = "Spotify ignores links: 3 songs in a row didn't start. Restart Spotify, then resume.";
 /// Up to 2 in a row passed on their own (14 to 20 Oct). On 20 Oct Spotify ignored every link after one.
 const NOT_STARTED_STOP: u32 = 3;
 const HEARTBEAT: Duration = Duration::from_secs(10);
-/// The player still shows playing for a moment after the runner's own pause: read as busy, the long poll lost 25 s.
-const OWN_PAUSE: Duration = Duration::from_secs(2);
 const SETUP_CHECK: Duration = Duration::from_secs(60);
 const PLAYER_START: Duration = Duration::from_secs(30);
 const UPLOAD_RETRY_FIRST: Duration = Duration::from_secs(10);
@@ -315,7 +311,6 @@ fn echolot_loop(client: &Client, profile: &Profile, out_dir: &Path, shared_host:
     // Spotify no longer shows the crossfade setting to Mitschnitt: held from the recording until the session runs again.
     let mut hold: Option<&str> = None;
     let mut not_started = 0;
-    let mut ended = Instant::now() - OWN_PAUSE;
     let mut logged = (DeviceState::Idle, "-".to_owned());
     // The first poll tells Echolot to release what a crashed run had leased.
     let mut fresh = true;
@@ -360,7 +355,6 @@ fn echolot_loop(client: &Client, profile: &Profile, out_dir: &Path, shared_host:
                     let _ = uploads.send(Upload { item, job, file, keep_as, note });
                 }
                 other => {
-                    ended = Instant::now();
                     let (result, detail) = result_of(&other);
                     crate::log!("echolot result {} {}: {result} \"{detail}\"", item.id, job.label());
                     if matches!(other, Outcome::NoSound) && !paused_for_sound {
@@ -420,15 +414,12 @@ fn echolot_loop(client: &Client, profile: &Profile, out_dir: &Path, shared_host:
         if setup.0.elapsed() >= SETUP_CHECK {
             setup = (Instant::now(), setup_problem(profile));
         }
+        // Ready also while Spotify plays: a run takes the player over at once, and the engine lets a song being
+        // recorded by hand finish first.
         let spotify = spotify_state(profile, status.as_ref());
-        if spotify == Spotify::Playing && ended.elapsed() < OWN_PAUSE {
-            std::thread::sleep(Duration::from_millis(200));
-            continue;
-        }
-        let (state, detail) = match (&setup.1.clone().or_else(|| hold.map(str::to_owned)), spotify) {
-            (Some(problem), _) => (DeviceState::Setup, problem.clone()),
-            (None, Spotify::Playing) => (DeviceState::Busy, BUSY.into()),
-            (None, _) => (DeviceState::Idle, String::new()),
+        let (state, detail) = match setup.1.clone().or_else(|| hold.map(str::to_owned)) {
+            Some(problem) => (DeviceState::Setup, problem),
+            None => (DeviceState::Idle, String::new()),
         };
         if logged != (state, detail.clone()) {
             crate::log!("echolot state {state:?} {detail}");
