@@ -161,9 +161,33 @@
       {#if echolot.error}<p class="error">{echolot.error}</p>{/if}
     </Panel>
   </div>
+  <p class="about muted">
+    Mitschnitt is open source:
+    <button class="link mono" onclick={() => api.open("https://github.com/Zweisteinium/mitschnitt")}>github.com/Zweisteinium/mitschnitt</button>
+    – ideas, bugs and a star are welcome there.
+  </p>
 {/if}
 
 <style>
+  .about {
+    margin: 18px 0 0;
+    font-size: 12px;
+    text-align: center;
+  }
+
+  .link {
+    border: none;
+    background: none;
+    padding: 0;
+    color: var(--cyan);
+    font: inherit;
+    cursor: pointer;
+  }
+
+  .link:hover {
+    text-decoration: underline;
+  }
+
   .dev {
     display: grid;
     grid-template-columns: 1fr auto;

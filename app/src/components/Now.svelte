@@ -16,8 +16,20 @@
   );
   const recorded = $derived(!!status?.track);
   const elapsed = $derived(recorded ? (status?.recorded_ms ?? 0) : (player?.position_ms ?? 0));
-  const progress = $derived(track?.duration_ms ? Math.min(1, elapsed / track.duration_ms) : 0);
   const playing = $derived(recorded || !!(player?.playing ?? source?.playing));
+  // Positions arrive a few times a second: in between the bar runs on with the clock, at most until the next one is due.
+  const anchor = $derived({ ms: elapsed, at: performance.now() });
+  let now = $state(performance.now());
+  $effect(() => {
+    if (!playing) return;
+    let frame = requestAnimationFrame(function tick(t) {
+      now = t;
+      frame = requestAnimationFrame(tick);
+    });
+    return () => cancelAnimationFrame(frame);
+  });
+  const smooth = $derived(playing && elapsed > 0 ? anchor.ms + Math.min(Math.max(0, now - anchor.at), 1100) : elapsed);
+  const progress = $derived(track?.duration_ms ? Math.min(1, smooth / track.duration_ms) : 0);
 
   const labels = {
     off: "Not recording",
@@ -178,7 +190,6 @@
     height: 100%;
     background: var(--edge);
     box-shadow: 0 0 8px var(--cyan);
-    transition: width 120ms linear;
   }
 
   .bar.rec .fill {
