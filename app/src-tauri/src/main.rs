@@ -88,6 +88,11 @@ async fn cover(file: String) -> Option<String> {
 }
 
 #[tauri::command]
+async fn tags(file: String) -> Result<Vec<(String, String)>, String> {
+    mitschnitt_core::output::read_tags(std::path::Path::new(&file))
+}
+
+#[tauri::command]
 async fn stop(state: State<'_, App>) -> Result<(), String> {
     state.for_queue.store(false, Ordering::Relaxed);
     let engine = lock(&state.engine)?.take();
@@ -236,6 +241,7 @@ fn main() {
             sources,
             player,
             cover,
+            tags,
             start,
             stop,
             stop_after_track,

@@ -60,6 +60,8 @@ pub struct Settings {
     pub keep_flagged: bool,
     /// Skip a track when a file with its name exists (any format).
     pub skip_existing: bool,
+    /// Encoder "Mitschnitt <version>" and a comment on where the file came from and how it arrived.
+    pub mark_files: bool,
     pub protect_media_keys: bool,
     /// Windows only. Its volume is the app's Windows mixer entry, which Windows remembers, so it isn't stored here.
     pub monitor: bool,
@@ -79,6 +81,7 @@ impl Default for Settings {
             template: "{artist} - {title}".into(),
             keep_flagged: true,
             skip_existing: true,
+            mark_files: true,
             protect_media_keys: true,
             monitor: true,
             keep_echolot_copies: true,

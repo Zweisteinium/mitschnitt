@@ -162,6 +162,7 @@ impl Watcher {
             album_artist: props.AlbumArtist().map(|s| s.to_string()).unwrap_or_default(),
             track_number: props.TrackNumber().unwrap_or(0).max(0) as u32,
             cover: props.Thumbnail().ok().and_then(|t| read_cover(&t).ok().flatten()),
+            ..Extra::default()
         }
     }
 }

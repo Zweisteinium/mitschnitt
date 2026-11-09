@@ -50,13 +50,24 @@ fn m4a_tags(path: &Path, tags: &Tags) -> Result<(), String> {
     if tags.track_number > 0 {
         tag.set_track_number(tags.track_number as u16);
     }
+    if tags.disc_number > 0 {
+        tag.set_disc_number(tags.disc_number as u16);
+    }
+    if tags.artists.len() > 1 {
+        tag.set_all_data(FreeformIdent::new_borrowed("com.apple.iTunes", "ARTISTS"), tags.artists.iter().map(|a| Data::Utf8(a.clone())));
+    }
+    if !tags.comment.is_empty() {
+        tag.set_comment(&tags.comment);
+    }
+    if !tags.encoder.is_empty() {
+        tag.set_encoder(&tags.encoder);
+    }
     if let Some(cover) = &tags.cover {
         tag.set_artwork(if cover.mime == "image/png" { Img::png(cover.data.clone()) } else { Img::jpeg(cover.data.clone()) });
     }
     for (key, value) in &tags.extra {
         tag.set_data(FreeformIdent::new_borrowed("com.apple.iTunes", key), Data::Utf8(value.clone()));
     }
-    tag.set_encoder("Mitschnitt");
     tag.write_to_path(path).map_err(|e| format!("m4a tags: {e}"))
 }
 
@@ -115,6 +126,20 @@ fn id3_tags(tags: &Tags) -> id3::Tag {
     if tags.track_number > 0 {
         tag.set_track(tags.track_number);
     }
+    if tags.disc_number > 0 {
+        tag.set_disc(tags.disc_number);
+    }
+    // ID3v2.4 keeps several values in one frame, apart by a zero.
+    let artists = (tags.artists.len() > 1).then(|| ("ARTISTS".to_owned(), tags.artists.join("\0")));
+    for (description, value) in artists.into_iter().chain(tags.extra.iter().cloned()) {
+        tag.add_frame(id3::frame::ExtendedText { description, value });
+    }
+    if !tags.comment.is_empty() {
+        tag.add_frame(id3::frame::Comment { lang: "eng".into(), description: String::new(), text: tags.comment.clone() });
+    }
+    if !tags.encoder.is_empty() {
+        tag.set_text("TSSE", &tags.encoder);
+    }
     if let Some(cover) = &tags.cover {
         tag.add_frame(id3::frame::Picture {
             mime_type: cover.mime.to_owned(),
@@ -123,7 +148,6 @@ fn id3_tags(tags: &Tags) -> id3::Tag {
             data: cover.data.clone(),
         });
     }
-    tag.set_text("TSSE", "Mitschnitt");
     tag
 }
 
@@ -154,6 +178,75 @@ pub fn cover_url(path: &Path) -> Option<String> {
     }
 }
 
+/// Every tag a recording carries, read from the file, under Vorbis names (`TITLE`, `ALBUMARTIST`, …) whatever the
+/// format; unknown ones keep their own. The cover is one `COVER` line about the image.
+pub fn read_tags(path: &Path) -> Result<Vec<(String, String)>, String> {
+    let err = |e: &dyn std::fmt::Display| format!("tags: {e}");
+    let mut out = Vec::new();
+    let mut add = |key: &str, value: String| out.push((key.to_owned(), value.replace('\0', "; ")));
+    match path.extension().and_then(|e| e.to_str()) {
+        Some("mp3") => {
+            let tag = id3::Tag::read_from_path(path).map_err(|e| err(&e))?;
+            for frame in tag.frames() {
+                match (frame.id(), frame.content()) {
+                    (_, id3::Content::Picture(p)) => add("COVER", image(&p.mime_type, &p.data)),
+                    (_, id3::Content::ExtendedText(t)) => add(&t.description, t.value.clone()),
+                    (_, id3::Content::Comment(c)) => add("COMMENT", c.text.clone()),
+                    (id, content) => add(ID3.iter().find(|(i, _)| *i == id).map_or(id, |(_, k)| k), content.to_string()),
+                }
+            }
+        }
+        Some("m4a") => {
+            let tag = mp4ameta::Tag::read_from_path(path).map_err(|e| err(&e))?;
+            for (ident, data) in tag.data() {
+                let name = ident.to_string();
+                match (ident, data.string(), data.image()) {
+                    (_, _, Some(img)) => add("COVER", image(if img.fmt == mp4ameta::ImgFmt::Png { "image/png" } else { "image/jpeg" }, img.data)),
+                    (mp4ameta::DataIdent::Freeform { name, .. }, Some(s), _) => add(name, s.to_owned()),
+                    (_, Some(s), _) => add(M4A.iter().find(|(i, _)| *i == name).map_or(&name, |(_, k)| k), s.to_owned()),
+                    _ => {}
+                }
+            }
+            // Track and disc are numbers, not text.
+            for (key, n) in [("TRACKNUMBER", tag.track_number()), ("DISCNUMBER", tag.disc_number())] {
+                if let Some(n) = n {
+                    add(key, n.to_string());
+                }
+            }
+        }
+        Some("opus") => {
+            for field in crate::ogg_opus::comments_of(path).ok_or("tags: not an Opus file")? {
+                let (key, value) = field.split_once('=').unwrap_or((&field, ""));
+                match crate::ogg_opus::picture(value).filter(|_| key.eq_ignore_ascii_case("METADATA_BLOCK_PICTURE")) {
+                    Some((mime, data)) => add("COVER", image(&mime, &data)),
+                    None => add(&key.to_uppercase(), value.to_owned()),
+                }
+            }
+        }
+        _ => {
+            let comment = flac_codec::metadata::block::<_, flac_codec::metadata::VorbisComment>(path).map_err(|e| err(&e))?;
+            for field in comment.into_iter().flat_map(|c| c.fields) {
+                let (key, value) = field.split_once('=').unwrap_or((&field, ""));
+                add(&key.to_uppercase(), value.to_owned());
+            }
+            if let Some(p) = flac_codec::metadata::block::<_, flac_codec::metadata::Picture>(path).map_err(|e| err(&e))? {
+                add("COVER", image(&p.media_type, &p.data));
+            }
+        }
+    }
+    Ok(out)
+}
+
+const ID3: [(&str, &str); 7] = [("TIT2", "TITLE"), ("TPE1", "ARTIST"), ("TALB", "ALBUM"), ("TPE2", "ALBUMARTIST"), ("TRCK", "TRACKNUMBER"), ("TPOS", "DISCNUMBER"), ("TSSE", "ENCODER")];
+const M4A: [(&str, &str); 6] = [("©nam", "TITLE"), ("©ART", "ARTIST"), ("©alb", "ALBUM"), ("aART", "ALBUMARTIST"), ("©too", "ENCODER"), ("©cmt", "COMMENT")];
+
+/// "JPEG · 300 × 300 · 45 KB"
+fn image(mime: &str, data: &[u8]) -> String {
+    let kind = mime.strip_prefix("image/").unwrap_or(mime).to_uppercase();
+    let size = flac_codec::metadata::Picture::new(flac_codec::metadata::PictureType::FrontCover, "", data.to_vec()).ok().map(|p| format!(" · {} × {}", p.width, p.height));
+    format!("{kind}{} · {} KB", size.unwrap_or_default(), data.len().div_ceil(1024))
+}
+
 /// The 24-bit capture holds a 16-bit master exactly.
 pub fn is_16bit(audio: &Audio) -> bool {
     audio.bits <= 16 || audio.samples.iter().all(|s| s % (1 << (audio.bits - 16)) == 0)
@@ -167,11 +260,15 @@ fn to_16bit(audio: &Audio) -> Audio {
     Audio { rate: audio.rate, channels: audio.channels, bits: 16, samples }
 }
 
-/// Only `/` in the template creates folders, so "AC/DC" stays one name.
+/// Only `/` in the template creates folders, so "AC/DC" stays one name. Without an album artist the artist stands in, so
+/// an album's folder isn't left without a name.
 pub fn file_stem(template: &str, tags: &Tags) -> PathBuf {
+    let album_artist = if tags.album_artist.is_empty() { &tags.artist } else { &tags.album_artist };
+    let track = if tags.track_number > 0 { format!("{:02}", tags.track_number) } else { String::new() };
+    let fill = |part: &str| part.replace("{artist}", &tags.artist).replace("{title}", &tags.title).replace("{album_artist}", album_artist).replace("{album}", &tags.album).replace("{track}", &track);
     let parts: Vec<String> = template
         .split(['/', '\\'])
-        .map(|part| sanitize(&part.replace("{artist}", &tags.artist).replace("{title}", &tags.title).replace("{album}", &tags.album)))
+        .map(|part| sanitize(&fill(part)))
         .filter(|p| !p.is_empty())
         .collect();
     if parts.is_empty() { PathBuf::from(sanitize(&tags.title)) } else { parts.iter().collect() }
@@ -212,6 +309,9 @@ mod tests {
     fn template_makes_safe_folders_and_names() {
         assert_eq!(file_stem("{artist} - {title}", &track()), PathBuf::from("AC_DC - What_ Now"));
         assert_eq!(file_stem("{album}/{title}", &track()), PathBuf::from("Live_ 1991").join("What_ Now"));
+        let numbered = Tags { track_number: 3, ..track() };
+        assert_eq!(file_stem("{album_artist}/{album}/{track} {title}", &numbered), PathBuf::from("AC_DC").join("Live_ 1991").join("03 What_ Now"));
+        assert_eq!(file_stem("{track} {title}", &track()), PathBuf::from("What_ Now"), "no number, no gap");
     }
 
     #[test]
@@ -313,6 +413,34 @@ mod tests {
         assert_eq!((tag.artist(), tag.track(), tag.pictures().count()), (Some("AC/DC"), Some(3), 1));
         assert_eq!(cover_url(&path).as_deref(), Some("data:image/png;base64,iVBORw=="));
         assert!(std::fs::metadata(&path).unwrap().len() > 20_000, "about 40 kB for 1 s at 320 kbit/s");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn every_format_reads_back_the_same_tags() {
+        let dir = std::env::temp_dir().join(format!("mitschnitt-tags-{}", std::process::id()));
+        let settings = Settings { out_dir: dir.clone(), ..Settings::default() };
+        let tags = Tags {
+            artists: vec!["AC".into(), "DC".into()],
+            album_artist: "AC/DC".into(),
+            track_number: 3,
+            disc_number: 2,
+            cover: Some(flac::Cover { mime: "image/jpeg", data: JPEG.to_vec() }),
+            extra: vec![("ISRC".into(), "DEUM72401234".into())],
+            encoder: "Mitschnitt 1.0".into(),
+            comment: "Recorded from Spotify on 2026-11-05: bit-exact, 16-bit".into(),
+            ..track()
+        };
+        let m4a = crate::m4a::supports(true).then_some(Format::Alac);
+        for format in [Format::Flac, Format::Opus, Format::Mp3].into_iter().chain(m4a) {
+            let path = write(&second_of_sound(16), &tags, &settings, format).unwrap();
+            let read = read_tags(&path).unwrap();
+            let value = |key: &str| read.iter().filter(|(k, _)| k == key).map(|(_, v)| v.as_str()).collect::<Vec<_>>().join(" | ");
+            let got = ["TITLE", "ARTIST", "ALBUM", "ALBUMARTIST", "TRACKNUMBER", "DISCNUMBER", "ISRC", "ENCODER", "COMMENT", "COVER"].map(value);
+            let artists = value("ARTISTS");
+            assert_eq!(got, ["What? Now", "AC/DC", "Live: 1991", "AC/DC", "3", "2", "DEUM72401234", "Mitschnitt 1.0", "Recorded from Spotify on 2026-11-05: bit-exact, 16-bit", "JPEG · 64 × 64 · 1 KB"], "{format:?}");
+            assert!(artists == "AC | DC" || artists == "AC; DC", "{format:?}: {artists}");
+        }
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

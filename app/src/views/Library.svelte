@@ -71,7 +71,7 @@
   {:else}
     <ul>
       {#each matching.slice(0, shown) as { r, q, at, origin } (r.at + r.file)}
-        <TrackRow track={r.track} {q} {at} whenText={when(at)} card={fileCard({ ...r, issues: r.issues ?? [] }, at, origin)} file={r.file} gone={!r.exists} note={origin} facts={facts(r.track.duration_ms, r.size)} />
+        <TrackRow track={r.track} {q} {at} whenText={when(at)} card={fileCard({ ...r, issues: r.issues ?? [] }, at, origin)} file={r.file} gone={!r.exists} note={origin} facts={facts(r.track.duration_ms, r.size)} tagged />
       {/each}
     </ul>
     {#if matching.length > shown}

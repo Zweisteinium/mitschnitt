@@ -135,8 +135,12 @@ impl Watcher {
         let Ok(props) = self.session.props() else { return Extra::default() };
         let metadata = props.metadata();
         Extra {
+            artists: metadata.texts("xesam:artist"),
             album_artist: metadata.text("xesam:albumArtist"),
             track_number: metadata.int("xesam:trackNumber").unwrap_or(0).max(0) as u32,
+            disc_number: metadata.int("xesam:discNumber").unwrap_or(0).max(0) as u32,
+            // Spotify's is "/com/spotify/track/<id>".
+            spotify_id: metadata.text("mpris:trackid").strip_prefix("/com/spotify/track/").map(str::to_owned),
             cover: cover(&metadata.text("mpris:artUrl")),
         }
     }
@@ -185,6 +189,13 @@ impl Metadata<'_> {
 
     fn int(&self, key: &str) -> Option<i64> {
         self.0.get(key).and_then(int)
+    }
+
+    fn texts(&self, key: &str) -> Vec<String> {
+        match self.0.get(key).map(inner) {
+            Some(Value::Array(a)) => a.iter().map(text).filter(|s| !s.is_empty()).collect(),
+            _ => Vec::new(),
+        }
     }
 }
 
@@ -261,6 +272,7 @@ mod tests {
             ("xesam:artist".to_owned(), Value::Array(artists)),
         ]));
         assert_eq!(m.text("xesam:artist"), "MRD, Other");
+        assert_eq!(m.texts("xesam:artist"), ["MRD", "Other"]);
         assert_eq!(m.int("mpris:length"), Some(215_986_000));
     }
 

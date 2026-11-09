@@ -11,14 +11,33 @@ use crate::audio::Audio;
 #[derive(Debug, Default, Clone)]
 pub struct Tags {
     pub title: String,
+    /// As the player shows it, e.g. "A, B".
     pub artist: String,
+    /// Each artist on its own, written only for more than one (as `ARTISTS`, the way Picard does).
+    pub artists: Vec<String>,
     pub album: String,
     pub album_artist: String,
     /// 0 = unknown.
     pub track_number: u32,
+    pub disc_number: u32,
     pub cover: Option<Cover>,
     /// More Vorbis comments, e.g. `ISRC`.
     pub extra: Vec<(String, String)>,
+    /// Empty when files aren't marked as Mitschnitt's.
+    pub encoder: String,
+    pub comment: String,
+}
+
+impl Tags {
+    /// Vorbis comments as written in FLAC and Opus; the cover goes separately.
+    pub(crate) fn vorbis(&self) -> Vec<(&str, String)> {
+        let text = [("TITLE", &self.title), ("ARTIST", &self.artist), ("ALBUM", &self.album), ("ALBUMARTIST", &self.album_artist)];
+        let numbers = [("TRACKNUMBER", self.track_number), ("DISCNUMBER", self.disc_number)];
+        let artists = self.artists.iter().filter(|_| self.artists.len() > 1).map(|a| ("ARTISTS", a.clone()));
+        let rest = self.extra.iter().map(|(k, v)| (k.as_str(), v.clone())).chain([("COMMENT", self.comment.clone()), ("ENCODER", self.encoder.clone())]);
+        let numbers = numbers.into_iter().filter(|(_, n)| *n > 0).map(|(k, n)| (k, n.to_string()));
+        text.into_iter().map(|(k, v)| (k, v.clone())).chain(artists).chain(numbers).chain(rest).filter(|(_, v)| !v.is_empty()).collect()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -37,16 +56,9 @@ pub fn read(path: &Path) -> Result<Audio, String> {
 /// The file is decoded again and compared; only an identical file gets its final name.
 pub fn write(path: &Path, audio: &Audio, tags: &Tags) -> Result<(), String> {
     let mut options = Options::best().overwrite();
-    let fields = [("TITLE", &tags.title), ("ARTIST", &tags.artist), ("ALBUM", &tags.album), ("ALBUMARTIST", &tags.album_artist)];
-    for (key, value) in fields.into_iter().chain(tags.extra.iter().map(|(k, v)| (k.as_str(), v))) {
-        if !value.is_empty() {
-            options = options.tag(key, value);
-        }
+    for (key, value) in tags.vorbis() {
+        options = options.tag(key, value);
     }
-    if tags.track_number > 0 {
-        options = options.tag("TRACKNUMBER", tags.track_number);
-    }
-    options = options.tag("ENCODER", "Mitschnitt");
     // An image it can't measure would cost the whole recording: then the file goes without a cover.
     if let Some(picture) = tags.cover.as_ref().and_then(|c| Picture::new(PictureType::FrontCover, "", c.data.clone()).ok()) {
         options = options.picture(picture);

@@ -44,7 +44,11 @@ pub enum Control {
 /// Tags beyond the track identity, read once when a recording starts.
 #[derive(Debug, Clone, Default)]
 pub struct Extra {
+    /// Each on its own; empty where the player gives one joined string (Windows).
+    pub artists: Vec<String>,
     pub album_artist: String,
     pub track_number: u32,
+    pub disc_number: u32,
+    pub spotify_id: Option<String>,
     pub cover: Option<Cover>,
 }

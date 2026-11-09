@@ -78,18 +78,7 @@ fn resample(pcm: &[f32], rate: u32) -> Result<Vec<f32>, String> {
 
 /// Vorbis comments, the cover as a FLAC picture block (`METADATA_BLOCK_PICTURE`, as opusenc writes it).
 fn comments(tags: &Tags) -> Vec<u8> {
-    let mut fields = vec![format!("TITLE={}", tags.title), format!("ARTIST={}", tags.artist)];
-    if !tags.album.is_empty() {
-        fields.push(format!("ALBUM={}", tags.album));
-    }
-    if !tags.album_artist.is_empty() {
-        fields.push(format!("ALBUMARTIST={}", tags.album_artist));
-    }
-    if tags.track_number > 0 {
-        fields.push(format!("TRACKNUMBER={}", tags.track_number));
-    }
-    fields.extend(tags.extra.iter().map(|(k, v)| format!("{k}={v}")));
-    fields.push("ENCODER=Mitschnitt".into());
+    let mut fields: Vec<String> = tags.vorbis().into_iter().map(|(k, v)| format!("{k}={v}")).collect();
     // An image it can't measure stays out, as in the FLAC files.
     if let Some(picture) = tags.cover.as_ref().and_then(|c| flac_codec::metadata::Picture::new(flac_codec::metadata::PictureType::FrontCover, "", c.data.clone()).ok()) {
         fields.push(format!("METADATA_BLOCK_PICTURE={}", base64::engine::general_purpose::STANDARD.encode(picture_block(&picture))));
@@ -120,26 +109,34 @@ fn picture_block(p: &flac_codec::metadata::Picture) -> Vec<u8> {
     b
 }
 
-/// The cover of a file written by [`write`]: its mime type and image.
-pub fn cover(path: &Path) -> Option<(String, Vec<u8>)> {
+/// The Vorbis comments of a file written by [`write`], each `KEY=value`.
+pub fn comments_of(path: &Path) -> Option<Vec<String>> {
     let mut reader = ogg::PacketReader::new(std::io::BufReader::new(std::fs::File::open(path).ok()?));
     reader.read_packet().ok()??; // OpusHead
     let tags = reader.read_packet().ok()??.data;
-    let u32_at = |b: &[u8], i: usize| b.get(i..i + 4).map(|x| u32::from_le_bytes(x.try_into().unwrap()) as usize);
-    let mut at = 8 + 4 + u32_at(&tags, 8)?;
-    let count = u32_at(&tags, at)?;
+    let u32_at = |i: usize| tags.get(i..i + 4).map(|x| u32::from_le_bytes(x.try_into().unwrap()) as usize);
+    let mut at = 8 + 4 + u32_at(8)?;
+    let count = u32_at(at)?;
     at += 4;
+    let mut fields = Vec::with_capacity(count);
     for _ in 0..count {
-        let len = u32_at(&tags, at)?;
-        let field = tags.get(at + 4..at + 4 + len)?;
+        let len = u32_at(at)?;
+        fields.push(String::from_utf8_lossy(tags.get(at + 4..at + 4 + len)?).into_owned());
         at += 4 + len;
-        let Some(value) = field.strip_prefix(b"METADATA_BLOCK_PICTURE=") else { continue };
-        let block = base64::engine::general_purpose::STANDARD.decode(value).ok()?;
-        let be = |i: usize| block.get(i..i + 4).map(|x| u32::from_be_bytes(x.try_into().unwrap()) as usize);
-        let mime_len = be(4)?;
-        let mime = String::from_utf8(block.get(8..8 + mime_len)?.to_vec()).ok()?;
-        let data_at = 8 + mime_len + 4 + be(8 + mime_len)? + 16;
-        return Some((mime, block.get(data_at + 4..data_at + 4 + be(data_at)?)?.to_vec()));
     }
-    None
+    Some(fields)
+}
+
+/// A `METADATA_BLOCK_PICTURE` value: the image's mime type and data.
+pub fn picture(value: &str) -> Option<(String, Vec<u8>)> {
+    let block = base64::engine::general_purpose::STANDARD.decode(value).ok()?;
+    let be = |i: usize| block.get(i..i + 4).map(|x| u32::from_be_bytes(x.try_into().unwrap()) as usize);
+    let mime_len = be(4)?;
+    let mime = String::from_utf8(block.get(8..8 + mime_len)?.to_vec()).ok()?;
+    let data_at = 8 + mime_len + 4 + be(8 + mime_len)? + 16;
+    Some((mime, block.get(data_at + 4..data_at + 4 + be(data_at)?)?.to_vec()))
+}
+
+pub fn cover(path: &Path) -> Option<(String, Vec<u8>)> {
+    comments_of(path)?.iter().find_map(|f| f.strip_prefix("METADATA_BLOCK_PICTURE=")).and_then(picture)
 }

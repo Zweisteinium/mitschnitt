@@ -3,11 +3,33 @@
   import { full, type Card, type Quality } from "../lib/quality";
   import Cover from "./Cover.svelte";
 
-  /** `file`: actions for it; `gone`: it was there once. `note`: after the verdict, in grey. */
-  let { track, q, at, whenText, card, cover = null, file = null, gone = false, note = null, facts = null }: { track: Track; q: Quality; at: Date; whenText: string; card: Card; cover?: string | null; file?: string | null; gone?: boolean; note?: string | null; facts?: string | null } = $props();
+  /** `file`: actions for it; `gone`: it was there once. `note`: after the verdict, in grey. `tagged`: a button that
+   * shows the file's tags. */
+  let { track, q, at, whenText, card, cover = null, file = null, gone = false, note = null, facts = null, tagged = false }: { track: Track; q: Quality; at: Date; whenText: string; card: Card; cover?: string | null; file?: string | null; gone?: boolean; note?: string | null; facts?: string | null; tagged?: boolean } = $props();
+
+  const names: Record<string, string> = {
+    TITLE: "Title",
+    ARTIST: "Artist",
+    ARTISTS: "Artists",
+    ALBUM: "Album",
+    ALBUMARTIST: "Album artist",
+    TRACKNUMBER: "Track",
+    DISCNUMBER: "Disc",
+    ISRC: "ISRC",
+    SPOTIFY_TRACK_ID: "Spotify ID",
+    ENCODER: "Encoder",
+    COMMENT: "Comment",
+    COVER: "Cover",
+  };
+  /** Read from the file each time they open: it may have been retagged meanwhile. */
+  let tags = $state<[string, string][] | string | null>(null);
+  async function toggleTags(file: string) {
+    if (tags) return (tags = null);
+    tags = await api.tags(file).catch((e) => String(e));
+  }
 </script>
 
-<li>
+<li class:tagged>
   <Cover src={cover} file={gone ? null : file} size={40} />
   <span class="tag mono {q.tone}" title={q.text}>{q.tag}</span>
   <div class="main">
@@ -36,6 +58,11 @@
     <span class="gone mono muted" title="Moved or deleted: {file}">gone</span>
   {:else if file}
     <span class="actions">
+      {#if tagged}
+        <button class="icon" class:on={tags} onclick={() => toggleTags(file)} title="Tags in the file" aria-label="Tags in the file" aria-expanded={!!tags}>
+          <svg viewBox="0 0 16 16"><path d="M2 2h5.5l6.5 6.5-5.5 5.5-6.5-6.5z" /><circle cx="5.25" cy="5.25" r="1" /></svg>
+        </button>
+      {/if}
       <button class="icon" onclick={() => api.open(file)} title="Show in folder: {file}" aria-label="Show in folder">
         <svg viewBox="0 0 16 16"><path d="M1.5 3.5h4.5l1.5 1.5h7v8h-13z" /></svg>
       </button>
@@ -46,6 +73,19 @@
   {:else}
     <span></span>
   {/if}
+  {#if tags}
+    <div class="tags">
+      {#if typeof tags === "string"}
+        <span class="muted">{tags}</span>
+      {:else if tags.length}
+        <span class="facts-list">
+          {#each tags as [key, value]}<span class="label mono" title={key}>{names[key] ?? key}</span><span>{value}</span>{/each}
+        </span>
+      {:else}
+        <span class="muted">No tags in this file.</span>
+      {/if}
+    </div>
+  {/if}
 </li>
 
 <style>
@@ -55,6 +95,18 @@
     gap: 12px;
     align-items: center;
     padding: 9px 0;
+  }
+
+  li.tagged {
+    grid-template-columns: 40px 46px minmax(0, 1fr) auto 68px;
+  }
+
+  .tags {
+    grid-column: 3 / -1;
+    padding: 8px 10px;
+    border: 1px solid var(--faint);
+    font-size: 12px;
+    user-select: text;
   }
 
   li + :global(li) {
@@ -200,7 +252,8 @@
     opacity: 0.75;
   }
 
-  .icon:hover {
+  .icon:hover,
+  .icon.on {
     opacity: 1;
   }
 

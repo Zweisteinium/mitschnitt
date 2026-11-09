@@ -851,12 +851,19 @@ impl Session {
                     let mut tags = Tags {
                         title: track.title.clone(),
                         artist: track.artist.clone(),
+                        artists: extra.artists,
                         album: track.album.clone(),
                         album_artist: extra.album_artist,
                         track_number: extra.track_number,
+                        disc_number: extra.disc_number,
                         cover: extra.cover,
-                        extra: Vec::new(),
+                        extra: extra.spotify_id.map(|id| vec![("SPOTIFY_TRACK_ID".into(), id)]).unwrap_or_default(),
+                        ..Tags::default()
                     };
+                    if settings.mark_files {
+                        tags.encoder = format!("Mitschnitt {}", env!("CARGO_PKG_VERSION"));
+                        tags.comment = format!("Recorded from {} on {}", self.profile.name, crate::log::today());
+                    }
                     let (rate, lossless, notify) = (self.info.rate, self.profile.lossless, notify.clone());
                     match &self.queue {
                         // The album playing on.
@@ -865,6 +872,7 @@ impl Session {
                             let job = run.runner.job().cloned();
                             if let Some(job) = &job {
                                 tags.extra = vec![("SPOTIFY_TRACK_ID".into(), job.track_id().into()), ("ISRC".into(), job.isrc.clone())];
+                                tags.artists = job.artists.clone();
                             }
                             let settings = Settings { out_dir: run.queue.out_dir.clone(), keep_flagged: true, skip_existing: false, ..settings.clone() };
                             let (tx, done) = (self.tx.clone(), run.queue.done.clone());
@@ -977,12 +985,30 @@ fn saved(track: Track, file: Option<PathBuf>, size: u64, format: Format, checked
     }
 }
 
+/// The marked files' comment goes on with what the check found, in the words of the window.
+fn arrived(tags: &mut Tags, checked: &Checked) {
+    if tags.comment.is_empty() {
+        return;
+    }
+    let bits = if checked.report.master == Master::Bit24 { "24-bit" } else { "16-bit" };
+    let what = match checked.lossy {
+        _ if checked.report.verdict == Severity::Corrupt => "damaged".to_owned(),
+        Some(Lossy::Stream) => "lossy stream".to_owned(),
+        Some(Lossy::Source) => format!("lossy master, {bits}"),
+        None if checked.faded.is_some() => format!("fade-in, rest bit-exact, {bits}"),
+        None if checked.report.verdict == Severity::Altered => format!("not fully original, {bits}"),
+        None => format!("{}, {bits}", if checked.exact { "bit-exact" } else { "clean" }),
+    };
+    tags.comment = format!("{}: {what}", tags.comment);
+}
+
 #[allow(clippy::too_many_arguments)]
-fn finish(track: Track, tags: Tags, samples: Vec<i32>, proof: Proof, rate: u32, lossless: bool, settings: &Settings, notify: &Notify) {
+fn finish(track: Track, mut tags: Tags, samples: Vec<i32>, proof: Proof, rate: u32, lossless: bool, settings: &Settings, notify: &Notify) {
     if settings.skip_existing && let Some(file) = output::existing(&tags, settings) {
         return notify(Update::Exists { track, file: file.display().to_string() });
     }
     let checked = check(samples, proof, rate, lossless);
+    arrived(&mut tags, &checked);
     // Lossy content in a lossless file would only pretend to be more: MP3 320 holds what arrived.
     let mut format = if checked.lossy.is_some() { settings.lossy_format } else { settings.lossless_format };
     // The song is kept whatever happens to an encoder (ffmpeg uninstalled, say): FLAC needs none.
@@ -1012,7 +1038,7 @@ fn finish(track: Track, tags: Tags, samples: Vec<i32>, proof: Proof, rate: u32, 
 /// Exact recordings (or exact after the fade-in) and lossy streams are handed on for upload: Echolot rates a lossy one
 /// with its spectrum check, and a FLAC holds what arrived without a second lossy encode. Damaged ones go to "Not taken".
 #[allow(clippy::too_many_arguments)]
-fn finish_job(track: Track, tags: Tags, samples: Vec<i32>, proof: Proof, rate: u32, lossless: bool, settings: &Settings, notify: &Notify) -> Written {
+fn finish_job(track: Track, mut tags: Tags, samples: Vec<i32>, proof: Proof, rate: u32, lossless: bool, settings: &Settings, notify: &Notify) -> Written {
     let mut checked = check(samples, proof, rate, lossless);
     let stream = checked.lossy == Some(Lossy::Stream);
     // A short altered stretch is a glitch, not the stream: played again like a damaged one.
@@ -1020,13 +1046,15 @@ fn finish_job(track: Track, tags: Tags, samples: Vec<i32>, proof: Proof, rate: u
     let in_master = lossless && !glitch && checked.report.verdict == Severity::Corrupt && dropouts_in_master(&track, &mut checked);
     if checked.report.verdict == Severity::Corrupt || glitch {
         let detail = checked.report.issues.iter().filter(|i| i.severity == Severity::Corrupt || glitch).map(|i| i.text.as_str()).collect::<Vec<_>>().join("; ");
-        let file = settings.keep_flagged.then(|| Settings { out_dir: settings.out_dir.with_file_name(crate::recorder::NOT_TAKEN_DIR), ..settings.clone() }).and_then(|s| output::write(&checked.audio, &tags, &s, Format::Flac).ok());
-        let size = file.as_deref().map_or(0, file_size);
         // A glitch alone stays "altered" in the report, and the history showed a paused take as "Lossy master".
         checked.report.verdict = Severity::Corrupt;
+        arrived(&mut tags, &checked);
+        let file = settings.keep_flagged.then(|| Settings { out_dir: settings.out_dir.with_file_name(crate::recorder::NOT_TAKEN_DIR), ..settings.clone() }).and_then(|s| output::write(&checked.audio, &tags, &s, Format::Flac).ok());
+        let size = file.as_deref().map_or(0, file_size);
         notify(saved(track, file, size, Format::Flac, checked, true));
         return Written::Corrupt { detail: format!("damaged: {detail}") };
     }
+    arrived(&mut tags, &checked);
     // Echolot judges what arrived: always the exact samples.
     match output::write(&checked.audio, &tags, settings, Format::Flac) {
         Ok(path) => {

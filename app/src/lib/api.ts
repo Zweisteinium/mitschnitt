@@ -36,6 +36,7 @@ export type Settings = {
   template: string;
   keep_flagged: boolean;
   skip_existing: boolean;
+  mark_files: boolean;
   protect_media_keys: boolean;
   monitor: boolean;
   keep_echolot_copies: boolean;
@@ -108,6 +109,8 @@ export const api = {
   player: (app: string, cover: boolean) => invoke<{ track: Track | null; playing: boolean; position_ms: number; cover: string | null } | null>("player", { app, cover }),
   /** The cover a recording carries, as a data URL. */
   cover: (file: string) => invoke<string | null>("cover", { file }),
+  /** Every tag in the file, under Vorbis names whatever the format. */
+  tags: (file: string) => invoke<[string, string][]>("tags", { file }),
   echolotState: () => invoke<CardState>("echolot_state"),
   echolotConnect: (url: string) => invoke<void>("echolot_connect", { url }),
   echolotCode: (code: string) => invoke<void>("echolot_code", { code }),

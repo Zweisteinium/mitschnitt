@@ -56,8 +56,9 @@ const covers: Record<string, string> = {
 const real: Record<string, string> = Object.values(import.meta.glob<Record<string, string>>("./covers.json", { eager: true, import: "default" }))[0] ?? {};
 const coverFor = (artist: string, title: string) => real[`${artist} - ${title}`] ?? covers[artist] ?? null;
 /** A library file is named "Artist - Title.flac". */
+const fileSong = (file: string) => (file.split("\\").pop() ?? "").replace(/\.\w+$/, "").split(" - ");
 function fileCover(file: string) {
-  const [artist, title = ""] = (file.split("\\").pop() ?? "").replace(/\.\w+$/, "").split(" - ");
+  const [artist, title = ""] = fileSong(file);
   return coverFor(artist, title);
 }
 
@@ -71,6 +72,7 @@ const settings: Settings = {
   template: "{artist} - {title}",
   keep_flagged: true,
   skip_existing: true,
+  mark_files: true,
   protect_media_keys: true,
   monitor: true,
   keep_echolot_copies: true,
@@ -210,6 +212,10 @@ const commands: Record<string, (args: Record<string, unknown>) => unknown> = {
   health: () => checks,
   history: () => history,
   cover: (a) => fileCover(a.file as string),
+  tags: (a) => {
+    const [artist, title = ""] = fileSong(a.file as string);
+    return [["TITLE", title], ["ARTIST", artist], ["ALBUMARTIST", artist], ["TRACKNUMBER", "1"], ["ENCODER", `Mitschnitt ${version}`], ["COMMENT", "Recorded from Spotify on 2026-11-05: bit-exact, 16-bit"], ["COVER", "JPEG · 300 × 300 · 41 KB"]];
+  },
   echolot_state: () => ({ snapshot, url: settings.echolot_url, pairing: false }),
   echolot_session: (a) => setSession(a.action === "pause" ? "paused" : a.action === "stop" ? "stopped" : "running"),
   set_monitor_volume: (a) => emit("update", { kind: "monitor_volume", volume: a.volume }),
@@ -235,10 +241,10 @@ export async function getVersion(): Promise<string> {
 // Once both stores have subscribed. `?idle`: before Start.
 if (!new URLSearchParams(location.search).has("idle")) setTimeout(start, 300);
 
-// `?click=Setup&click=History`: click those buttons (by their text) once the demo runs, for screenshots of them.
+// `?click=Setup&click=History`: click those buttons (by their text, or label for icons) once the demo runs, for screenshots of them.
 setTimeout(async () => {
   for (const text of new URLSearchParams(location.search).getAll("click")) {
-    const target = [...document.querySelectorAll<HTMLElement>("button, summary")].find((e) => e.textContent?.trim().toLowerCase().startsWith(text.toLowerCase()));
+    const target = [...document.querySelectorAll<HTMLElement>("button, summary")].find((e) => (e.textContent?.trim() || e.getAttribute("aria-label"))?.toLowerCase().startsWith(text.toLowerCase()));
     target?.click();
     await new Promise((done) => setTimeout(done, 200));
   }

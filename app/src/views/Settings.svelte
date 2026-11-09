@@ -19,12 +19,12 @@
   ];
   const extOf: Record<Format, string> = { flac: "flac", alac: "m4a", opus: "opus", aac: "m4a", mp3: "mp3" };
 
-  const sample = { artist: "Daft Punk", title: "Digital Love", album: "Discovery" };
+  const sample = { artist: "Daft Punk", title: "Digital Love", album: "Discovery", album_artist: "Daft Punk", track: "03" };
   /** Saved when the field is left. */
   let draft = $state<string | null>(null);
   const preview = $derived.by(() => {
     if (!s) return "";
-    const filled = (draft ?? s.template).split("/").map((part) => part.replaceAll("{artist}", sample.artist).replaceAll("{title}", sample.title).replaceAll("{album}", sample.album));
+    const filled = (draft ?? s.template).split("/").map((part) => part.replaceAll("{artist}", sample.artist).replaceAll("{title}", sample.title).replaceAll("{album_artist}", sample.album_artist).replaceAll("{album}", sample.album).replaceAll("{track}", sample.track).trim());
     return `${filled.join(" / ")}.${extOf[s.lossless_format]}`;
   });
 
@@ -82,7 +82,7 @@
           }}
           spellcheck="false"
         />
-        <span class="note muted"><code>{"{artist}"}</code> <code>{"{title}"}</code> <code>{"{album}"}</code> · <code>/</code> makes folders</span>
+        <span class="note muted"><code>{"{artist}"}</code> <code>{"{title}"}</code> <code>{"{album}"}</code> <code>{"{album_artist}"}</code> <code>{"{track}"}</code> · <code>/</code> makes folders</span>
         <span class="note mono preview">→ {preview}</span>
       </label>
 
@@ -117,6 +117,13 @@
         <span>
           <span class="title">Skip tracks you already have</span>
           <span class="note muted">Don't record a track again when its file already exists (any format).</span>
+        </span>
+      </label>
+      <label class="toggle">
+        <input type="checkbox" checked={s.mark_files} onchange={(e) => set("mark_files", e.currentTarget.checked)} />
+        <span>
+          <span class="title">Mark files as Mitschnitt recordings</span>
+          <span class="note muted">Tags the encoder "Mitschnitt" and a comment such as "Recorded from Spotify on 2026-11-05: bit-exact, 16-bit". Off, a file doesn't say where it came from.</span>
         </span>
       </label>
       <label class="toggle">

@@ -31,6 +31,12 @@ pub fn init(who: &str) {
     }
 }
 
+/// The local date, e.g. "2026-11-05" (UTC before [`init`]).
+pub fn today() -> String {
+    let offset = LOG.get().map_or(UtcOffset::UTC, |(_, o)| *o);
+    OffsetDateTime::now_utc().to_offset(offset).format(format_description!("[year]-[month]-[day]")).unwrap_or_default()
+}
+
 /// Written at once, so a crash keeps everything before it.
 pub fn line(args: std::fmt::Arguments) {
     let Some((file, offset)) = LOG.get() else { return };
