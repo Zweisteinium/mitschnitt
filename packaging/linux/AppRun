@@ -1,0 +1,46 @@
+#!/bin/sh
+# The AppImage takes WebKitGTK, GTK and PipeWire from the system. Without one the program can't even start, and a
+# double click would show nothing: say what is missing and how to install it on this distribution.
+here=$(dirname "$(readlink -f "$0")")
+app="$here/usr/bin/mitschnitt-app"
+
+# The loader lists what it can't find without starting the program (what `ldd` does).
+trace=$(LD_TRACE_LOADED_OBJECTS=1 "$app" 2>&1)
+missing=$(printf '%s\n' "$trace" | sed -n 's/^[[:space:]]*\([^[:space:]]*\) => not found.*/\1/p' | tr '\n' ' ')
+old_glibc=$(printf '%s\n' "$trace" | grep -o "GLIBC_[0-9.]*' not found" | head -n 1)
+[ -z "$missing" ] && [ -z "$old_glibc" ] && exec "$app" "$@"
+
+# WebKitGTK brings GTK, libsoup and JavaScriptCore with it; PipeWire is the only other one.
+family=$(. /etc/os-release 2>/dev/null; echo "$ID $ID_LIKE")
+case " $family " in
+    *" arch "*) install="sudo pacman -S"; webkit=webkit2gtk-4.1; pipewire=libpipewire ;;
+    *" debian "* | *" ubuntu "*) install="sudo apt install"; webkit=libwebkit2gtk-4.1-0; pipewire=libpipewire-0.3-0 ;;
+    *" fedora "* | *" rhel "*) install="sudo dnf install"; webkit=webkit2gtk4.1; pipewire=pipewire-libs ;;
+    *" suse "* | *" opensuse "*) install="sudo zypper install"; webkit=libwebkit2gtk-4_1-0; pipewire=libpipewire-0_3-0 ;;
+esac
+packages="" names=""
+# shellcheck disable=SC2086 # one library per line
+if printf '%s\n' $missing | grep -qv '^libpipewire'; then
+    packages=" $webkit" names="WebKitGTK 4.1"
+fi
+case "$missing" in *libpipewire*) packages="$packages $pipewire" names="${names:+$names and }PipeWire" ;; esac
+
+if [ -n "$old_glibc" ]; then
+    text="This Linux is too old for Mitschnitt: it needs glibc 2.34 or newer. Debian 12, Ubuntu 22.04, Fedora 36 and newer work."
+elif [ -n "$install" ]; then
+    text="Mitschnitt needs $names to run. Install with:
+
+$install$packages"
+else
+    text="Mitschnitt needs $names to run. Install with your package manager."
+fi
+
+printf 'Mitschnitt can'\''t start.\n%s\nMissing: %s\n' "$text" "$missing" >&2
+if [ -n "$DISPLAY$WAYLAND_DISPLAY" ]; then
+    if command -v zenity >/dev/null; then zenity --error --title="Mitschnitt can't start" --no-wrap --text="$text"
+    elif command -v kdialog >/dev/null; then kdialog --title "Mitschnitt can't start" --error "$text"
+    elif command -v notify-send >/dev/null; then notify-send -u critical "Mitschnitt can't start" "$text"
+    elif command -v xmessage >/dev/null; then xmessage -center "Mitschnitt can't start. $text"
+    fi
+fi
+exit 127
