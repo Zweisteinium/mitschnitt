@@ -659,7 +659,16 @@ impl Session {
                         sessions::set(&controls, GAIN);
                     }
                 }
-                notify(Update::Status { status: self.passive.status() });
+                let status = self.passive.status();
+                // Spotify's own slider no longer always shows in its mixer volume (4 Nov, 9 Nov): the audio says it.
+                if let Some(factor) = status.grid.as_ref().and_then(|g| g.volume)
+                    && self.passive.recording()
+                {
+                    crate::log!("player volume at {:.1} %", factor * 100.0);
+                    let events = self.passive.interrupt(Reason::PlayerVolume);
+                    self.dispatch(events, settings, notify);
+                }
+                notify(Update::Status { status });
                 let player = &self.player;
                 notify(Update::Player { track: player.track.clone(), playing: player.playing, position_ms: player.position_ms, cover: None });
                 if let Some(count) = self.guard.as_ref().map(Guard::blocked).filter(|c| *c != blocked) {

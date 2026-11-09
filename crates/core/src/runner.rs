@@ -85,8 +85,8 @@ pub enum Outcome {
     Failed { detail: String },
     /// The right song plays but no sound reaches this PC.
     NoSound,
-    /// Spotify's crossfade mixed the song's end: not the song's fault, and every song would fail the same way.
-    Crossfade,
+    /// Spotify's crossfade or its volume below maximum: not the song's fault, and every song would fail the same way.
+    Setting { reason: Reason },
     Skipped,
 }
 
@@ -219,6 +219,11 @@ impl Runner {
                     if now < *since + GAP {
                         return Vec::new();
                     }
+                    // Windows plays on into the next song after the end: 0:00 would be that one's.
+                    if media.track.as_ref().is_some_and(|t| matches(job, t).is_err()) {
+                        let (job, retried) = (job.clone(), *retried);
+                        return self.open(job, now, media, retried);
+                    }
                     (*since, *seeked) = (now, true);
                     return vec![Action::Restart];
                 }
@@ -290,6 +295,10 @@ impl Runner {
                 }
                 *late = None;
                 if matches(job, track).is_ok() {
+                    if *corrections > 0 && !*rewound {
+                        let (job, retried) = (job.clone(), *retried);
+                        return self.start_over(job, retried, now);
+                    }
                     if *timeout == START_TIMEOUT && *corrections == 0 && !*rewound {
                         self.slow_starts = if now.duration_since(*at) >= SLOW_START { self.slow_starts + 1 } else { 0 };
                     }
@@ -301,6 +310,13 @@ impl Runner {
                 self.correct(job, track, now)
             }
         }
+    }
+
+    /// Found with Next/Previous: Spotify blends a skip into the song's first 0.1 s (Bryan Adams, 9 Nov, twice). From
+    /// 0:00 with Play, like a song already loaded, it starts bit-exact.
+    fn start_over(&mut self, job: Job, retried: bool, now: Instant) -> Vec<Action> {
+        self.stage = Stage::Rewind { job, since: now, retried, seeked: false };
+        vec![Action::Pause]
     }
 
     fn correct(&mut self, job: Job, wrong: Track, now: Instant) -> Vec<Action> {
@@ -320,6 +336,12 @@ impl Runner {
     pub fn event(&mut self, now: Instant, event: &Event) -> Vec<Action> {
         match event {
             Event::Started(track) => {
+                if let Stage::Starting { job, retried, corrections: 1.., rewound: false, .. } = &self.stage
+                    && matches(job, track).is_ok()
+                {
+                    let (job, retried) = (job.clone(), *retried);
+                    return self.start_over(job, retried, now);
+                }
                 if let Stage::Starting { job, retried, .. } | Stage::Playing { job, retried, .. } = &self.stage
                     && matches(job, track).is_ok()
                 {
@@ -338,7 +360,7 @@ impl Runner {
                 };
                 let detail = reason.message().to_owned();
                 let outcome = match reason {
-                    Reason::Crossfade => Outcome::Crossfade,
+                    Reason::Crossfade | Reason::PlayerVolume => Outcome::Setting { reason: *reason },
                     Reason::Stopped => Outcome::Stalled { detail },
                     // The run has the player: a pause, a skip, the volume or a stall (a key that reached the player,
                     // earbuds, buffering) spoilt the take, not the song. Once more from silence.
@@ -551,6 +573,14 @@ mod tests {
         r.event(t + Duration::from_secs(455), &end);
         r.written(t + Duration::from_secs(456), damaged(), true);
         assert!(matches!(r.take_done()[0].1, Outcome::Stalled { .. }), "only once");
+        // Spotify played on into the next song meanwhile (Windows): its link, not that song from 0:00.
+        let mut r = Runner::new(t - GAP);
+        r.assign(job(), t, &Media::default());
+        r.event(t, &Event::Started(song.clone()));
+        r.event(t + Duration::from_secs(226), &end);
+        r.written(t + Duration::from_secs(227), damaged(), true);
+        let next = Media { playing: false, track: Some(track("Next Song", "NYCO", 200_000)), position_ms: 0 };
+        assert_eq!(r.tick(t + Duration::from_secs(229), &next), vec![Action::Open]);
         // Stopping after this song: no second take.
         let mut r = Runner::new(t - GAP);
         r.assign(job(), t, &Media::default());
@@ -570,9 +600,20 @@ mod tests {
         // Still showing the wrong song for a moment: no new action.
         assert!(r.tick(t + Duration::from_millis(1_500), &playing(&before, 600)).is_empty());
         let right = track("Feel It", "NYCO", 225_000);
-        assert!(r.tick(t + Duration::from_secs(2), &playing(&right, 50)).is_empty());
-        r.event(t + Duration::from_secs(2), &Event::Started(right));
+        // Not recorded from the skip: paused and played again from 0:00.
+        assert_eq!(r.event(t + Duration::from_secs(2), &Event::Started(right.clone())), vec![Action::Pause]);
+        assert!(!r.recording());
+        let paused = Media { playing: false, ..playing(&right, 300) };
+        assert_eq!(r.tick(t + Duration::from_secs(2) + GAP, &paused), vec![Action::Restart]);
+        assert_eq!(r.tick(t + Duration::from_secs(4), &Media { position_ms: 0, ..paused }), vec![Action::Play]);
+        r.event(t + Duration::from_secs(4), &Event::Started(right.clone()));
         assert!(r.recording());
+        // Shown before its sound: the same.
+        let mut r = Runner::new(t - GAP);
+        r.assign(job(), t, &Media::default());
+        r.tick(t + Duration::from_secs(1), &playing(&before, 100));
+        assert_eq!(r.tick(t + Duration::from_secs(2), &playing(&right, 50)), vec![Action::Pause]);
+        assert_eq!(r.stage(), "Rewind");
     }
 
     #[test]

@@ -36,7 +36,7 @@
     <ul class="results small">
       {#each echolot.listResults.slice(0, 8) as r (r.id)}
         <li title={readable(r.detail, true)}>
-          <span class="tag mono" class:ok={r.result === "recorded"} class:bad={r.result === "failed" || r.result === "stalled" || r.result === "crossfade"}>{resultText[r.result] ?? r.result}</span>
+          <span class="tag mono" class:ok={r.result === "recorded"} class:bad={r.result === "failed" || r.result === "stalled" || r.result === "crossfade" || r.result === "volume"}>{resultText[r.result] ?? r.result}</span>
           <span class="song">{r.job.artist} – {r.job.title}</span>
         </li>
       {/each}

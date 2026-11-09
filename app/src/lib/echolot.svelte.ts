@@ -13,6 +13,7 @@ export const resultText: Record<string, string> = {
   wrong_song: "wrong song",
   took_over: "interrupted",
   crossfade: "crossfade on",
+  volume: "Spotify volume",
   skipped: "skipped by you",
   stalled: "failed",
   failed: "failed",

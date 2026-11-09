@@ -89,6 +89,8 @@ pub enum Reason {
     MidTrack,
     NoCleanStart,
     Crossfade,
+    /// Spotify's own slider below maximum: every sample scaled (`Grid::volume`).
+    PlayerVolume,
 }
 
 impl Reason {
@@ -104,6 +106,7 @@ impl Reason {
             Reason::MidTrack => "started mid-song",
             Reason::NoCleanStart => "no clean start (gapless)",
             Reason::Crossfade => "Spotify's crossfade is on",
+            Reason::PlayerVolume => "Spotify's volume is below maximum",
         }
     }
 }
@@ -1063,6 +1066,9 @@ mod tests {
         };
         let found = at(0.9405, false).expect("measured on 4 Nov");
         assert!((found - 0.9405).abs() < 0.0002, "{found}");
+        // 9 Nov: the slider moved to about 80 %, the uploads came out 4.3 dB quieter.
+        let found = at(0.61, false).expect("a lower slider");
+        assert!((found - 0.61).abs() < 0.0002, "{found}");
         assert_eq!(at(1.0, false), None, "exact needs no factor");
         assert_eq!(at(1.0, true), None, "a lossy stream fits none");
     }

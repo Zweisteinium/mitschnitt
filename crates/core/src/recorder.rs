@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::echolot::{self, Client, DeviceState, Error, Export, Item, SessionInfo, Spotify};
 use crate::engine::{Queue, QueueStatus};
+use crate::passive::Reason;
 use crate::profile::Profile;
 use crate::runner::{self, Job, Outcome};
 use crate::settings::Settings;
@@ -25,6 +26,7 @@ pub const NOT_TAKEN_DIR: &str = "Not taken";
 const LONG_POLL_S: u32 = 25;
 const NO_SOUND: &str = "no sound: playing on another device?";
 const CROSSFADE: &str = "Crossfade: on in Spotify, it mixes the end of every song. Turn it off (Settings → Playback → Crossfade), then resume.";
+const VOLUME: &str = "Volume: Spotify's own slider is below maximum, it scales every sample. Set it to maximum (the monitor keeps what you hear), then resume.";
 const NOT_STARTING: &str = "Spotify ignores links: 3 songs in a row didn't start. Restart Spotify, then resume.";
 /// Up to 2 in a row passed on their own (14 to 20 Oct). On 20 Oct Spotify ignored every link after one.
 const NOT_STARTED_STOP: u32 = 3;
@@ -308,7 +310,7 @@ fn echolot_loop(client: &Client, profile: &Profile, out_dir: &Path, shared_host:
     let mut setup = (Instant::now() - SETUP_CHECK, None::<String>);
     let mut backoff = Duration::from_secs(5);
     let mut paused_for_sound = false;
-    // Spotify no longer shows the crossfade setting to Mitschnitt: held from the recording until the session runs again.
+    // Spotify shows neither crossfade nor its own volume to Mitschnitt: held from the recording until the session runs again.
     let mut hold: Option<&str> = None;
     let mut not_started = 0;
     let mut logged = (DeviceState::Idle, "-".to_owned());
@@ -361,8 +363,8 @@ fn echolot_loop(client: &Client, profile: &Profile, out_dir: &Path, shared_host:
                         paused_for_sound = true;
                         let _ = client.session("pause");
                     }
-                    if matches!(other, Outcome::Crossfade) {
-                        hold = Some(CROSSFADE);
+                    if let Outcome::Setting { reason } = other {
+                        hold = Some(if reason == Reason::Crossfade { CROSSFADE } else { VOLUME });
                     }
                     not_started = if matches!(&other, Outcome::Failed { detail } if detail == runner::NOT_STARTED) { not_started + 1 } else { 0 };
                     if not_started == NOT_STARTED_STOP {
@@ -529,14 +531,18 @@ fn result_of(outcome: &Outcome) -> (&'static str, String) {
         // Not the song's fault: it goes back without costing a try.
         Outcome::NoSound => ("took_over", NO_SOUND.into()),
         // Echolot pauses the session; the device shows why (Setup).
-        Outcome::Crossfade => ("took_over", "Spotify's crossfade is on".into()),
+        Outcome::Setting { reason } => ("took_over", reason.message().into()),
         Outcome::Skipped => ("skipped", "skipped by you".into()),
     }
 }
 
-/// Echolot knows no result for a crossfade: the card names it.
+/// Echolot knows no result for a Spotify setting: the card names it.
 fn shown(outcome: &Outcome, result: &'static str) -> &'static str {
-    if matches!(outcome, Outcome::Crossfade) { "crossfade" } else { result }
+    match outcome {
+        Outcome::Setting { reason: Reason::Crossfade } => "crossfade",
+        Outcome::Setting { .. } => "volume",
+        _ => result,
+    }
 }
 
 /// Retries network and server errors for up to an hour.
@@ -657,7 +663,7 @@ pub fn run_list(export: Export, profile: Profile, out_dir: PathBuf, host: Arc<dy
                 };
                 host.update(RecorderUpdate::Song { job, result: shown(&outcome, result).into(), detail: detail.clone(), moved: None });
                 publish(snapshot, host, |s| s.done += 1);
-                if matches!(outcome, Outcome::TookOver { .. } | Outcome::NoSound | Outcome::Crossfade) {
+                if matches!(outcome, Outcome::TookOver { .. } | Outcome::NoSound | Outcome::Setting { .. }) {
                     publish(snapshot, host, |s| s.error = Some(format!("Stopped: {detail}")));
                     break;
                 }
