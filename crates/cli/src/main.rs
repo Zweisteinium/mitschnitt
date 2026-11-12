@@ -188,7 +188,7 @@ fn listen(app: String, dry: bool, trace: Option<PathBuf>) -> ExitCode {
             Update::Exists { track, file } => println!("--- {} - {}: already recorded ({file})", track.artist, track.title),
             Update::Failed { track, error } => println!("!!! {} - {}: {error}", track.artist, track.title),
             Update::KeyBlocked { count } => println!("--- media key blocked to protect the recording ({count} so far)"),
-            Update::MonitorVolume { .. } | Update::Player { .. } => {}
+            Update::MonitorVolume { .. } | Update::Player { .. } | Update::Writing { .. } => {}
             Update::MonitorMuted { muted } => println!("--- monitor {}", if muted { "muted: output device changed" } else { "unmuted" }),
             Update::Stopped { error: e } => {
                 error = e;

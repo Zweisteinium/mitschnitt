@@ -8,15 +8,20 @@
 
   const status = $derived(session.status);
   const player = $derived(session.player);
-  const phase = $derived(session.listening ? (status?.phase ?? "idle") : "off");
+  /** A run's next song: from Open until its sound is found, then recorded from its first sample. */
+  const job = $derived(session.listening ? (echolot.snapshot.current ?? echolot.list?.current ?? null) : null);
+  const idle = $derived((status?.phase ?? "idle") === "idle");
+  const writing = $derived(idle ? session.writing : null);
+  const starting = $derived(!!job && idle && !writing);
+  const phase = $derived(session.listening ? (writing ? "writing" : starting ? "waiting" : (status?.phase ?? "idle")) : "off");
   /** The song being recorded, else what the player shows (outside a run: what the source list says). */
   const source = $derived(session.sources.find((s) => s.id === session.selected));
   const track = $derived<Track | null>(
-    status?.track ?? player?.track ?? (!session.listening && source?.title ? { title: source.title, artist: source.artist, album: "", duration_ms: 0 } : null),
+    status?.track ?? writing ?? player?.track ?? job ?? (!session.listening && source?.title ? { title: source.title, artist: source.artist, album: "", duration_ms: 0 } : null),
   );
-  const recorded = $derived(!!status?.track);
-  const elapsed = $derived(recorded ? (status?.recorded_ms ?? 0) : (player?.position_ms ?? 0));
-  const playing = $derived(recorded || !!(player?.playing ?? source?.playing));
+  const recorded = $derived(!!status?.track || !!writing);
+  const elapsed = $derived(writing ? writing.duration_ms : recorded ? (status?.recorded_ms ?? 0) : (player?.position_ms ?? 0));
+  const playing = $derived(!writing && (recorded || !!(player?.playing ?? source?.playing)));
   // Positions arrive a few times a second: in between the bar runs on with the clock, at most until the next one is due.
   const anchor = $derived({ ms: elapsed, at: performance.now() });
   let now = $state(performance.now());
@@ -36,6 +41,7 @@
     idle: "Ready – waiting for a song from its start",
     waiting: "Armed – waiting for sound",
     recording: "Recording",
+    writing: "Checking and saving",
   };
 
   // The mixer level is linear amplitude; a cubic audio taper makes the whole slider audibly useful.
@@ -48,8 +54,8 @@
     <div class="body">
       <div class="state {phase}">
         <span class="dot"></span>
-        <span class="mono">{labels[phase]}</span>
-        {#if track && !recorded}<span class="mono muted">· {playing ? "playing" : "paused"}{session.listening ? ", not recorded" : ""}</span>{/if}
+        <span class="mono">{starting ? "Starting – recorded from its first sample" : labels[phase]}</span>
+        {#if track && !recorded && !starting}<span class="mono muted">· {playing ? "playing" : "paused"}{session.listening ? ", not recorded" : ""}</span>{/if}
         {#if session.listening && player?.track && !recorded && !echolot.active && !echolot.listing}
           <button class="btn again" onclick={() => session.recordFromStart()} title="Pauses, jumps to 0:00 and plays it again: a song started inside an album (gapless) or mid-song has no clean start to record from.">Record from start</button>
         {/if}
@@ -64,7 +70,7 @@
           <div class="muted">{track.artist}{track.album ? ` · ${track.album}` : ""}</div>
         </div>
         {#if track.duration_ms}
-          <div class="bar" class:rec={phase === "recording"}><div class="fill" style:width="{progress * 100}%"></div></div>
+          <div class="bar" class:rec={phase === "recording" || phase === "writing"}><div class="fill" style:width="{progress * 100}%"></div></div>
           <div class="times mono muted">
             <span>{clock(elapsed)}</span>
             <span>{clock(track.duration_ms)}</span>
@@ -149,7 +155,8 @@
   }
 
   .idle .dot,
-  .waiting .dot {
+  .waiting .dot,
+  .writing .dot {
     background: var(--cyan);
     box-shadow: 0 0 10px var(--cyan);
   }

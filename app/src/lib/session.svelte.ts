@@ -22,6 +22,8 @@ class Session {
   covers = $state<Record<string, string>>({});
   /** What the player shows, recorded or not (outside a session: polled). */
   player = $state<{ track: Track | null; playing: boolean; position_ms: number } | null>(null);
+  /** Recorded to its end, being checked and saved. */
+  writing = $state<Track | null>(null);
   settings = $state<Settings | null>(null);
   platform = $state<Platform | null>(null);
   checks = $state<Check[]>([]);
@@ -46,6 +48,8 @@ class Session {
   #shown = "";
   /** Polls that still read the cover: right after a change the player may still show the previous one. */
   #coverReads = 0;
+  /** Since when the player plays without a song. */
+  #untitled = 0;
 
   get listening(): boolean {
     return this.source !== null;
@@ -95,7 +99,7 @@ ${app.title}` : "";
       this.#coverReads = Math.max(0, this.#coverReads - 1);
       // Started meanwhile: the engine reports it now.
       if (!this.listening) {
-        this.player = player ? { track: player.track, playing: player.playing, position_ms: player.position_ms } : null;
+        this.player = player ? { track: this.#held(player.track, player.playing), playing: player.playing, position_ms: player.position_ms } : null;
         if (player?.track && player.cover) this.covers[key(player.track)] = player.cover;
       }
     } catch {}
@@ -178,15 +182,20 @@ ${app.title}` : "";
       case "status":
         this.status = u.status;
         break;
+      case "writing":
+        this.writing = u.track;
+        break;
       case "started":
+        this.writing = null;
         if (u.cover) this.covers[key(u.track)] = u.cover;
         break;
       case "player":
-        this.player = { track: u.track, playing: u.playing, position_ms: u.position_ms };
+        this.player = { track: this.#held(u.track, u.playing), playing: u.playing, position_ms: u.position_ms };
         // Read again 2 s after a change: right after it the player may still show the previous one.
         if (u.track && u.cover) this.covers[key(u.track)] = u.cover;
         break;
       case "saved":
+        this.writing = null;
         if (u.lossy === "stream") this.altered++;
         else if (u.exact || u.faded) this.altered = 0;
         this.#log(u.track, { outcome: "saved", file: u.file, size: u.size, format: u.format, verdict: u.verdict, master: u.master, exact: u.exact, faded: u.faded, lossy: u.lossy, issues: u.issues, echolot: u.echolot, frames: u.frames, peak_dbfs: u.peak_dbfs });
@@ -206,18 +215,21 @@ ${app.title}` : "";
         this.monitorVolume = u.volume;
         break;
       case "exists":
+        this.writing = null;
         this.#log(u.track, { outcome: "exists", file: u.file });
         break;
       case "dropped":
         this.#log(u.track, { outcome: "dropped", message: u.message });
         break;
       case "failed":
+        this.writing = null;
         this.#log(u.track, { outcome: "failed", message: u.error });
         break;
       case "stopped":
         this.source = null;
         this.status = null;
         this.player = null;
+        this.writing = null;
         this.stopping = false;
         this.monitorMuted = false;
         this.monitorVolume = null;
@@ -225,6 +237,17 @@ ${app.title}` : "";
         void api.release(); // the engine may have stopped by itself
         break;
     }
+  }
+
+  /** Spotify drops the song for about 1.5 s while it loads the next one (Windows, every start of a run): the card
+   * keeps the last one meanwhile. An ad also plays without one, so not for long. */
+  #held(track: Track | null, playing: boolean): Track | null {
+    if (track || !playing) {
+      this.#untitled = 0;
+      return track;
+    }
+    this.#untitled ||= Date.now();
+    return Date.now() - this.#untitled < 3000 ? (this.player?.track ?? null) : null;
   }
 
   coverOf(track: Track): string | null {

@@ -127,6 +127,8 @@ pub enum Update {
     /// What the player shows, recorded or not: with `cover` when the track changed.
     Player { track: Option<Track>, playing: bool, position_ms: i64, cover: Option<String> },
     Dropped { track: Track, reason: Reason, message: String },
+    /// Recorded to its end: checked and written now, then `Saved`, `Exists` or `Failed`.
+    Writing { track: Track },
     Exists { track: Track, file: String },
     /// `file`: `None` when a flagged file was removed. `exact`: every sample arrived untouched. `faded`: all but the
     /// player's fade-in did. `lossy`: saved as MP3 (manual) or uploaded as it came (Echolot judges it itself).
@@ -885,6 +887,7 @@ impl Session {
                             }
                             let settings = Settings { out_dir: run.queue.out_dir.clone(), keep_flagged: true, skip_existing: false, ..settings.clone() };
                             let (tx, done) = (self.tx.clone(), run.queue.done.clone());
+                            notify(Update::Writing { track: track.clone() });
                             std::thread::spawn(move || {
                                 let written = finish_job(track, tags, samples, (off_grid, off_span, end_proven), rate, lossless, &settings, &notify);
                                 // The engine stopped meanwhile.
@@ -895,6 +898,7 @@ impl Session {
                         }
                         None => {
                             let settings = settings.clone();
+                            notify(Update::Writing { track: track.clone() });
                             std::thread::spawn(move || finish(track, tags, samples, (off_grid, off_span, end_proven), rate, lossless, &settings, &notify));
                         }
                     }

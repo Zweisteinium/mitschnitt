@@ -15,6 +15,7 @@ export type Update =
   | { kind: "started"; track: Track; cover: string | null }
   | { kind: "player"; track: Track | null; playing: boolean; position_ms: number; cover: string | null }
   | { kind: "dropped"; track: Track; message: string }
+  | { kind: "writing"; track: Track }
   | { kind: "exists"; track: Track; file: string }
   | { kind: "saved"; track: Track; file: string | null; size: number; format: Format; verdict: Severity; master: Master; exact: boolean; faded: boolean; lossy: Lossy | null; issues: string[]; echolot: boolean; frames: number; peak_dbfs: number | null }
   | { kind: "failed"; track: Track; error: string }
