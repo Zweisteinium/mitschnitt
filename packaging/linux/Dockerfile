@@ -2,7 +2,7 @@
 # both run on systems with that glibc or newer.
 FROM node:22-bookworm-slim AS node
 
-FROM rust:1.92-bookworm
+FROM rust:1.99-bookworm
 COPY --from=node /usr/local /usr/local
 RUN apt-get update && apt-get install -y --no-install-recommends \
         cmake file libayatana-appindicator3-dev libclang-dev libpipewire-0.3-dev librsvg2-dev libwebkit2gtk-4.1-dev \

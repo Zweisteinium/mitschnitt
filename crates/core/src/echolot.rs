@@ -428,8 +428,11 @@ pub mod store {
 
     #[cfg(windows)]
     mod token {
-        fn entry(base: &str) -> Option<keyring::Entry> {
-            keyring::Entry::new("Mitschnitt Echolot", base).ok()
+        use keyring_core::api::CredentialStoreApi as _;
+
+        // The default store names credentials "{base}.Mitschnitt Echolot" like keyring 3 did, so saved logins stay.
+        fn entry(base: &str) -> Option<keyring_core::Entry> {
+            windows_native_keyring_store::Store::new().ok()?.build("Mitschnitt Echolot", base, None).ok()
         }
 
         pub fn get(base: &str) -> Option<String> {
