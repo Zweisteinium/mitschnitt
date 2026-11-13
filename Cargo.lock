@@ -2672,7 +2672,7 @@ dependencies = [
 
 [[package]]
 name = "mitschnitt-app"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "mitschnitt-core",
  "serde",
@@ -2685,7 +2685,7 @@ dependencies = [
 
 [[package]]
 name = "mitschnitt-cli"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "clap",
  "ctrlc",
@@ -2694,7 +2694,7 @@ dependencies = [
 
 [[package]]
 name = "mitschnitt-core"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "alac-encoder",
  "base64 0.23.1",
