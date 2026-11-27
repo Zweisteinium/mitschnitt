@@ -324,11 +324,12 @@ impl Passive {
                 if self.zero_run >= min_silence && !initial {
                     let mut start = self.render_start.take().filter(|r| self.frame - r <= max_lead).unwrap_or(self.frame);
                     // Windows renders zeros even while paused, so no stream start shows a master's own leading
-                    // silence (2.26 s, Nature Sounds Artists): it lies between where the player put 0:00 and the
-                    // sound. Other songs' sound came 8 to 48 ms before that point (6 of 6).
+                    // silence (2.26 s, Nature Sounds Artists): it lies between where the player put 0:00 after the
+                    // runner's Play and the sound. Other songs' sound came 8 to 48 ms before that point (6 of 6).
+                    // After a link the player shows 0:00 before its sound is there (172 and 241 ms of zeros taken
+                    // for the song's own), so only Play counts.
                     let shown = match &self.state {
                         State::Armed { shown, .. } => *shown,
-                        State::Waiting { target, .. } => u64::try_from(*target).ok(),
                         _ => None,
                     };
                     if cfg!(windows)
