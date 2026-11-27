@@ -7,6 +7,7 @@ use windows::Media::Control::{
     GlobalSystemMediaTransportControlsSessionManager as Manager,
     GlobalSystemMediaTransportControlsSessionPlaybackStatus as PlaybackStatus,
 };
+use windows::Media::MediaPlaybackAutoRepeatMode as RepeatMode;
 use windows::Storage::Streams::DataReader;
 use windows::core::Result;
 
@@ -147,13 +148,26 @@ impl Watcher {
         op.and_then(|op| op.join()).map(|_| ()).map_err(|e| e.to_string())
     }
 
-    // TODO(windows): Spotify reports IsRepeatEnabled and AutoRepeatMode (19 Oct); setting it is unmeasured, so unused.
     pub fn repeat(&self) -> std::result::Result<Repeat, String> {
-        Err("not supported on Windows yet".into())
+        let mode = self.session.GetPlaybackInfo().and_then(|i| i.AutoRepeatMode()).and_then(|m| m.Value()).map_err(|e| e.to_string())?;
+        Ok(match mode {
+            RepeatMode::Track => Repeat::Track,
+            RepeatMode::List => Repeat::List,
+            _ => Repeat::Off,
+        })
     }
 
-    pub fn set_repeat(&self, _: Repeat) -> std::result::Result<(), String> {
-        Err("not supported on Windows yet".into())
+    pub fn set_repeat(&self, repeat: Repeat) -> std::result::Result<(), String> {
+        let mode = match repeat {
+            Repeat::Off => RepeatMode::None,
+            Repeat::Track => RepeatMode::Track,
+            Repeat::List => RepeatMode::List,
+        };
+        match self.session.TryChangeAutoRepeatModeAsync(mode).and_then(|op| op.join()) {
+            Ok(true) => Ok(()),
+            Ok(false) => Err("the player refused".into()),
+            Err(e) => Err(e.to_string()),
+        }
     }
 
     pub fn extra(&self) -> Extra {

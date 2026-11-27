@@ -372,6 +372,8 @@ struct Session {
     cover_again: Option<Instant>,
     /// "Record from start": paused at the first instant, seeked to 0:00 at the second.
     rewind: Option<(Instant, Option<Instant>)>,
+    /// The player is on repeat-one for the song being recorded: it pauses before the repeat, which proves the end.
+    repeat_one: bool,
     trace: Option<Trace>,
     guard: Option<Guard>,
     restore: Restore,
@@ -450,6 +452,7 @@ impl Session {
             player: crate::passive::Media::default(),
             cover_again: None,
             rewind: None,
+            repeat_one: false,
             guard: config.settings.protect_media_keys.then(Guard::start).and_then(Result::ok),
             trace: match &config.trace {
                 Some(dir) => Some(Trace::open(dir).map_err(|e| format!("trace: {e}"))?),
@@ -495,6 +498,9 @@ impl Session {
         for action in actions {
             if matches!(action, Action::Open | Action::Restart) {
                 self.passive.forget_starts();
+                if let Some(j) = job {
+                    self.passive.retake(|t| crate::runner::matches(j, t).is_ok());
+                }
             }
             if *action == Action::Play
                 && let Some(track) = self.queue.as_ref().and_then(|q| q.track.clone()).filter(|t| job.is_some_and(|j| crate::runner::matches(j, t).is_ok()))
@@ -784,6 +790,7 @@ impl Session {
     fn sync_repeat(&mut self, stage: &'static str) {
         let Some(watcher) = &self.watcher else { return };
         if stage == "Idle" {
+            self.repeat_one = false;
             if let Some(repeat) = self.restore.repeat.take() {
                 // Setting it makes Spotify report its position again.
                 if watcher.repeat().ok() != Some(repeat)
@@ -801,11 +808,8 @@ impl Session {
             self.restore.repeat = Some(repeat);
             self.restore.save();
         }
-        if stage == "Recording"
-            && self.restore.repeat.is_some()
-            && let Err(e) = watcher.set_repeat(Repeat::Track)
-        {
-            crate::log!("repeat-one failed: {e}");
+        if stage == "Recording" && self.restore.repeat.is_some() {
+            self.repeat_one = watcher.set_repeat(Repeat::Track).inspect_err(|e| crate::log!("repeat-one failed: {e}")).is_ok();
         }
     }
 
@@ -858,6 +862,9 @@ impl Session {
                     }
                 }
                 Event::Completed { track, samples, off_grid, off_span, end_proven } => {
+                    // Only a pause proves the end: Linux pauses after every song, Windows before a repeat-one restart
+                    // (500 ms of zeros, 3 of 3) but plays on into the next song without it (37 of 104 ends).
+                    let end_proven = end_proven || !(cfg!(target_os = "linux") || self.repeat_one);
                     let extra = self.extra.take().filter(|(t, _)| t.same_song(&track)).map(|(_, e)| e).unwrap_or_default();
                     let mut tags = Tags {
                         title: track.title.clone(),
@@ -919,11 +926,6 @@ impl Session {
 /// What the capture saw: frames off the grid, the first and last of them, and whether silence proved the end.
 type Proof = (usize, Option<(usize, usize)>, bool);
 
-/// Only Linux is measured: there Spotify pauses after every song, and the end check needs that pause.
-// TODO(windows): without repeat-one Spotify plays on into the next song: 37 of 104 ends had no silence within 50 ms.
-// Spotify offers repeat over SMTC (IsRepeatEnabled, 19 Oct); measure its pause before the repeat, then prove the end.
-const PROVES_END: bool = cfg!(target_os = "linux");
-
 struct Checked {
     audio: Audio,
     report: Report,
@@ -963,7 +965,7 @@ fn check(samples: Vec<i32>, (off_grid, off_span, end_proven): Proof, rate: u32, 
         report.issues.insert(0, analyze::Issue { severity: Severity::Altered, text });
         report.verdict = report.verdict.max(Severity::Altered);
     }
-    let unproven_end = PROVES_END && !end_proven;
+    let unproven_end = !end_proven;
     if unproven_end {
         let text = "end not verified: no pause after the song";
         report.issues.insert(0, analyze::Issue { severity: Severity::Altered, text: text.into() });

@@ -189,7 +189,8 @@ enum State {
     Idle,
     /// `target`: where the clean start should lie (from the shown position).
     Waiting { track: Track, until: u64, target: i64 },
-    Armed { track: Track },
+    /// `shown`: where the player put 0:00 (from its position).
+    Armed { track: Track, shown: Option<u64> },
     /// `tail_off`: off-grid frames past `expected`, counted only if the end search keeps them. `gap`: the first frame
     /// past `expected` without packets; silence from there on proves no end. `tail_empty`: per frame past `expected`,
     /// whether the player rendered it as an empty buffer. `jump`: the frame and off-grid count where the player jumped,
@@ -321,9 +322,23 @@ impl Passive {
                 }
                 let initial = self.zero_from == 0 && !self.zero_silent && self.zero_run < ms_to_frames(MIN_INITIAL_SILENCE_MS, self.rate) as u64;
                 if self.zero_run >= min_silence && !initial {
-                    let start = self.render_start.take().filter(|r| self.frame - r <= max_lead).unwrap_or(self.frame);
+                    let mut start = self.render_start.take().filter(|r| self.frame - r <= max_lead).unwrap_or(self.frame);
+                    // Windows renders zeros even while paused, so no stream start shows a master's own leading
+                    // silence (2.26 s, Nature Sounds Artists): it lies between where the player put 0:00 and the
+                    // sound. Other songs' sound came 8 to 48 ms before that point (6 of 6).
+                    let shown = match &self.state {
+                        State::Armed { shown, .. } => *shown,
+                        State::Waiting { target, .. } => u64::try_from(*target).ok(),
+                        _ => None,
+                    };
+                    if cfg!(windows)
+                        && !self.zero_silent
+                        && let Some(s) = shown.filter(|s| *s >= self.zero_from && *s < start && start - s <= max_lead)
+                    {
+                        start = s;
+                    }
                     self.starts.push_back(start);
-                    if let State::Waiting { track, .. } | State::Armed { track } = &self.state {
+                    if let State::Waiting { track, .. } | State::Armed { track, .. } = &self.state {
                         // Only silence since the shown start: the master's own (Don't Worry, 3.9 s), and the
                         // position runs that far ahead all song, no seek. Sound before a late edge: a gap in the
                         // song taken for its start, which the seek check drops.
@@ -430,6 +445,13 @@ impl Passive {
             *shown |= playing;
             *synced |= playing && (m.position_ms - elapsed_ms).abs() <= SEEK_TOLERANCE_MS;
         }
+        if let State::Armed { track, shown: shown @ None } = &mut self.state
+            && m.playing
+            && m.track.as_ref() == Some(track)
+            && m.position_ms <= START_TOLERANCE_MS
+        {
+            *shown = Some(self.frame.saturating_sub(ms_to_frames(m.position_ms.max(0) as u64, self.rate) as u64));
+        }
         match &self.state {
             // A real pause at the end still ends it: the audio stops (silent packets, an underrun).
             State::Recording { track, expected, samples, off_grid, tail_off, jump, synced, shown, .. } if frames_to_ms(expected.saturating_sub(samples.len() / self.channels), self.rate) > END_MARGIN_MS => {
@@ -498,9 +520,17 @@ impl Passive {
         self.requested = true;
     }
 
+    /// The runner opens the song again: one just dropped from it may start over. Without this the retry after a
+    /// late title change never recorded (the last position seen was the next song's, so no restart showed; 8 of 8).
+    pub fn retake(&mut self, wanted: impl Fn(&Track) -> bool) {
+        if self.done.as_ref().is_some_and(wanted) {
+            self.done = None;
+        }
+    }
+
     pub fn arm(&mut self, track: Track) {
         if !self.recording() {
-            self.state = State::Armed { track };
+            self.state = State::Armed { track, shown: None };
         }
     }
 
@@ -535,7 +565,7 @@ impl Passive {
     pub fn status(&mut self) -> Status {
         let (phase, track) = match &self.state {
             State::Idle => (Phase::Idle, None),
-            State::Waiting { track, .. } | State::Armed { track } => (Phase::Waiting, Some(track.clone())),
+            State::Waiting { track, .. } | State::Armed { track, .. } => (Phase::Waiting, Some(track.clone())),
             State::Recording { track, .. } => (Phase::Recording, Some(track.clone())),
         };
         let level = std::mem::take(&mut self.level);
@@ -946,6 +976,54 @@ mod tests {
         assert!(ev.iter().any(|e| matches!(e, Event::Dropped { track, reason: Reason::TrackChanged } if track.title == "Previous")));
         let done = ev.iter().find_map(|e| match e { Event::Completed { track, samples, .. } if track.title == "Song" => Some(samples), _ => None });
         assert_eq!(done.expect("actual track recorded")[..], orig[..]);
+    }
+
+    #[test]
+    fn song_dropped_by_a_late_title_change_is_taken_again_when_reopened() {
+        let t = track(8_000);
+        let next = Track { title: "Next".into(), ..track(8_000) };
+        let (orig, raw) = master(ms_to_frames(8_000, RATE), 11);
+        let mut p = Passive::new(RATE, 2, GAIN);
+        let mut ev = Vec::new();
+        silence(&mut p, 2_000, &mut ev);
+        ev.extend(p.media(playing(&t, 0)));
+        feed(&mut p, &raw[..raw.len() / 2], &mut ev);
+        ev.extend(p.media(playing(&next, 12)));
+        assert!(ev.iter().any(|e| matches!(e, Event::Dropped { reason: Reason::TrackChanged, .. })));
+        ev.extend(p.media(Media { playing: false, track: Some(next), position_ms: 100 }));
+        p.forget_starts();
+        p.retake(|shown| *shown == t);
+        silence(&mut p, 1_000, &mut ev);
+        ev.extend(p.media(playing(&t, 0)));
+        feed(&mut p, &raw, &mut ev);
+        silence(&mut p, 300, &mut ev);
+        let done = ev.iter().find_map(|e| match e { Event::Completed { samples, .. } => Some(samples), _ => None });
+        assert_eq!(done.expect("recorded on the retry")[..], orig[..]);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn a_masters_leading_silence_is_kept_from_where_the_player_put_its_start() {
+        // Windows renders zeros while paused: only the shown position tells where the master's 2 s of silence begin.
+        let t = track(5_000);
+        let (orig, raw) = master(ms_to_frames(3_000, RATE), 12);
+        let zeros = |p: &mut Passive, ms: u64, ev: &mut Vec<Event>| {
+            let n = ms_to_frames(ms, RATE);
+            ev.extend(p.push(&vec![0.0; n * 2], n, 0));
+        };
+        let mut p = Passive::new(RATE, 2, GAIN);
+        let mut ev = Vec::new();
+        zeros(&mut p, 1_000, &mut ev);
+        p.arm(t.clone());
+        ev.extend(p.media(playing(&t, 0)));
+        zeros(&mut p, 2_000, &mut ev);
+        feed(&mut p, &raw, &mut ev);
+        zeros(&mut p, 500, &mut ev);
+        let done = ev.iter().find_map(|e| match e { Event::Completed { samples, end_proven, .. } => Some((samples, *end_proven)), _ => None });
+        let (samples, end_proven) = done.expect("completed");
+        let lead = ms_to_frames(2_000, RATE) * 2;
+        assert!(end_proven && samples.len() == lead + orig.len(), "{} samples", samples.len());
+        assert!(samples[..lead].iter().all(|s| *s == 0) && samples[lead..] == orig[..]);
     }
 
     #[test]
